@@ -62,9 +62,11 @@ def test_requests_page_lists_and_fragment(client, agent_headers):
 def test_request_detail_slip(client, agent_headers):
     _login(client)
     rid = client.post("/v1/requests", headers=agent_headers,
-                      json={"title": "Deploy", "target": "prod-cluster"}).json()["id"]
+                      json={"title": "Deploy", "target": "prod-cluster",
+                            "description": "DROP TABLE events;"}).json()["id"]
     page = client.get(f"/dashboard/requests/{rid}")
     assert "prod-cluster" in page.text and "created" in page.text  # audit inline
+    assert "DROP TABLE events;" in page.text  # description = the gated command, on the slip
     assert "Approve" not in page.text and "Deny" not in page.text  # view-only
 
 def test_devices_rename_and_delete(client, app_headers):

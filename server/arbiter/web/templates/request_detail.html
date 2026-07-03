@@ -5,6 +5,7 @@
      {% if r.status == "pending" %}<span class="muted">expires in
        <span class="countdown" data-expires="{{ r.expires_at }}"></span></span>{% endif %}</p>
   <h1>{{ r.title }}</h1>
+  {% if r.description %}<pre class="mono">{{ r.description }}</pre>{% endif %}
   {% if r.payload %}<pre class="mono">{{ r.payload | tojson(indent=2) }}</pre>{% endif %}
   <table>
     <tr><th>Requested by</th><td>{{ r.action_type }}</td></tr>

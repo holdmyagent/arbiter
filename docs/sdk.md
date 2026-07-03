@@ -33,7 +33,7 @@ timeout is hit. Returns one of `"approved"`, `"denied"`, `"expired"`.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `title` | *(required)* | Short summary shown in the dashboard and any push notification. |
-| `description` | `""` | Longer detail — e.g. the actual command being gated. Shown on the request's detail page. |
+| `description` | `""` | Longer detail — e.g. the actual command being gated. Rendered as a command block on the request's detail page (the authorization slip), and used as the body of APNs/ntfy push notifications. |
 | `severity` | `"medium"` | One of `"low"`, `"medium"`, `"high"`, `"critical"`. Drives notification priority and which paired devices get notified (per-device `min_severity`). |
 | `target` | `None` | Free-text identifier of what's being acted on — a hostname, table, PR, cluster. Shown as its own column/field in the dashboard. |
 | `ttl_seconds` | `300` | How long the request stays `pending` before the server auto-expires it. |
@@ -75,10 +75,31 @@ client = ArbiterClient(
 decision = client.request_approval("Restart api service", severity="medium", target="hermes")
 ```
 
-Same parameter names and the same fail-closed contract (`"denied"` on any
-error) as the module-level `request_approval` function; construct it once
-and call `request_approval` on it repeatedly rather than reconstructing a
-client per call.
+The method's actual signature:
+
+```python
+def request_approval(
+    self,
+    title,
+    description="",
+    action_type="generic",
+    payload=None,
+    severity="medium",
+    ttl=300,
+    target=None,
+    poll_interval=2,
+    timeout=None,
+) -> str: ...
+```
+
+Same fail-closed contract (`"denied"` on any error) as the module-level
+`request_approval` function, but note two differences before copy-pasting
+between the two: the TTL parameter here is named **`ttl`, not
+`ttl_seconds`**, and there is no environment-variable fallback — the
+server URL and agent token are passed explicitly to the constructor
+(`base_url`, `agent_token`). Construct the client once and call
+`request_approval` on it repeatedly rather than reconstructing a client
+per call.
 
 ## Configuration
 

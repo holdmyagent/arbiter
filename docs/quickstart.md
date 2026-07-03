@@ -20,7 +20,9 @@ hma init
 ```
 
 This writes `~/.config/holdmyagent/config.toml` (mode `0600`) with four
-freshly generated secrets and prints them once:
+freshly generated secrets and prints the three you'll actually handle
+once (the fourth, `session_secret`, stays in the file — the server uses
+it internally to sign dashboard session cookies):
 
 ```
 Wrote /home/you/.config/holdmyagent/config.toml

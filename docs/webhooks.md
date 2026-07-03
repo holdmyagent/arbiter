@@ -55,10 +55,20 @@ A non-empty `url` is what turns webhooks on (`hma status` shows
   (`status` is `expired`).
 
 Delivery target: the global `[notify.webhook] url` above receives all
-three event types. If an individual request also set a `callback_url`
-when it was created (the `hold_sdk`/API `callback_url` field), that URL
-additionally receives `request.decided`/`request.expired` — but not
-`request.created` — for that one request. Both deliveries use the same
+three event types. An individual request can additionally set a
+`callback_url` when it's created — that URL then also receives
+`request.decided`/`request.expired` (but not `request.created`) for that
+one request. `callback_url` is an API-level field on `POST /v1/requests`;
+`hold_sdk.request_approval` doesn't expose it (yet), so set it with a
+direct API call:
+
+```bash
+curl -X POST "$HMA_SERVER_URL/v1/requests" -H "Authorization: Bearer $HMA_AGENT_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"title":"Deploy","severity":"high","callback_url":"https://agent.example/cb"}'
+```
+
+Both the global URL and a per-request `callback_url` use the same
 `[notify.webhook] secret` for signing.
 
 ## Verifying the signature
