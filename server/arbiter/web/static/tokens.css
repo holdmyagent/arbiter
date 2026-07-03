@@ -1,0 +1,49 @@
+/* Design tokens — extracted from holdmyagent.com's built stylesheet
+   (/assets/index-afoPOECh.css) on 2026-07-03: background/card/text/muted/
+   border values from its :root/[data-theme=dark] and [data-theme=light]
+   blocks, severity/accent colors from its top-level --sev-*, --state-*, and
+   --brand-violet custom properties. Falls back to the spec's hardcoded
+   hexes only if that extraction is unavailable. */
+:root[data-theme="dark"] {
+  --bg: #07070b; --card: #101019; --text: #edecf7; --muted: #9a99b8;
+  --border: #ffffff14;
+}
+:root[data-theme="light"] {
+  --bg: #ecebf6; --card: #ffffff; --text: #14131f; --muted: #56556e;
+  --border: #d9d8ea;
+}
+:root {
+  --sev-low: #5b8def; --sev-medium: #e6b53c; --sev-high: #f2883c; --sev-critical: #ff5d63;
+  --approved: #37d9a0; --auth-accent: #7c6cff;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+.topbar { display: flex; gap: 1rem; align-items: center; padding: .8rem 1.2rem;
+          border-bottom: 1px solid var(--border); }
+.topbar nav a { color: var(--muted); text-decoration: none; margin-right: .8rem; }
+.topbar nav a:hover { color: var(--text); }
+.brand { font-weight: 600; }
+main { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+.card { background: var(--card); border: 1px solid var(--border);
+        border-radius: 12px; padding: 1.2rem; margin-bottom: 1rem; }
+.pill { border: 1px solid; border-radius: 999px; padding: .1em .7em;
+        font-size: .78em; font-weight: 600; text-transform: uppercase; }
+.pill.low { color: var(--sev-low); border-color: var(--sev-low); }
+.pill.medium { color: var(--sev-medium); border-color: var(--sev-medium); }
+.pill.high { color: var(--sev-high); border-color: var(--sev-high); }
+.pill.critical { color: var(--sev-critical); border-color: var(--sev-critical); }
+.status.approved { color: var(--approved); }
+.status.denied, .status.expired { color: var(--sev-critical); }
+.mono, pre, code { font-family: var(--mono); }
+pre { background: rgba(127,127,127,.08); border: 1px solid var(--border);
+      border-radius: 8px; padding: .8em; overflow-x: auto; }
+.btn { background: var(--auth-accent); color: white; border: 0; border-radius: 8px;
+       padding: .55em 1.1em; font-weight: 600; cursor: pointer; }
+.muted { color: var(--muted); } .error { color: var(--sev-critical); }
+.qr { text-align: center; margin: 1rem 0; } .qr svg { max-width: 240px; height: auto; }
+.login { max-width: 340px; margin: 4rem auto; display: flex; flex-direction: column; gap: .8rem; }
+.login input { background: transparent; border: 1px solid var(--border); color: var(--text);
+               border-radius: 8px; padding: .55em .8em; }
+table { width: 100%; border-collapse: collapse; }
+td, th { padding: .5em .6em; border-bottom: 1px solid var(--border); text-align: left; }

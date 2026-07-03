@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}Login — Hold My Agent{% endblock %}
+{% block content %}
+<form class="card login" method="post" action="/dashboard/login">
+  <h1>Admin login</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <input type="password" name="password" placeholder="Admin password" autofocus>
+  <button type="submit" class="btn">Sign in</button>
+</form>
+{% endblock %}

@@ -121,6 +121,10 @@ def test_sound_flag_true_includes_default_sound(client):
 
 
 # ── S2: /health + /pair ──────────────────────────────────────────────────────
+# The old token-in-URL /pair page and the old / landing page are gone
+# (Task 8). Session-based gating and page content (QR + `hma pair` command)
+# are covered by test_dashboard.py; these tests just preserve the original
+# reachability/gating intent against the new redirect targets.
 
 def test_health_returns_ok(client):
     r = client.get("/health")
@@ -128,57 +132,27 @@ def test_health_returns_ok(client):
     assert r.json() == {"ok": True}
 
 
-def test_pair_requires_token(client):
-    """Unauthenticated /pair must NOT leak the app token, QR, or deep-link payload."""
-    r = client.get("/pair")
-    assert r.status_code == 401
-    assert "holdmyagent://pair" not in r.text  # payload (contains token) not rendered
-    assert "<svg" not in r.text                # QR (encodes token) not rendered
+def test_old_pair_redirects_to_dashboard_pair(client):
+    """The old token-in-URL /pair page is gone; it now redirects into the
+    session-gated dashboard pair page."""
+    r = client.get("/pair", follow_redirects=False)
+    assert r.status_code in (302, 303, 307, 308)
+    assert r.headers["location"] == "/dashboard/pair"
 
 
-def test_pair_wrong_token_rejected(client):
-    r = client.get("/pair?token=not-the-token")
-    assert r.status_code == 401
-    assert "holdmyagent://pair" not in r.text
+def test_pair_query_token_no_longer_grants_access(client):
+    """The old ?token=<app_token> query-string gate is gone; /pair always
+    redirects regardless of query params and never leaks the app token."""
+    r = client.get("/pair?token=test-app", follow_redirects=False)
+    assert r.status_code in (302, 303, 307, 308)
+    assert "test-app" not in r.text
 
 
-def test_pair_page_returns_html(client):
-    r = client.get("/pair?token=test-app")  # 'test-app' is the app token in the fixture
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-
-
-def test_pair_page_contains_payload(client):
-    """The authorized /pair page renders the pairing deep-link (which carries the token)."""
-    r = client.get("/pair?token=test-app")
-    assert "holdmyagent://pair" in r.text
-    assert "token=test-app" in r.text
-
-
-def test_pair_page_contains_svg_qr(client):
-    """The authorized /pair page embeds an inline SVG QR code."""
-    r = client.get("/pair?token=test-app")
-    assert "<svg" in r.text
-
-
-def test_pair_page_contains_run_command(client):
-    """The authorized /pair page shows the `python -m arbiter.pair` run command."""
-    r = client.get("/pair?token=test-app")
-    assert "python -m arbiter.pair" in r.text
-
-
-def test_pair_page_contains_trust_note(client):
-    """The authorized /pair page displays the trusted-network security notice."""
-    r = client.get("/pair?token=test-app")
-    assert "trusted" in r.text.lower()
-
-
-def test_root_links_to_pair(client):
-    """GET / returns HTML with a link to /pair."""
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-    assert "/pair" in r.text
+def test_root_redirects_into_dashboard(client):
+    """GET / no longer serves a landing page; it redirects into the dashboard."""
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (302, 303, 307, 308)
+    assert r.headers["location"] == "/dashboard"
 
 
 def test_target_and_callback_roundtrip(client):

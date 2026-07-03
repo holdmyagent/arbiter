@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}Pair — Hold My Agent{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Pair a device</h1>
+  <div class="qr">{{ svg | safe }}</div>
+  <p>Or run the CLI pairing command:</p>
+  <pre class="mono">$ hma pair</pre>
+  <p class="muted">Server URL: <code>{{ base }}</code>. The QR embeds your app token —
+     only display this page on a trusted network.</p>
+</section>
+{% endblock %}

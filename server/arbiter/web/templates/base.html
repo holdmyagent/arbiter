@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Hold My Agent{% endblock %}</title>
+  <link rel="stylesheet" href="/static/tokens.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">Hold My Agent</span>
+    <nav>
+      <a href="/dashboard/requests">Requests</a>
+      <a href="/dashboard/devices">Devices</a>
+      <a href="/dashboard/audit">Audit</a>
+      <a href="/dashboard/pair">Pair</a>
+      <a href="/dashboard/settings">Settings</a>
+    </nav>
+    <button id="theme-toggle" type="button">◐</button>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

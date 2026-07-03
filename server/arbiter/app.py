@@ -1,28 +1,20 @@
 import asyncio
-import html
-import io
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-import segno
-from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .auth import require_agent, require_app, require_agent_or_app, SlidingWindowLimiter
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher
-from .pair import build_pairing_payload, local_ip
 from .stream import Hub
+from .web import build_router, session_valid
 
 log = logging.getLogger("arbiter.app")
-
-
-def _build_svg(payload: str, scale: int = 4) -> str:
-    """Render *payload* as an inline SVG QR code (no XML declaration)."""
-    buf = io.BytesIO()
-    segno.make(payload).save(buf, kind="svg", xmldecl=False, nl=False, scale=scale)
-    return buf.getvalue().decode("utf-8")
 
 
 def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
@@ -55,12 +47,15 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     app = FastAPI(title="Arbiter", lifespan=lifespan)
     app.state.hub = hub
     app.state.notify_tasks = notify_tasks
-    app.state.session_check = lambda cookie_value: False  # replaced by web router (Task 8)
     limiter = SlidingWindowLimiter(10, 60.0)
     app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
     agent = Depends(require_agent(cfg, limiter))
     appdep = Depends(require_app(cfg, limiter))
     either = Depends(require_agent_or_app(cfg, limiter))
+
+    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
+    app.include_router(build_router(cfg, db, hub))
+    app.state.session_check = lambda v: session_valid(cfg, v)
 
     @app.middleware("http")
     async def security_headers(request, call_next):
@@ -75,96 +70,21 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     # ── Utility / pairing ────────────────────────────────────────────────────
 
-    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/", include_in_schema=False)
     def root():
-        return HTMLResponse("""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Hold My Agent</title></head>
-<body>
-<h1>Hold My Agent — server</h1>
-<ul>
-  <li><a href="/pair">Pair the iOS app</a> — scan this QR code to connect</li>
-  <li><a href="/health">Health check</a></li>
-  <li><a href="/docs">API docs</a></li>
-</ul>
-</body></html>""")
+        return RedirectResponse("/dashboard")
+
+    @app.get("/dashboard", include_in_schema=False)
+    def dash_root():
+        return RedirectResponse("/dashboard/requests")
+
+    @app.get("/pair", include_in_schema=False)
+    def old_pair():
+        return RedirectResponse("/dashboard/pair")
 
     @app.get("/health")
     def health():
         return {"ok": True}
-
-    @app.get("/pair", response_class=HTMLResponse)
-    def pair(request: Request):
-        # Resolve base URL from the incoming request (works behind reverse proxies too)
-        base = str(request.base_url).rstrip("/")
-        if not base or base == "http://testclient":
-            base = f"http://{local_ip()}:8000"
-        token = cfg.auth.app_token
-        # Auth gate: the token is a long-lived credential — never reveal it on an
-        # unauthenticated page. The operator (who set ARBITER_APP_TOKEN) views this
-        # by appending ?token=<app token>; unauthenticated scanners cannot exfiltrate it.
-        supplied = request.query_params.get("token", "")
-        if not (supplied and secrets.compare_digest(supplied, token)):
-            gate = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Pair — Hold My Agent</title></head>
-<body style="font-family:-apple-system,system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;color:#111">
-  <h1>Pair Hold My Agent</h1>
-  <p>To protect your app token, this page requires it. Open
-     <code>/pair?token=YOUR_APP_TOKEN</code> (the value you set as
-     <code>ARBITER_APP_TOKEN</code>), or run the safer terminal command
-     <code>python -m arbiter.pair</code> which never exposes the token over HTTP.</p>
-</body></html>"""
-            return HTMLResponse(gate, status_code=401)
-        payload = build_pairing_payload(base, token)
-        svg = _build_svg(payload)
-        run_cmd = f"python -m arbiter.pair --host {base} --token {token}"
-        # Escape every interpolated value — the base URL derives from the client-controlled
-        # Host header, so unescaped interpolation would be reflected XSS.
-        token = html.escape(token, quote=True)
-        payload = html.escape(payload, quote=True)
-        run_cmd = html.escape(run_cmd, quote=True)
-        page = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Pair — Hold My Agent</title>
-  <style>
-    body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
-            margin: 2rem auto; padding: 0 1rem; color: #111; }}
-    .qr  {{ text-align: center; margin: 1.5rem 0; }}
-    .qr svg {{ max-width: 260px; height: auto; }}
-    code {{ background: #f4f4f4; padding: 0.2em 0.4em; border-radius: 4px;
-             word-break: break-all; font-size: 0.9em; }}
-    pre  {{ background: #f4f4f4; padding: 0.8em; border-radius: 6px; overflow-x: auto; }}
-    .warn {{ background: #fff3cd; border-left: 4px solid #ffc107;
-              padding: 0.6em 1em; border-radius: 4px; margin-top: 1.5rem; }}
-  </style>
-</head>
-<body>
-  <h1>Pair Hold My Agent</h1>
-  <p>Scan the QR code with the iOS app, or copy the values below for manual entry.</p>
-
-  <div class="qr">{svg}</div>
-
-  <h2>App token</h2>
-  <p><code id="tok">{token}</code></p>
-
-  <h2>Deep-link payload</h2>
-  <p><code>{payload}</code></p>
-
-  <h2>CLI — print QR in the terminal</h2>
-  <pre>{run_cmd}</pre>
-
-  <div class="warn">
-    <strong>Security notice:</strong> Show this page only on a trusted network —
-    it reveals your app token.  The CLI path (<code>python -m arbiter.pair</code>)
-    is safer for remote setups because it never exposes the token over HTTP.
-  </div>
-
-  <p style="margin-top:2rem"><a href="/">← Back</a> &nbsp;·&nbsp;
-     <a href="/health">Health</a></p>
-</body>
-</html>"""
-        return HTMLResponse(page)
 
     # ── API v1 ───────────────────────────────────────────────────────────────
 
