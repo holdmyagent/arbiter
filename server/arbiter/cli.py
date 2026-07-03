@@ -1,0 +1,171 @@
+import json, secrets as pysecrets, sys, time
+from pathlib import Path
+import click, httpx
+
+from .config import Config
+
+CONFIG_TEMPLATE = """# Hold My Agent — Arbiter server configuration
+[server]
+host = "127.0.0.1"          # use "0.0.0.0" (or `hma serve --lan`) so phones can reach it
+port = 8000
+db_path = "~/.local/share/holdmyagent/arbiter.sqlite3"
+
+[auth]
+agent_token = "{agent}"
+app_token = "{app}"
+admin_password = "{admin}"
+session_secret = "{session}"
+
+[notify.apns]               # optional — bring your own Apple Developer key
+key_path = ""
+key_id = ""
+team_id = ""
+bundle_id = "com.holdmyagent.HoldMyAgent"
+sandbox = false
+
+[notify.ntfy]               # optional — phone alerts with no Apple account
+url = "https://ntfy.sh"
+topic = ""
+token = ""
+
+[notify.webhook]            # optional — generic integration
+url = ""
+secret = ""
+"""
+
+@click.group()
+def main():
+    """Hold My Agent — self-hosted, fail-closed approvals for AI agents."""
+
+@main.command()
+@click.option("--force", is_flag=True, help="Overwrite an existing config file.")
+def init(force):
+    """Write a fresh config with random credentials."""
+    path = Path(Config.default_path())
+    if path.exists() and not force:
+        raise click.ClickException(f"{path} exists (use --force to overwrite)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    creds = dict(agent=pysecrets.token_hex(32), app=pysecrets.token_hex(32),
+                 admin=pysecrets.token_urlsafe(16), session=pysecrets.token_hex(32))
+    path.write_text(CONFIG_TEMPLATE.format(**creds))
+    path.chmod(0o600)
+    click.echo(f"Wrote {path}")
+    click.echo(f"  agent token:    {creds['agent']}")
+    click.echo(f"  app token:      {creds['app']}")
+    click.echo(f"  admin password: {creds['admin']}  (dashboard login)")
+    click.echo("Shown once — they live in the config file from now on.")
+
+@main.command()
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+@click.option("--lan", is_flag=True, help="Bind 0.0.0.0 and print the LAN pairing URL.")
+@click.option("--log-json", is_flag=True, help="Emit logs as JSON lines.")
+def serve(config_path, lan, log_json):
+    """Run the Arbiter server."""
+    import logging, uvicorn
+    from .pair import local_ip
+    if log_json:
+        class _Json(logging.Formatter):
+            def format(self, rec):
+                return json.dumps({"ts": self.formatTime(rec), "level": rec.levelname,
+                                   "logger": rec.name, "msg": rec.getMessage()})
+        h = logging.StreamHandler(); h.setFormatter(_Json())
+        logging.basicConfig(level=logging.INFO, handlers=[h])
+    else:
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    cfg = Config.load(config_path)
+    problems = cfg.validate_for_serve()
+    if problems:
+        raise click.ClickException("refusing to start:\n  - " + "\n  - ".join(problems))
+    host = "0.0.0.0" if lan else cfg.server.host
+    if lan or host == "0.0.0.0":
+        click.echo(f"Pair page: http://{local_ip()}:{cfg.server.port}/dashboard/pair")
+    from .db import Database
+    from .notify import Dispatcher, APNsSender
+    from .app import create_app
+    db = Database(cfg.db_path_expanded())
+    sender = APNsSender(cfg)
+    app = create_app(cfg, db, sender, dispatcher=Dispatcher(cfg, db, sender=sender))
+    uvicorn.run(app, host=host, port=cfg.server.port)
+
+@main.command()
+@click.option("--config", "config_path", default=None)
+@click.option("--host", "host_url", default=None, help="Server base URL for the QR (default http://<LAN-IP>:<port>)")
+def pair(config_path, host_url):
+    """Print the pairing QR code in the terminal."""
+    import segno
+    from .pair import build_pairing_payload, local_ip
+    cfg = Config.load(config_path)
+    if not cfg.auth.app_token:
+        raise click.ClickException("no app_token in config — run `hma init` first")
+    base = host_url or f"http://{local_ip()}:{cfg.server.port}"
+    payload = build_pairing_payload(base, cfg.auth.app_token)
+    click.echo(segno.make(payload).terminal(compact=True))
+    click.echo(f"URL:     {base}")
+    click.echo(f"Payload: {payload}")
+
+@main.command()
+@click.option("--config", "config_path", default=None)
+def status(config_path):
+    """Show server health, devices, and pending requests."""
+    cfg = Config.load(config_path)
+    base = f"http://127.0.0.1:{cfg.server.port}"
+    try:
+        with httpx.Client(base_url=base, timeout=5) as c:
+            ok = c.get("/health").json().get("ok", False)
+            hdr = {"Authorization": f"Bearer {cfg.auth.app_token}"}
+            devices = c.get("/v1/devices", headers=hdr).json()
+            pending = c.get("/v1/requests", headers=hdr, params={"status": "pending"}).json()
+    except httpx.HTTPError as exc:
+        raise click.ClickException(f"server unreachable at {base}: {exc}")
+    click.echo(f"health:  {'ok' if ok else 'NOT OK'}")
+    click.echo(f"notifiers: apns={'on' if cfg.apns.configured else 'off'} "
+               f"ntfy={'on' if cfg.ntfy.enabled else 'off'} webhook={'on' if cfg.webhook.enabled else 'off'}")
+    click.echo(f"devices: {len(devices)}")
+    for d in devices:
+        click.echo(f"  - {d['name']} (min severity {d['min_severity']})")
+    click.echo(f"pending requests: {len(pending)}")
+
+def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
+         target: str | None, ttl: int, description: str) -> tuple[int, dict]:
+    hdr = {"Authorization": f"Bearer {agent_token}"}
+    try:
+        r = client.post("/v1/requests", headers=hdr, json={
+            "title": title, "description": description, "severity": severity,
+            "target": target, "ttl_seconds": ttl})
+        r.raise_for_status()
+        req = r.json()
+        deadline = time.time() + ttl + 5
+        while time.time() < deadline:
+            g = client.get(f"/v1/requests/{req['id']}", headers=hdr)
+            g.raise_for_status()
+            cur = g.json()
+            if cur["status"] != "pending":
+                return (0 if cur["status"] == "approved" else 1), cur
+            time.sleep(1)
+        return 1, {**req, "status": "expired"}
+    except Exception as exc:
+        return 2, {"error": str(exc)}
+
+@main.command()
+@click.argument("title")
+@click.option("--severity", type=click.Choice(["low", "medium", "high", "critical"]), default="medium")
+@click.option("--target", default=None)
+@click.option("--ttl", type=int, default=300)
+@click.option("--description", default="")
+@click.option("--config", "config_path", default=None)
+def ask(title, severity, target, ttl, description, config_path):
+    """Create an approval request and block until it is decided.
+
+    Exit codes: 0 approved · 1 denied/expired · 2 error (fail-closed: treat nonzero as no).
+    """
+    cfg = Config.load(config_path)
+    base = f"http://127.0.0.1:{cfg.server.port}"
+    with httpx.Client(base_url=base, timeout=10) as client:
+        code, decision = _ask(client, cfg.auth.agent_token, title=title,
+                              severity=severity, target=target, ttl=ttl, description=description)
+    click.echo(json.dumps(decision, indent=2))
+    sys.exit(code)
+
+if __name__ == "__main__":
+    main()
