@@ -1,8 +1,13 @@
-import json, secrets as pysecrets, sys, time
+import json, logging, os, secrets as pysecrets, sys, time
 from pathlib import Path
 import click, httpx
 
 from .config import Config
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, rec):
+        return json.dumps({"ts": self.formatTime(rec), "level": rec.levelname,
+                           "logger": rec.name, "msg": rec.getMessage()})
 
 CONFIG_TEMPLATE = """# Hold My Agent — Arbiter server configuration
 [server]
@@ -42,13 +47,16 @@ def main():
 def init(force):
     """Write a fresh config with random credentials."""
     path = Path(Config.default_path())
-    if path.exists() and not force:
-        raise click.ClickException(f"{path} exists (use --force to overwrite)")
+    if path.exists():
+        if not force:
+            raise click.ClickException(f"{path} exists (use --force to overwrite)")
+        path.unlink()
     path.parent.mkdir(parents=True, exist_ok=True)
     creds = dict(agent=pysecrets.token_hex(32), app=pysecrets.token_hex(32),
                  admin=pysecrets.token_urlsafe(16), session=pysecrets.token_hex(32))
-    path.write_text(CONFIG_TEMPLATE.format(**creds))
-    path.chmod(0o600)
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(CONFIG_TEMPLATE.format(**creds))
     click.echo(f"Wrote {path}")
     click.echo(f"  agent token:    {creds['agent']}")
     click.echo(f"  app token:      {creds['app']}")
@@ -61,14 +69,10 @@ def init(force):
 @click.option("--log-json", is_flag=True, help="Emit logs as JSON lines.")
 def serve(config_path, lan, log_json):
     """Run the Arbiter server."""
-    import logging, uvicorn
+    import uvicorn
     from .pair import local_ip
     if log_json:
-        class _Json(logging.Formatter):
-            def format(self, rec):
-                return json.dumps({"ts": self.formatTime(rec), "level": rec.levelname,
-                                   "logger": rec.name, "msg": rec.getMessage()})
-        h = logging.StreamHandler(); h.setFormatter(_Json())
+        h = logging.StreamHandler(); h.setFormatter(_JsonFormatter())
         logging.basicConfig(level=logging.INFO, handlers=[h])
     else:
         logging.basicConfig(level=logging.INFO,
@@ -86,7 +90,10 @@ def serve(config_path, lan, log_json):
     db = Database(cfg.db_path_expanded())
     sender = APNsSender(cfg)
     app = create_app(cfg, db, sender, dispatcher=Dispatcher(cfg, db, sender=sender))
-    uvicorn.run(app, host=host, port=cfg.server.port)
+    # log_config=None: leave uvicorn's loggers unconfigured so they propagate to
+    # the root handler set up above (JSON or plain) instead of uvicorn's own
+    # dictConfig (which sets propagate=False with plain formatters).
+    uvicorn.run(app, host=host, port=cfg.server.port, log_config=None)
 
 @main.command()
 @click.option("--config", "config_path", default=None)
@@ -104,6 +111,13 @@ def pair(config_path, host_url):
     click.echo(f"URL:     {base}")
     click.echo(f"Payload: {payload}")
 
+def _gather_status(client: httpx.Client, app_token: str) -> dict:
+    hdr = {"Authorization": f"Bearer {app_token}"}
+    r = client.get("/health"); r.raise_for_status()
+    d = client.get("/v1/devices", headers=hdr); d.raise_for_status()
+    p = client.get("/v1/requests", headers=hdr, params={"status": "pending"}); p.raise_for_status()
+    return {"ok": r.json().get("ok", False), "devices": d.json(), "pending": p.json()}
+
 @main.command()
 @click.option("--config", "config_path", default=None)
 def status(config_path):
@@ -112,12 +126,12 @@ def status(config_path):
     base = f"http://127.0.0.1:{cfg.server.port}"
     try:
         with httpx.Client(base_url=base, timeout=5) as c:
-            ok = c.get("/health").json().get("ok", False)
-            hdr = {"Authorization": f"Bearer {cfg.auth.app_token}"}
-            devices = c.get("/v1/devices", headers=hdr).json()
-            pending = c.get("/v1/requests", headers=hdr, params={"status": "pending"}).json()
+            st = _gather_status(c, cfg.auth.app_token)
+    except httpx.HTTPStatusError as exc:
+        raise click.ClickException(f"server error at {base}: {exc}")
     except httpx.HTTPError as exc:
         raise click.ClickException(f"server unreachable at {base}: {exc}")
+    ok, devices, pending = st["ok"], st["devices"], st["pending"]
     click.echo(f"health:  {'ok' if ok else 'NOT OK'}")
     click.echo(f"notifiers: apns={'on' if cfg.apns.configured else 'off'} "
                f"ntfy={'on' if cfg.ntfy.enabled else 'off'} webhook={'on' if cfg.webhook.enabled else 'off'}")
