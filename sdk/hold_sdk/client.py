@@ -7,13 +7,13 @@ class ArbiterClient:
         self._http = httpx.Client(base_url=self.base_url, verify=verify, timeout=10)
 
     def request_approval(self, title, description="", action_type="generic",
-                         payload=None, severity="medium", ttl=300,
+                         payload=None, severity="medium", ttl=300, target=None,
                          poll_interval=2, timeout=None) -> str:
         try:
             r = self._http.post("/v1/requests",
                 headers={"Authorization": f"Bearer {self.agent_token}"},
                 json={"title": title, "description": description, "action_type": action_type,
-                      "payload": payload or {}, "severity": severity, "ttl_seconds": ttl})
+                      "payload": payload or {}, "severity": severity, "ttl_seconds": ttl, "target": target})
             r.raise_for_status()
             rid = r.json()["id"]
         except Exception:
