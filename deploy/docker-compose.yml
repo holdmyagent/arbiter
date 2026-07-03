@@ -1,0 +1,9 @@
+services:
+  arbiter:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    image: ghcr.io/holdmyagent/arbiter:latest
+    ports: ["8000:8000"]
+    volumes: ["hma-data:/data"]
+    restart: unless-stopped
+volumes:
+  hma-data:

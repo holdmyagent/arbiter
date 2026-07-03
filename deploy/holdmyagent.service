@@ -1,0 +1,16 @@
+[Unit]
+Description=Hold My Agent — Arbiter approval server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=holdmyagent
+ExecStart=/opt/holdmyagent/venv/bin/hma serve
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/holdmyagent %h/.config/holdmyagent
+
+[Install]
+WantedBy=multi-user.target
