@@ -125,9 +125,7 @@ def test_sound_flag_true_includes_default_sound(client):
 def test_health_returns_ok(client):
     r = client.get("/health")
     assert r.status_code == 200
-    body = r.json()
-    assert body["status"] == "ok"
-    assert "version" in body
+    assert r.json() == {"ok": True}
 
 
 def test_pair_requires_token(client):

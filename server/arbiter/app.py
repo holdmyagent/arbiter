@@ -3,21 +3,15 @@ import html
 import io
 import secrets
 from contextlib import asynccontextmanager
-from importlib.metadata import version as _pkg_version
 
 import segno
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .auth import require_agent, require_app
+from .auth import require_agent, require_app, require_agent_or_app, SlidingWindowLimiter
 from .models import RequestCreate, Decision, DeviceRegister, severity_rank
 from .apns import build_payload, send_with_retry
 from .pair import build_pairing_payload, local_ip
-
-try:
-    _VERSION = _pkg_version("arbiter-server")
-except Exception:
-    _VERSION = "unknown"
 
 
 def _build_svg(payload: str, scale: int = 4) -> str:
@@ -37,7 +31,22 @@ def create_app(cfg, db, sender):
         yield
         task.cancel()
     app = FastAPI(title="Arbiter", lifespan=lifespan)
-    agent = Depends(require_agent(cfg)); appdep = Depends(require_app(cfg))
+    limiter = SlidingWindowLimiter(10, 60.0)
+    app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
+    agent = Depends(require_agent(cfg, limiter))
+    appdep = Depends(require_app(cfg, limiter))
+    either = Depends(require_agent_or_app(cfg, limiter))
+
+    @app.middleware("http")
+    async def security_headers(request, call_next):
+        resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["X-Frame-Options"] = "DENY"
+        ct = resp.headers.get("content-type", "")
+        if ct.startswith("text/html") and not request.url.path.startswith(("/docs", "/redoc", "/openapi")):
+            resp.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+        return resp
 
     # ── Utility / pairing ────────────────────────────────────────────────────
 
@@ -56,7 +65,7 @@ def create_app(cfg, db, sender):
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "version": _VERSION}
+        return {"ok": True}
 
     @app.get("/pair", response_class=HTMLResponse)
     def pair(request: Request):
@@ -151,7 +160,7 @@ def create_app(cfg, db, sender):
     def list_(status: str | None = None):
         return db.list_requests(status)
 
-    @app.get("/v1/requests/{rid}")
+    @app.get("/v1/requests/{rid}", dependencies=[either])
     def get_(rid: str):
         r = db.get_request(rid)
         if not r: raise HTTPException(404, "not found")
@@ -171,5 +180,9 @@ def create_app(cfg, db, sender):
     def register(body: DeviceRegister):
         return db.register_device(body.apns_token, body.name, body.min_severity,
                                   body.notifications_enabled, body.sound)
+
+    @app.get("/v1/devices", dependencies=[appdep])
+    def devices():
+        return db.list_devices()
 
     return app

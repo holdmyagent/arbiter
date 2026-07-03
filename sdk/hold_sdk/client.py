@@ -21,7 +21,8 @@ class ArbiterClient:
         deadline = time.time() + (timeout if timeout is not None else ttl + 5)
         while time.time() < deadline:
             try:
-                g = self._http.get(f"/v1/requests/{rid}")
+                g = self._http.get(f"/v1/requests/{rid}",
+                    headers={"Authorization": f"Bearer {self.agent_token}"})
                 g.raise_for_status()
                 status = g.json()["status"]
             except Exception:

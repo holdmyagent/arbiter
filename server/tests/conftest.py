@@ -1,4 +1,7 @@
 import pytest
+from fastapi.testclient import TestClient
+from arbiter.apns import APNsSender
+from arbiter.app import create_app
 from arbiter.config import Config
 from arbiter.db import Database
 from arbiter.models import RequestCreate
@@ -18,3 +21,16 @@ def cfg(tmp_path):
     c.auth.admin_password = "test-admin"; c.auth.session_secret = "test-secret"
     c.server.db_path = str(tmp_path / "t.sqlite3")
     return c
+
+@pytest.fixture
+def client(cfg):
+    app = create_app(cfg, Database(":memory:"), APNsSender(cfg))
+    return TestClient(app)
+
+@pytest.fixture
+def agent_headers():
+    return {"Authorization": "Bearer test-agent"}
+
+@pytest.fixture
+def app_headers():
+    return {"Authorization": "Bearer test-app"}
