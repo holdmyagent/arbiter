@@ -25,7 +25,7 @@ def test_pair_shows_qr_when_logged_in(client):
 
 def test_old_pair_redirects(client):
     r = client.get("/pair", follow_redirects=False)
-    assert r.status_code in (302, 303, 307, 308) and "/dashboard/pair" in r.headers["location"]
+    assert r.status_code == 302 and "/dashboard/pair" in r.headers["location"]
 
 def test_logout_requires_csrf(client):
     _login(client)
@@ -36,3 +36,16 @@ def test_stream_accepts_session_cookie(client, agent_headers):
     with client.websocket_connect("/v1/stream") as ws:   # cookie jar carries hma_session
         client.post("/v1/requests", headers=agent_headers, json={"title": "x"})
         assert ws.receive_json()["event"] == "request.created"
+
+# Keep this test LAST in the file: it revokes a session value in arbiter.web's
+# module-level _REVOKED set, and TimestampSigner's 1-second resolution over a
+# constant payload means a later login in the same second would mint the same
+# (already revoked) value.
+def test_logout_invalidates_session_replay(client):
+    _login(client)
+    csrf = client.get("/dashboard/pair").text.split('name="csrf" value="')[1].split('"')[0]
+    old_cookie = client.cookies.get("hma_session")
+    client.post("/dashboard/logout", data={"csrf": csrf})
+    client.cookies.set("hma_session", old_cookie)  # replay the pre-logout value
+    r = client.get("/dashboard/pair", follow_redirects=False)
+    assert r.status_code == 303 and "/dashboard/login" in r.headers["location"]

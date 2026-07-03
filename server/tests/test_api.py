@@ -136,7 +136,7 @@ def test_old_pair_redirects_to_dashboard_pair(client):
     """The old token-in-URL /pair page is gone; it now redirects into the
     session-gated dashboard pair page."""
     r = client.get("/pair", follow_redirects=False)
-    assert r.status_code in (302, 303, 307, 308)
+    assert r.status_code == 302
     assert r.headers["location"] == "/dashboard/pair"
 
 
@@ -144,14 +144,14 @@ def test_pair_query_token_no_longer_grants_access(client):
     """The old ?token=<app_token> query-string gate is gone; /pair always
     redirects regardless of query params and never leaks the app token."""
     r = client.get("/pair?token=test-app", follow_redirects=False)
-    assert r.status_code in (302, 303, 307, 308)
+    assert r.status_code == 302
     assert "test-app" not in r.text
 
 
 def test_root_redirects_into_dashboard(client):
     """GET / no longer serves a landing page; it redirects into the dashboard."""
     r = client.get("/", follow_redirects=False)
-    assert r.status_code in (302, 303, 307, 308)
+    assert r.status_code == 302
     assert r.headers["location"] == "/dashboard"
 
 

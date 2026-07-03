@@ -7,5 +7,9 @@
   <pre class="mono">$ hma pair</pre>
   <p class="muted">Server URL: <code>{{ base }}</code>. The QR embeds your app token —
      only display this page on a trusted network.</p>
+  <form method="post" action="/dashboard/logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="btn">Log out</button>
+  </form>
 </section>
 {% endblock %}

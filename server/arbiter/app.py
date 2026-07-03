@@ -72,15 +72,15 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @app.get("/", include_in_schema=False)
     def root():
-        return RedirectResponse("/dashboard")
+        return RedirectResponse("/dashboard", status_code=302)
 
     @app.get("/dashboard", include_in_schema=False)
     def dash_root():
-        return RedirectResponse("/dashboard/requests")
+        return RedirectResponse("/dashboard/requests", status_code=302)
 
     @app.get("/pair", include_in_schema=False)
     def old_pair():
-        return RedirectResponse("/dashboard/pair")
+        return RedirectResponse("/dashboard/pair", status_code=302)
 
     @app.get("/health")
     def health():

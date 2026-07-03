@@ -8,6 +8,12 @@ from itsdangerous import BadSignature, TimestampSigner
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 MAX_AGE = 7 * 24 * 3600
 
+# Logged-out session values. Deliberately a single-process in-memory revocation
+# list: the server is single-instance by design, so no shared store is needed.
+# A restart clears revocations, but the signature + max_age check still bounds
+# exposure of any not-yet-expired value.
+_REVOKED: set[str] = set()
+
 def _signer(cfg) -> TimestampSigner:
     return TimestampSigner(cfg.auth.session_secret)
 
@@ -16,6 +22,7 @@ def make_session(cfg) -> str:
 
 def session_valid(cfg, value: str) -> bool:
     if not value: return False
+    if value in _REVOKED: return False
     try:
         _signer(cfg).unsign(value.encode(), max_age=MAX_AGE); return True
     except BadSignature:
@@ -69,6 +76,7 @@ def build_router(cfg, db, hub) -> APIRouter:
     @r.post("/logout")
     def logout(request: Request, sv: str = session, csrf: str = Form(default="")):
         _check_csrf(cfg, sv, csrf)
+        _REVOKED.add(sv)  # invalidate server-side too — deleting the cookie alone leaves the value replayable
         resp = RedirectResponse("/dashboard/login", status_code=303)
         resp.delete_cookie("hma_session")
         return resp
