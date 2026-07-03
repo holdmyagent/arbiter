@@ -1,4 +1,5 @@
-import threading, time
+import tempfile, threading, time
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
@@ -8,7 +9,10 @@ from arbiter.db import Database
 from hold_sdk.client import ArbiterClient
 
 def _server():
-    cfg = Config("A","P",":memory:",None,None,None,"com.holdmyagent.HoldMyAgent",True)
+    absent = Path(tempfile.mkdtemp()) / "absent.toml"  # never written -> Config.load uses defaults
+    cfg = Config.load(str(absent))
+    cfg.auth.agent_token = "A"; cfg.auth.app_token = "P"
+    cfg.auth.admin_password = "pw"; cfg.auth.session_secret = "secret"
     db = Database(":memory:")
     class S:
         async def send(self,t,p): return "skipped"

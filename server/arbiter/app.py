@@ -64,7 +64,7 @@ def create_app(cfg, db, sender):
         base = str(request.base_url).rstrip("/")
         if not base or base == "http://testclient":
             base = f"http://{local_ip()}:8000"
-        token = cfg.app_token
+        token = cfg.auth.app_token
         # Auth gate: the token is a long-lived credential — never reveal it on an
         # unauthenticated page. The operator (who set ARBITER_APP_TOKEN) views this
         # by appending ?token=<app token>; unauthenticated scanners cannot exfiltrate it.

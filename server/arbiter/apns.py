@@ -20,16 +20,16 @@ class APNsSender:
     def __init__(self, cfg): self.cfg = cfg; self._jwt=None; self._jwt_at=0.0
     def _token(self) -> str:
         if self._jwt and time.time()-self._jwt_at < 3000: return self._jwt
-        with open(self.cfg.apns_key_path) as f: key = f.read()
-        self._jwt = jwt.encode({"iss": self.cfg.apns_team_id, "iat": int(time.time())},
-                               key, algorithm="ES256", headers={"kid": self.cfg.apns_key_id})
+        with open(self.cfg.apns.key_path) as f: key = f.read()
+        self._jwt = jwt.encode({"iss": self.cfg.apns.team_id, "iat": int(time.time())},
+                               key, algorithm="ES256", headers={"kid": self.cfg.apns.key_id})
         self._jwt_at = time.time(); return self._jwt
     async def send(self, device_token: str, payload: dict) -> str:
-        if not self.cfg.apns_configured:
+        if not self.cfg.apns.configured:
             log.info("APNs not configured; skipping push for %s", payload.get("request_id")); return "skipped"
-        host = "api.sandbox.push.apple.com" if self.cfg.apns_sandbox else "api.push.apple.com"
+        host = "api.sandbox.push.apple.com" if self.cfg.apns.sandbox else "api.push.apple.com"
         headers = {"authorization": f"bearer {self._token()}",
-                   "apns-topic": self.cfg.apns_bundle_id, "apns-push-type": "alert"}
+                   "apns-topic": self.cfg.apns.bundle_id, "apns-push-type": "alert"}
         async with httpx.AsyncClient(http2=True) as client:
             r = await client.post(f"https://{host}/3/device/{device_token}",
                                   headers=headers, content=json.dumps(payload), timeout=10)

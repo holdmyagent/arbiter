@@ -12,11 +12,11 @@ def check_token(authorization: str | None, expected: str) -> None:
 
 def require_agent(cfg):
     def dep(authorization: str | None = Header(default=None)):
-        check_token(authorization, cfg.agent_token)
+        check_token(authorization, cfg.auth.agent_token)
     return dep
 
 
 def require_app(cfg):
     def dep(authorization: str | None = Header(default=None)):
-        check_token(authorization, cfg.app_token)
+        check_token(authorization, cfg.auth.app_token)
     return dep
