@@ -1,6 +1,7 @@
 import asyncio
 import html
 import io
+import logging
 import secrets
 from contextlib import asynccontextmanager
 
@@ -9,10 +10,12 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import HTMLResponse
 
 from .auth import require_agent, require_app, require_agent_or_app, SlidingWindowLimiter
-from .models import RequestCreate, Decision, DeviceRegister, severity_rank
-from .apns import build_payload, send_with_retry
+from .models import RequestCreate, Decision, DeviceRegister
+from .notify import Dispatcher
 from .pair import build_pairing_payload, local_ip
 from .stream import Hub
+
+log = logging.getLogger("arbiter.app")
 
 
 def _build_svg(payload: str, scale: int = 4) -> str:
@@ -22,15 +25,20 @@ def _build_svg(payload: str, scale: int = 4) -> str:
     return buf.getvalue().decode("utf-8")
 
 
-def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0):
+def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
     hub = hub or Hub()
+    dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
 
     @asynccontextmanager
     async def lifespan(app):
         async def sweep():
             while True:
-                for req in db.expire_due():
-                    await hub.publish("request.expired", "request", req)
+                try:
+                    for req in db.expire_due():
+                        asyncio.create_task(dispatcher.request_decided(req))
+                        await hub.publish("request.expired", "request", req)
+                except Exception as exc:
+                    log.warning("sweep iteration failed: %s", exc)
                 await asyncio.sleep(1)
         task = asyncio.create_task(sweep())
         yield
@@ -153,14 +161,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     @app.post("/v1/requests", dependencies=[agent])
     async def create(body: RequestCreate):
         req = db.create_request(body)
-        req_rank = severity_rank(req["severity"])
-        for dev in db.list_devices():
-            if not dev["notifications_enabled"]:
-                continue
-            if severity_rank(dev["min_severity"]) <= req_rank:
-                payload = build_payload(req, sound=bool(dev["sound"]))
-                # fire-and-forget; S3 wraps this in send_with_retry
-                asyncio.create_task(send_with_retry(sender, dev["apns_token"], payload))
+        asyncio.create_task(dispatcher.request_created(req))
         await hub.publish("request.created", "request", req)
         return req
 
@@ -182,6 +183,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         decided_by = devices[0]["name"] if len(devices) == 1 else "app"
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated: raise HTTPException(409, f"not pending (status={r['status']})")
+        asyncio.create_task(dispatcher.request_decided(updated))
         await hub.publish("request.decided", "request", updated)
         return updated
 

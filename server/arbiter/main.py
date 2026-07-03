@@ -3,6 +3,7 @@ from .config import Config
 from .db import Database
 from .apns import APNsSender
 from .app import create_app
+from .notify import Dispatcher
 
 cfg = Config.load()
 problems = cfg.validate_for_serve()
@@ -10,4 +11,5 @@ if problems:
     sys.exit("Refusing to start:\n  - " + "\n  - ".join(problems))
 db = Database(cfg.db_path_expanded())
 sender = APNsSender(cfg)
-app = create_app(cfg, db, sender)
+dispatcher = Dispatcher(cfg, db, sender=sender)
+app = create_app(cfg, db, sender, dispatcher=dispatcher)
