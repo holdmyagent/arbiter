@@ -18,7 +18,10 @@ class Dispatcher:
             await coro
         except Exception as exc:
             log.warning("notifier %s failed for %s: %s", name, rid, exc)
-            self.db.add_audit(rid, "notify_failed", {"notifier": name, "error": str(exc)[:200]})
+            try:
+                self.db.add_audit(rid, "notify_failed", {"notifier": name, "error": str(exc)[:200]})
+            except Exception as audit_exc:
+                log.warning("audit write for notify_failed failed: %s", audit_exc)
 
     async def request_created(self, req: dict) -> None:
         rank = severity_rank(req["severity"])

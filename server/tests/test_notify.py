@@ -77,3 +77,29 @@ def test_dispatcher_decided_hits_callback_url(tmp_path, db):
     d = Dispatcher(c, db, transport=httpx.MockTransport(handler))
     asyncio.run(d.request_decided(req))
     assert set(seen) == {"http://hook.local/global", "http://agent.local/cb"}
+
+def test_guard_survives_audit_failure(tmp_path):
+    class BoomDB:
+        def add_audit(self, *a, **k): raise RuntimeError("db is locked")
+        def list_devices(self): return []
+    def handler(request): raise httpx.ConnectError("down")
+    c = _cfg(tmp_path); c.ntfy.topic = "t"
+    d = Dispatcher(c, BoomDB(), transport=httpx.MockTransport(handler))
+    asyncio.run(d.request_created(dict(REQ)))   # must not raise
+
+def test_webhook_4xx_is_hard_stop_no_retry(tmp_path):
+    calls = {"n": 0}
+    def handler(request):
+        calls["n"] += 1; return httpx.Response(410)
+    c = _cfg(tmp_path); c.webhook.url = "http://hook.local/x"
+    w = WebhookNotifier(c.webhook, transport=httpx.MockTransport(handler), sleeps=(0, 0, 0))
+    assert asyncio.run(w.deliver(c.webhook.url, "e", REQ)) is False and calls["n"] == 1
+
+def test_dispatcher_expired_status_sends_expired_event(tmp_path, db):
+    seen = []
+    def handler(request):
+        import json as j; seen.append(j.loads(request.read())["event"]); return httpx.Response(200)
+    c = _cfg(tmp_path); c.webhook.url = "http://hook.local/g"; c.webhook.secret = "s"
+    req = dict(REQ); req["status"] = "expired"
+    asyncio.run(Dispatcher(c, db, transport=httpx.MockTransport(handler)).request_decided(req))
+    assert seen == ["request.expired"]

@@ -28,6 +28,15 @@ def _build_svg(payload: str, scale: int = 4) -> str:
 def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
     hub = hub or Hub()
     dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
+    notify_tasks: set = set()
+
+    def _spawn(coro):
+        # Hold a strong reference until done — a bare create_task() result is
+        # GC-eligible mid-flight (asyncio only keeps weak refs to tasks).
+        t = asyncio.create_task(coro)
+        notify_tasks.add(t)
+        t.add_done_callback(notify_tasks.discard)
+        return t
 
     @asynccontextmanager
     async def lifespan(app):
@@ -35,7 +44,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
             while True:
                 try:
                     for req in db.expire_due():
-                        asyncio.create_task(dispatcher.request_decided(req))
+                        _spawn(dispatcher.request_decided(req))
                         await hub.publish("request.expired", "request", req)
                 except Exception as exc:
                     log.warning("sweep iteration failed: %s", exc)
@@ -45,6 +54,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         task.cancel()
     app = FastAPI(title="Arbiter", lifespan=lifespan)
     app.state.hub = hub
+    app.state.notify_tasks = notify_tasks
     app.state.session_check = lambda cookie_value: False  # replaced by web router (Task 8)
     limiter = SlidingWindowLimiter(10, 60.0)
     app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
@@ -161,7 +171,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     @app.post("/v1/requests", dependencies=[agent])
     async def create(body: RequestCreate):
         req = db.create_request(body)
-        asyncio.create_task(dispatcher.request_created(req))
+        _spawn(dispatcher.request_created(req))
         await hub.publish("request.created", "request", req)
         return req
 
@@ -183,7 +193,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         decided_by = devices[0]["name"] if len(devices) == 1 else "app"
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated: raise HTTPException(409, f"not pending (status={r['status']})")
-        asyncio.create_task(dispatcher.request_decided(updated))
+        _spawn(dispatcher.request_decided(updated))
         await hub.publish("request.decided", "request", updated)
         return updated
 
