@@ -1,5 +1,4 @@
 import itertools
-from fastapi.testclient import TestClient
 
 def test_request_detail_requires_token(client, agent_headers, app_headers):
     rid = client.post("/v1/requests", headers=agent_headers, json={"title": "x"}).json()["id"]
@@ -28,10 +27,12 @@ def test_limiter_unit_blocks_and_expires():
     from arbiter.auth import SlidingWindowLimiter
     t = itertools.count()
     lim = SlidingWindowLimiter(3, 60.0, clock=lambda: next(t))
-    for _ in range(3): lim.record_failure("ip")
+    for _ in range(3):
+        lim.record_failure("ip")
     assert lim.blocked("ip")
     lim2 = SlidingWindowLimiter(3, 2.0, clock=lambda: next(t))
-    for _ in range(3): lim2.record_failure("ip")
+    for _ in range(3):
+        lim2.record_failure("ip")
     assert not lim2.blocked("ip")  # clock already advanced past the window
 
 def test_limiter_blocked_does_not_create_entries():
@@ -43,5 +44,6 @@ def test_limiter_blocked_does_not_create_entries():
 def test_limiter_per_key_isolation():
     from arbiter.auth import SlidingWindowLimiter
     lim = SlidingWindowLimiter(2, 60.0)
-    lim.record_failure("a"); lim.record_failure("a")
+    lim.record_failure("a")
+    lim.record_failure("a")
     assert lim.blocked("a") and not lim.blocked("b")

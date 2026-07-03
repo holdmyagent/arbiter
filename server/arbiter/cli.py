@@ -1,6 +1,12 @@
-import json, logging, os, secrets as pysecrets, sys, time
+import json
+import logging
+import os
+import secrets as pysecrets
+import sys
+import time
 from pathlib import Path
-import click, httpx
+import click
+import httpx
 
 from .config import Config
 
@@ -72,7 +78,8 @@ def serve(config_path, lan, log_json):
     import uvicorn
     from .pair import local_ip
     if log_json:
-        h = logging.StreamHandler(); h.setFormatter(_JsonFormatter())
+        h = logging.StreamHandler()
+        h.setFormatter(_JsonFormatter())
         logging.basicConfig(level=logging.INFO, handlers=[h])
     else:
         logging.basicConfig(level=logging.INFO,
@@ -113,9 +120,12 @@ def pair(config_path, host_url):
 
 def _gather_status(client: httpx.Client, app_token: str) -> dict:
     hdr = {"Authorization": f"Bearer {app_token}"}
-    r = client.get("/health"); r.raise_for_status()
-    d = client.get("/v1/devices", headers=hdr); d.raise_for_status()
-    p = client.get("/v1/requests", headers=hdr, params={"status": "pending"}); p.raise_for_status()
+    r = client.get("/health")
+    r.raise_for_status()
+    d = client.get("/v1/devices", headers=hdr)
+    d.raise_for_status()
+    p = client.get("/v1/requests", headers=hdr, params={"status": "pending"})
+    p.raise_for_status()
     return {"ok": r.json().get("ok", False), "devices": d.json(), "pending": p.json()}
 
 @main.command()

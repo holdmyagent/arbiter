@@ -1,5 +1,4 @@
 """Tests for send_with_retry — bounded APNs retry helper."""
-import asyncio
 
 import pytest
 

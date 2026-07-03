@@ -1,4 +1,5 @@
-import hashlib, hmac
+import hashlib
+import hmac
 from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,10 +22,13 @@ def make_session(cfg) -> str:
     return _signer(cfg).sign(b"admin").decode()
 
 def session_valid(cfg, value: str) -> bool:
-    if not value: return False
-    if value in _REVOKED: return False
+    if not value:
+        return False
+    if value in _REVOKED:
+        return False
     try:
-        _signer(cfg).unsign(value.encode(), max_age=MAX_AGE); return True
+        _signer(cfg).unsign(value.encode(), max_age=MAX_AGE)
+        return True
     except BadSignature:
         return False
 
@@ -83,7 +87,8 @@ def build_router(cfg, db, hub) -> APIRouter:
 
     @r.get("/pair", response_class=HTMLResponse)
     def pair(request: Request, sv: str = session):
-        import io, segno
+        import io
+        import segno
         from ..pair import build_pairing_payload, local_ip
         base = f"http://{local_ip()}:{cfg.server.port}"
         payload = build_pairing_payload(base, cfg.auth.app_token)
@@ -103,7 +108,8 @@ def build_router(cfg, db, hub) -> APIRouter:
     @r.get("/requests/{rid}", response_class=HTMLResponse)
     def request_detail(request: Request, rid: str, sv: str = session):
         req = db.get_request(rid)
-        if not req: raise HTTPException(404)
+        if not req:
+            raise HTTPException(404)
         return TEMPLATES.TemplateResponse(request, "request_detail.html",
             {"r": req, "audit": db.list_audit(rid), "csrf": csrf_token(cfg, sv)})
 
@@ -116,13 +122,15 @@ def build_router(cfg, db, hub) -> APIRouter:
     def device_rename(request: Request, did: str, sv: str = session,
                       name: str = Form(...), csrf: str = Form(default="")):
         _check_csrf(cfg, sv, csrf)
-        if not db.rename_device(did, name): raise HTTPException(404)
+        if not db.rename_device(did, name):
+            raise HTTPException(404)
         return RedirectResponse("/dashboard/devices", status_code=303)
 
     @r.post("/devices/{did}/delete")
     def device_delete(request: Request, did: str, sv: str = session, csrf: str = Form(default="")):
         _check_csrf(cfg, sv, csrf)
-        if not db.delete_device(did): raise HTTPException(404)
+        if not db.delete_device(did):
+            raise HTTPException(404)
         return RedirectResponse("/dashboard/devices", status_code=303)
 
     @r.get("/audit", response_class=HTMLResponse)
@@ -138,11 +146,13 @@ def build_router(cfg, db, hub) -> APIRouter:
     @r.post("/settings/rotate")
     def rotate(request: Request, sv: str = session,
                which: str = Form(...), csrf: str = Form(default="")):
-        import secrets as s, tomlkit
+        import secrets as s
+        import tomlkit
         from pathlib import Path
         from ..config import Config
         _check_csrf(cfg, sv, csrf)
-        if which not in ("agent", "app"): raise HTTPException(400)
+        if which not in ("agent", "app"):
+            raise HTTPException(400)
         new = s.token_hex(32)
         path = Path(Config.default_path())
         doc = tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()

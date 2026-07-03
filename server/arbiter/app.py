@@ -102,17 +102,20 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     @app.get("/v1/requests/{rid}", dependencies=[either])
     def get_(rid: str):
         r = db.get_request(rid)
-        if not r: raise HTTPException(404, "not found")
+        if not r:
+            raise HTTPException(404, "not found")
         return r
 
     @app.post("/v1/requests/{rid}/decision", dependencies=[appdep])
     async def decide(rid: str, body: Decision):
         r = db.get_request(rid)
-        if not r: raise HTTPException(404, "not found")
+        if not r:
+            raise HTTPException(404, "not found")
         devices = db.list_devices()
         decided_by = devices[0]["name"] if len(devices) == 1 else "app"
         updated = db.set_decision(rid, body.decision, decided_by)
-        if not updated: raise HTTPException(409, f"not pending (status={r['status']})")
+        if not updated:
+            raise HTTPException(409, f"not pending (status={r['status']})")
         _spawn(dispatcher.request_decided(updated))
         await hub.publish("request.decided", "request", updated)
         return updated
@@ -135,7 +138,8 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         token_ok = auth.startswith("Bearer ") and secrets.compare_digest(
             auth.removeprefix("Bearer "), cfg.auth.app_token)
         if not (token_ok or app.state.session_check(cookie)):
-            await ws.close(code=4401); return
+            await ws.close(code=4401)
+            return
         await ws.accept()
         q = hub.subscribe()
         async def heartbeat():
@@ -149,6 +153,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         except WebSocketDisconnect:
             pass
         finally:
-            hb.cancel(); hub.unsubscribe(q)
+            hb.cancel()
+            hub.unsubscribe(q)
 
     return app

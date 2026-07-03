@@ -11,7 +11,8 @@ def test_login_failure_no_cookie(client):
     assert r.status_code in (200, 401) and "hma_session" not in r.cookies
 
 def test_login_rate_limited(client):
-    for _ in range(6): _login(client, "wrong")
+    for _ in range(6):
+        _login(client, "wrong")
     assert _login(client, "wrong").status_code == 429
 
 def test_pair_requires_session(client):
@@ -84,8 +85,8 @@ def test_audit_page_filters(client, agent_headers):
 
 def test_rotate_app_token_persists_and_audits(client, tmp_path, cfg, monkeypatch):
     cfg_file = tmp_path / "config.toml"
-    cfg_file.write_text(f'[auth]\nagent_token = "test-agent"\napp_token = "test-app"\n'
-                        f'admin_password = "test-admin"\nsession_secret = "test-secret"\n')
+    cfg_file.write_text('[auth]\nagent_token = "test-agent"\napp_token = "test-app"\n'
+                        'admin_password = "test-admin"\nsession_secret = "test-secret"\n')
     monkeypatch.setenv("HMA_CONFIG", str(cfg_file))
     _login(client)
     csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]

@@ -1,4 +1,6 @@
-import tempfile, threading, time
+import tempfile
+import threading
+import time
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse, Response
@@ -11,8 +13,10 @@ from hold_sdk.client import ArbiterClient
 def _server():
     absent = Path(tempfile.mkdtemp()) / "absent.toml"  # never written -> Config.load uses defaults
     cfg = Config.load(str(absent))
-    cfg.auth.agent_token = "A"; cfg.auth.app_token = "P"
-    cfg.auth.admin_password = "pw"; cfg.auth.session_secret = "secret"
+    cfg.auth.agent_token = "A"
+    cfg.auth.app_token = "P"
+    cfg.auth.admin_password = "pw"
+    cfg.auth.session_secret = "secret"
     db = Database(":memory:")
     class S:
         async def send(self,t,p): return "skipped"
@@ -27,10 +31,13 @@ def test_approved():
     # create via SDK in a thread, approve out-of-band
     result = {}
     def run(): result["r"] = client.request_approval("t", severity="low", ttl=300, poll_interval=0.05)
-    th = threading.Thread(target=run); th.start(); time.sleep(0.2)
+    th = threading.Thread(target=run)
+    th.start()
+    time.sleep(0.2)
     rid = db.list_requests("pending")[0]["id"]
     db.set_decision(rid, "approve", "iPhone")
-    th.join(timeout=5); assert result["r"]=="approved"
+    th.join(timeout=5)
+    assert result["r"] == "approved"
 
 def test_failclosed_bad_url():
     client = ArbiterClient("http://127.0.0.1:1","A")

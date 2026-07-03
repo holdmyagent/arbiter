@@ -1,8 +1,6 @@
 """Tests for arbiter.pair — pairing payload builder."""
 from urllib.parse import urlparse, parse_qs
 
-import pytest
-
 
 def test_payload_starts_with_scheme():
     from arbiter.pair import build_pairing_payload

@@ -5,13 +5,19 @@ from arbiter.db import Database
 
 class FakeSender:
     def __init__(self): self.calls=[]
-    async def send(self, token, payload): self.calls.append((token,payload)); return "sent"
+    async def send(self, token, payload):
+        self.calls.append((token,payload))
+        return "sent"
 
 @pytest.fixture
 def client(cfg):
-    db = Database(":memory:"); sender = FakeSender()
+    db = Database(":memory:")
+    sender = FakeSender()
     app = create_app(cfg, db, sender)
-    c = TestClient(app); c.sender = sender; c.db = db; return c
+    c = TestClient(app)
+    c.sender = sender
+    c.db = db
+    return c
 
 def _create(c, tok="test-agent"):
     return c.post("/v1/requests", headers={"Authorization": f"Bearer {tok}"},
@@ -22,7 +28,8 @@ def test_create_requires_agent_token(client):
 
 def test_create_and_push(client):
     client.db.register_device("tok1","iPhone")
-    r = _create(client); assert r.status_code==200 and r.json()["status"]=="pending"
+    r = _create(client)
+    assert r.status_code==200 and r.json()["status"]=="pending"
     assert len(client.sender.calls)==1
 
 def test_list_and_decide(client):

@@ -1,4 +1,6 @@
-import os, threading, time
+import os
+import threading
+import time
 from click.testing import CliRunner
 from arbiter.cli import main, _ask
 
@@ -16,7 +18,8 @@ def test_init_writes_config_and_refuses_overwrite(tmp_path, monkeypatch):
     assert oct(os.stat(cfg_path).st_mode & 0o777) == "0o600"
 
 def test_json_formatter_emits_parseable_lines():
-    import json, logging
+    import json
+    import logging
     from arbiter.cli import _JsonFormatter
     rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
                             '%s - "%s %s" %d', ("127.0.0.1", "GET", "/health", 200), None)
@@ -24,7 +27,8 @@ def test_json_formatter_emits_parseable_lines():
     assert out["logger"] == "uvicorn.access" and "GET /health" in out["msg"] and out["level"] == "INFO"
 
 def test_gather_status_raises_on_bad_token(client):
-    import httpx, pytest
+    import httpx
+    import pytest
     from arbiter.cli import _gather_status
     with pytest.raises(httpx.HTTPStatusError):
         _gather_status(client, "wrong-token")

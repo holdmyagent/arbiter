@@ -1,4 +1,6 @@
-import json, sqlite3, uuid
+import json
+import sqlite3
+import uuid
 from datetime import datetime, timedelta, timezone
 
 def _utcnow() -> datetime:
@@ -55,16 +57,20 @@ class Database:
         self.conn.commit()
 
     def _row_to_request(self, r: sqlite3.Row) -> dict:
-        d = dict(r); d["payload"] = json.loads(d["payload"]); return d
+        d = dict(r)
+        d["payload"] = json.loads(d["payload"])
+        return d
 
     def add_audit(self, request_id: str, event: str, detail: dict | None = None):
         self.conn.execute(
             "INSERT INTO audit VALUES (?,?,?,?,?)",
             (str(uuid.uuid4()), request_id, event, _iso(_utcnow()), json.dumps(detail or {})),
-        ); self.conn.commit()
+        )
+        self.conn.commit()
 
     def create_request(self, c) -> dict:
-        now = _utcnow(); rid = str(uuid.uuid4())
+        now = _utcnow()
+        rid = str(uuid.uuid4())
         expires = now + timedelta(seconds=c.ttl_seconds)
         self.conn.execute(
             "INSERT INTO requests(id,created_at,title,description,action_type,payload,"
@@ -73,7 +79,8 @@ class Database:
             (rid, _iso(now), c.title, c.description, c.action_type,
              json.dumps(c.payload), c.severity, "pending", c.ttl_seconds,
              _iso(expires), None, None, c.target, c.callback_url),
-        ); self.conn.commit()
+        )
+        self.conn.commit()
         self.add_audit(rid, "created", {"severity": c.severity})
         return self.get_request(rid)
 
@@ -97,7 +104,8 @@ class Database:
         status = "approved" if decision == "approve" else "denied"
         self.conn.execute(
             "UPDATE requests SET status=?, decided_at=?, decided_by=? WHERE id=?",
-            (status, _iso(_utcnow()), by, rid)); self.conn.commit()
+            (status, _iso(_utcnow()), by, rid))
+        self.conn.commit()
         self.add_audit(rid, status, {"by": by})
         return self.get_request(rid)
 

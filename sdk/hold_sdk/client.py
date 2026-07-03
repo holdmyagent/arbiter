@@ -1,4 +1,5 @@
-import time, httpx
+import time
+import httpx
 
 class ArbiterClient:
     def __init__(self, base_url, agent_token, app_token=None, verify=True):

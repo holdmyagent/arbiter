@@ -1,4 +1,5 @@
-import os, time
+import os
+import time
 import httpx
 
 def request_approval(title, *, description="", severity="medium", target=None,

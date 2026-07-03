@@ -1,4 +1,6 @@
-import logging, secrets, time
+import logging
+import secrets
+import time
 from collections import defaultdict, deque
 from fastapi import Header, HTTPException, Request
 
@@ -11,10 +13,12 @@ class SlidingWindowLimiter:
 
     def _prune(self, key: str):
         q, now = self._hits[key], self.clock()
-        while q and now - q[0] > self.window: q.popleft()
+        while q and now - q[0] > self.window:
+            q.popleft()
 
     def record_failure(self, key: str):
-        self._prune(key); self._hits[key].append(self.clock())
+        self._prune(key)
+        self._hits[key].append(self.clock())
 
     def blocked(self, key: str) -> bool:
         q = self._hits.get(key)

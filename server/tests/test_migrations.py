@@ -17,14 +17,16 @@ def _make_v1(path):
     conn.executescript(V1_SCHEMA)
     conn.execute("INSERT INTO requests VALUES ('r1','2026-01-01T00:00:00+00:00','t','d','generic','{}','high','pending',300,'2027-01-01T00:00:00+00:00',NULL,NULL)")
     conn.execute("INSERT INTO devices(id,apns_token,name,registered_at) VALUES ('d1','tok','iPhone','2026-01-01T00:00:00+00:00')")
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
 def test_fresh_db_at_latest_version(tmp_path):
     db = Database(str(tmp_path / "f.sqlite3"))
     assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 def test_v1_db_migrates_in_place_without_data_loss(tmp_path):
-    p = str(tmp_path / "v1.sqlite3"); _make_v1(p)
+    p = str(tmp_path / "v1.sqlite3")
+    _make_v1(p)
     db = Database(p)
     assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     r = db.get_request("r1")
