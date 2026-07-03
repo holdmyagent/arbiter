@@ -1,6 +1,6 @@
 [project]
 name = "hold-sdk"
-version = "2.0.0a1"
+version = "2.0.0"
 description = "Fail-closed approval client for Hold My Agent"
 license = {text = "MIT"}
 requires-python = ">=3.11"
