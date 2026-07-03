@@ -43,7 +43,7 @@ def _check(request: Request, authorization: str | None, expected: tuple[str, ...
         log.warning("auth_failure ip=%s reason=missing_bearer", ip)
         raise HTTPException(401, "missing bearer token")
     supplied = authorization.removeprefix("Bearer ")
-    if not any(secrets.compare_digest(supplied, e) for e in expected):
+    if not any(secrets.compare_digest(supplied.encode(), e.encode()) for e in expected):
         limiter.record_failure(ip)
         log.warning("auth_failure ip=%s reason=invalid_token", ip)  # never log the supplied value
         raise HTTPException(403, "invalid token")

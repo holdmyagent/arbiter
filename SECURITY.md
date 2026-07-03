@@ -8,8 +8,9 @@ codebase — read them before you deploy.
 
 - **Single owner, shared tokens.** There is one admin (dashboard login) and a
   small number of bearer tokens: `agent_token` (agents create requests),
-  `app_token` (the phone app/dashboard lists and decides requests), and
-  `admin_password` (dashboard login, which mints a signed session cookie).
+  `app_token` (the phone app lists and decides requests via the API), and
+  `admin_password` (dashboard login, which mints a signed session cookie —
+  the dashboard itself is authenticated by that session, not `app_token`).
   These are shared secrets, not per-user credentials — anyone holding a
   token has that token's full authority. Treat `config.toml` as sensitive:
   it is written with `0600` permissions by `hma init` and should stay that way.
@@ -33,6 +34,19 @@ codebase — read them before you deploy.
 - **Webhook integrity.** Outbound webhook notifications are HMAC-SHA256
   signed with the configured `webhook.secret`; receivers should verify the
   `X-Hma-Signature` header before trusting a payload.
+- **`callback_url` is an outbound-request capability, not just a delivery
+  address.** An agent-token holder can direct decision webhooks to
+  arbitrary URLs via `callback_url` — the server will POST there. Treat the
+  agent token as granting outbound-request capability from the server's
+  network position; on hostile networks, restrict egress or don't
+  distribute the agent token. This is deliberate: LAN callbacks (an agent
+  reachable at a private address) are the primary legitimate use, so the
+  server does not restrict the destination.
+- **The dashboard session, not just the tokens, grants full authority.** An
+  admin dashboard session can read both `agent_token` and `app_token` on
+  the Settings page — an admin session transitively grants full agent and
+  decision capability. Protect the admin password and session cookie
+  accordingly.
 
 ## Supported versions
 

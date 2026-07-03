@@ -103,8 +103,10 @@ per call.
 
 ## Configuration
 
-Both entry points read the agent's credentials from the environment by
-default, so a typical deployment just sets these once:
+The module-level `request_approval` function reads the agent's credentials
+from the environment by default; `ArbiterClient` takes them as explicit
+constructor arguments (`base_url`, `agent_token`) instead. A typical
+deployment using the module-level function just sets these once:
 
 ```bash
 export HMA_SERVER_URL="http://127.0.0.1:8000"

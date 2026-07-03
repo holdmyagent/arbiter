@@ -1,5 +1,25 @@
 import itertools
 
+import pytest
+
+def test_non_ascii_bearer_is_403_not_500(client):
+    # httpx encodes plain str header values as ASCII client-side, so a literal
+    # non-ASCII str never reaches the wire; bytes bypass that and land on the
+    # server as a non-ASCII str (the shape a real client's raw header bytes
+    # would take once decoded), which is what used to blow up compare_digest.
+    r = client.get("/v1/requests", headers={"Authorization": "Bearer ÿÿÿ".encode()})
+    assert r.status_code == 403
+
+def test_non_ascii_login_is_401_not_500(client):
+    r = client.post("/dashboard/login", data={"password": "päss"}, follow_redirects=False)
+    assert r.status_code == 401
+
+def test_non_ascii_bearer_ws_closes_without_exception(client):
+    with pytest.raises(Exception) as e:
+        with client.websocket_connect("/v1/stream", headers={"Authorization": "Bearer ÿÿÿ".encode()}):
+            pass
+    assert getattr(e.value, "code", None) == 4401
+
 def test_request_detail_requires_token(client, agent_headers, app_headers):
     rid = client.post("/v1/requests", headers=agent_headers, json={"title": "x"}).json()["id"]
     assert client.get(f"/v1/requests/{rid}").status_code == 401

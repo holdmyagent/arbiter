@@ -2,6 +2,7 @@
 name = "hold-sdk"
 version = "2.0.0"
 description = "Fail-closed approval client for Hold My Agent"
+readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
@@ -11,6 +12,10 @@ dependencies = [
 # SDK tests exercise the client against the real server — install with: pip install -r requirements-dev.txt
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://holdmyagent.com"
+Repository = "https://github.com/holdmyagent/arbiter"
 
 [tool.pytest.ini_options]
 addopts = "-q"

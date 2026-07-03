@@ -136,7 +136,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         auth = ws.headers.get("authorization", "")
         cookie = ws.cookies.get("hma_session", "")
         token_ok = auth.startswith("Bearer ") and secrets.compare_digest(
-            auth.removeprefix("Bearer "), cfg.auth.app_token)
+            auth.removeprefix("Bearer ").encode(), cfg.auth.app_token.encode())
         if not (token_ok or app.state.session_check(cookie)):
             await ws.close(code=4401)
             return

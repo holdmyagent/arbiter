@@ -56,6 +56,7 @@ class Config:
     apns: ApnsCfg = field(default_factory=ApnsCfg)
     ntfy: NtfyCfg = field(default_factory=NtfyCfg)
     webhook: WebhookCfg = field(default_factory=WebhookCfg)
+    loaded_path: str = ""
 
     @staticmethod
     def default_path() -> str:
@@ -65,6 +66,7 @@ class Config:
     def load(path: str | None = None) -> "Config":
         cfg = Config()
         p = Path(path or Config.default_path()).expanduser()
+        cfg.loaded_path = str(p)
         if p.is_file():
             with open(p, "rb") as f:
                 doc = tomllib.load(f)

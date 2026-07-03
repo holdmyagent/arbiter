@@ -142,8 +142,11 @@ threat model. In short:
 - Repeated bad credentials are throttled with a per-IP rate limiter (both
   the API and the dashboard login return `429`).
 - The dashboard is view-only by construction — there is no "approve"
-  button in the web UI. Decisions require the `app_token`, which in
-  normal use only the paired iOS app holds.
+  button in the web UI; decisions require the `app_token` via the API,
+  which in normal use only the paired iOS app holds. A logged-in admin can
+  still reveal both tokens on the dashboard's Settings page, so an admin
+  session transitively grants full agent and decision capability — see
+  [`SECURITY.md`](SECURITY.md).
 - Fail-closed everywhere: `hma ask` and `hold_sdk.request_approval` treat
   every non-approval outcome — timeout, network failure, malformed
   response, unreachable server — the same as an explicit denial.

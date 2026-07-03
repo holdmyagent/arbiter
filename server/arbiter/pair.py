@@ -1,15 +1,8 @@
-"""
-Pairing payload builder, LAN-IP helper, and CLI for Hold My Agent.
+"""Pairing payload builder and LAN-IP helper for Hold My Agent.
 
-Usage:
-    python -m arbiter.pair [--host HOST] [--token TOKEN]
-
-Prints the pairing QR as Unicode blocks, the resolved server URL, the app
-token, and the `holdmyagent://pair?...` payload.  Token is read from
---token flag or the ARBITER_APP_TOKEN environment variable.
+`hma pair` (see arbiter.cli) is the supported CLI for printing the pairing
+QR code; the functions below are the library pieces it's built on.
 """
-import argparse
-import os
 import socket
 from urllib.parse import urlencode
 
@@ -35,39 +28,3 @@ def local_ip() -> str:
         return ip
     except Exception:
         return "127.0.0.1"
-
-
-if __name__ == "__main__":
-    import segno  # only needed at CLI runtime, not at import time
-
-    parser = argparse.ArgumentParser(
-        description="Print the Hold My Agent pairing QR code to the terminal."
-    )
-    parser.add_argument(
-        "--host",
-        default=None,
-        help="Server base URL (default: http://<LAN-IP>:8000)",
-    )
-    parser.add_argument(
-        "--token",
-        default=None,
-        help="App token (default: $ARBITER_APP_TOKEN)",
-    )
-    args = parser.parse_args()
-
-    host = args.host or f"http://{local_ip()}:8000"
-    token = args.token or os.environ.get("ARBITER_APP_TOKEN", "")
-    if not token:
-        parser.error("Provide --token or set ARBITER_APP_TOKEN")
-
-    payload = build_pairing_payload(host, token)
-
-    print(segno.make(payload).terminal(compact=True))
-    print()
-    print(f"URL:     {host}")
-    print(f"Token:   {token}")
-    print(f"Payload: {payload}")
-    print()
-    print("Tip: run this command on the same machine as the server so the")
-    print("     terminal already has network access — the QR only works on")
-    print("     a trusted LAN.")

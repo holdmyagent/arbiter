@@ -69,7 +69,7 @@ def build_router(cfg, db, hub) -> APIRouter:
         ip = request.client.host if request.client else "unknown"
         if lim.blocked(ip):
             raise HTTPException(429, "too many attempts")
-        if not s.compare_digest(password, cfg.auth.admin_password):
+        if not s.compare_digest(password.encode(), cfg.auth.admin_password.encode()):
             lim.record_failure(ip)
             return TEMPLATES.TemplateResponse(request, "login.html",
                                               {"error": "Wrong password"}, status_code=401)
@@ -146,6 +146,7 @@ def build_router(cfg, db, hub) -> APIRouter:
     @r.post("/settings/rotate")
     def rotate(request: Request, sv: str = session,
                which: str = Form(...), csrf: str = Form(default="")):
+        import os
         import secrets as s
         import tomlkit
         from pathlib import Path
@@ -154,10 +155,22 @@ def build_router(cfg, db, hub) -> APIRouter:
         if which not in ("agent", "app"):
             raise HTTPException(400)
         new = s.token_hex(32)
-        path = Path(Config.default_path())
+        # Write back to the file this cfg was actually loaded from (a `--config`
+        # deployment's custom path), not the env/default path — the two can
+        # differ, and writing the wrong one silently desyncs the running
+        # server's tokens from what's on disk.
+        path = Path(cfg.loaded_path or Config.default_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
         doc = tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()
         doc.setdefault("auth", tomlkit.table())[f"{which}_token"] = new
-        path.write_text(tomlkit.dumps(doc))
+        # Atomic + 0600: write to a sibling tmp file then rename over the
+        # target, so a crash mid-write never leaves a partial config, and the
+        # file never has a moment at default (world-readable) permissions.
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(tomlkit.dumps(doc))
+        os.replace(tmp, path)
         setattr(cfg.auth, f"{which}_token", new)
         db.add_audit("-", "token_rotated", {"which": which})
         return RedirectResponse("/dashboard/settings", status_code=303)

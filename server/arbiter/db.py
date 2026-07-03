@@ -53,7 +53,8 @@ class Database:
             pass  # pre-versioning DB: run every migration; each is idempotent
         for i in range(v, SCHEMA_VERSION):
             MIGRATIONS[i](self.conn)
-        self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if v < SCHEMA_VERSION:
+            self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.conn.commit()
 
     def _row_to_request(self, r: sqlite3.Row) -> dict:

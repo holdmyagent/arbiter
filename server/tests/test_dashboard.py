@@ -85,17 +85,64 @@ def test_audit_page_filters(client, agent_headers):
     page = client.get(f"/dashboard/audit?request_id={rid}")
     assert "created" in page.text
 
-def test_rotate_app_token_persists_and_audits(client, tmp_path, cfg, monkeypatch):
-    cfg_file = tmp_path / "config.toml"
-    cfg_file.write_text('[auth]\nagent_token = "test-agent"\napp_token = "test-app"\n'
-                        'admin_password = "test-admin"\nsession_secret = "test-secret"\n')
-    monkeypatch.setenv("HMA_CONFIG", str(cfg_file))
-    _login(client)
-    csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]
-    r = client.post("/dashboard/settings/rotate", data={"which": "app", "csrf": csrf})
-    assert r.status_code in (200, 303)
-    assert 'app_token = "test-app"' not in cfg_file.read_text()
+def _client_for(cfg):
+    from arbiter.apns import APNsSender
+    from arbiter.app import create_app
+    from arbiter.db import Database
+    from fastapi.testclient import TestClient
+    app = create_app(cfg, Database(":memory:"), APNsSender(cfg))
+    return TestClient(app)
+
+def test_rotate_writes_loaded_config_path_not_default(tmp_path, monkeypatch):
+    # A `--config /custom/path` deployment: the cfg's loaded_path is the
+    # custom file, which already exists with known tokens. Rotation must
+    # write back there — not to $HMA_CONFIG or the ~/.config default, which
+    # this test points somewhere else entirely to prove they're untouched.
+    from arbiter.config import Config
+    custom = tmp_path / "custom" / "config.toml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text('[auth]\nagent_token = "test-agent"\napp_token = "test-app"\n'
+                      'admin_password = "test-admin"\nsession_secret = "test-secret"\n')
+    default_cfg = tmp_path / "unrelated-default-config.toml"
+    monkeypatch.setenv("HMA_CONFIG", str(default_cfg))
+
+    cfg = Config.load(str(custom))
+    cfg.server.db_path = str(tmp_path / "t.sqlite3")
+    assert cfg.loaded_path == str(custom)
+
+    with _client_for(cfg) as client:
+        _login(client)
+        csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]
+        r = client.post("/dashboard/settings/rotate", data={"which": "app", "csrf": csrf})
+        assert r.status_code in (200, 303)
+
+    assert 'app_token = "test-app"' not in custom.read_text()
     assert cfg.auth.app_token != "test-app"
+    assert oct(custom.stat().st_mode & 0o777) == "0o600"
+    assert not default_cfg.exists()
+
+def test_rotate_creates_missing_parent_dir(tmp_path):
+    # loaded_path can point at a not-yet-existing directory (e.g. a fresh
+    # --config path nobody has `hma init`-ed yet) — rotate must mkdir it
+    # rather than crash on the write.
+    from arbiter.config import Config
+    custom = tmp_path / "new" / "nested" / "config.toml"
+    cfg = Config.load(str(custom))
+    cfg.auth.agent_token = "test-agent"
+    cfg.auth.app_token = "test-app"
+    cfg.auth.admin_password = "test-admin"
+    cfg.auth.session_secret = "test-secret"
+    cfg.server.db_path = str(tmp_path / "t.sqlite3")
+
+    with _client_for(cfg) as client:
+        _login(client)
+        csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]
+        r = client.post("/dashboard/settings/rotate", data={"which": "agent", "csrf": csrf})
+        assert r.status_code in (200, 303)
+
+    assert custom.exists()
+    assert oct(custom.stat().st_mode & 0o777) == "0o600"
+    assert cfg.auth.agent_token != "test-agent"
 
 def _all_paths(router):
     # Schema-independent route enumeration: walks nested routers (FastAPI's

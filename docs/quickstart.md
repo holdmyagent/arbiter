@@ -69,9 +69,10 @@ In one terminal, ask for approval:
 hma ask "Drop the production table?" --severity critical --ttl 120
 ```
 
-This blocks. In a second terminal, approve it using the `app_token` from
-`hma init` (swap in the request id printed by the first command, or read
-it from the dashboard):
+This blocks — `hma ask` doesn't print anything until the request is
+decided. In a second terminal, approve it using the `app_token` from
+`hma init`; the curl sequence below looks the request back up itself
+(no id from the first command needed):
 
 ```bash
 APP_TOKEN=<app_token from hma init>
