@@ -6,7 +6,7 @@ jobs:
   pypi-server:
     runs-on: ubuntu-latest
     environment: pypi          # PyPI pending publisher for project `holdmyagent`
-    permissions: { id-token: write }
+    permissions: { id-token: write, contents: read }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,7 +17,7 @@ jobs:
   pypi-sdk:
     runs-on: ubuntu-latest
     environment: pypi-sdk      # PyPI pending publisher for project `hold-sdk`
-    permissions: { id-token: write }
+    permissions: { id-token: write, contents: read }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
