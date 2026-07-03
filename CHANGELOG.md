@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-## [2.0.0] - 2026-07-03
+## [0.2.0] - 2026-07-03
 
-The first public release. v2 rebuilds configuration, security, and
+> Republished as 0.2.0 (previously tagged 2.0.0): version lines stay below 1.0 until the 1.0 launch.
+
+The first public release. It rebuilds configuration, security, and
 notifications on top of the original approve/deny flow, adds a full web
 dashboard, and ships an SDK for agent integrations plus ready-to-run
 deploy assets.
