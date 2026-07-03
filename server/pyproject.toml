@@ -1,0 +1,36 @@
+[project]
+name = "holdmyagent"
+version = "2.0.0a1"
+description = "Self-hosted, fail-closed approval server for AI agents (Arbiter)"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "httpx[http2]>=0.27",
+  "pyjwt[crypto]>=2.9",
+  "pydantic>=2.9",
+  "segno>=1.6",
+  "jinja2>=3.1",
+  "itsdangerous>=2.2",
+  "tomlkit>=0.12",
+  "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["arbiter*"]
+
+[tool.setuptools.package-data]
+arbiter = ["web/templates/*.html", "web/static/*"]
