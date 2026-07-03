@@ -33,3 +33,15 @@ def test_limiter_unit_blocks_and_expires():
     lim2 = SlidingWindowLimiter(3, 2.0, clock=lambda: next(t))
     for _ in range(3): lim2.record_failure("ip")
     assert not lim2.blocked("ip")  # clock already advanced past the window
+
+def test_limiter_blocked_does_not_create_entries():
+    from arbiter.auth import SlidingWindowLimiter
+    lim = SlidingWindowLimiter(3, 60.0)
+    assert not lim.blocked("never-seen")
+    assert "never-seen" not in lim._hits
+
+def test_limiter_per_key_isolation():
+    from arbiter.auth import SlidingWindowLimiter
+    lim = SlidingWindowLimiter(2, 60.0)
+    lim.record_failure("a"); lim.record_failure("a")
+    assert lim.blocked("a") and not lim.blocked("b")

@@ -17,7 +17,15 @@ class SlidingWindowLimiter:
         self._prune(key); self._hits[key].append(self.clock())
 
     def blocked(self, key: str) -> bool:
-        self._prune(key); return len(self._hits[key]) >= self.limit
+        q = self._hits.get(key)
+        if not q:
+            return False
+        now = self.clock()
+        while q and now - q[0] > self.window:
+            q.popleft()
+        if not q:
+            del self._hits[key]
+        return len(q) >= self.limit
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
