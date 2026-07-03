@@ -2,8 +2,9 @@
 {% block content %}
 <section class="card">
   <h1>Devices</h1>
+  {% set ranks = {"low": 0, "medium": 1, "high": 2, "critical": 3} %}
   <table>
-    <tr><th>Name</th><th>Min severity</th><th>Registered</th><th></th></tr>
+    <tr><th>Name</th><th>Severities</th><th>Badge</th><th>Registered</th><th></th></tr>
     {% for d in devices %}
     <tr>
       <td>
@@ -12,7 +13,13 @@
           <input name="name" value="{{ d.name }}"><button class="btn" type="submit">Rename</button>
         </form>
       </td>
-      <td><span class="pill {{ d.min_severity }}">{{ d.min_severity }}</span></td>
+      <td>
+        {% for s in ["low", "medium", "high", "critical"] %}
+        {% set on = d.severities[s] if d.severities else ranks[s] >= ranks[d.min_severity] %}
+        <span class="pill {{ s }}{% if not on %} off{% endif %}" title="{{ s }}">{{ s[0]|upper }}</span>
+        {% endfor %}
+      </td>
+      <td class="muted">{{ "on" if d.badge else "off" }}</td>
       <td class="mono muted">{{ d.registered_at }}</td>
       <td>
         <form method="post" action="/dashboard/devices/{{ d.id }}/delete">

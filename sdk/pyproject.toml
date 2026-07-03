@@ -1,6 +1,6 @@
 [project]
 name = "hold-sdk"
-version = "0.2.0"
+version = "0.2.1"
 description = "Fail-closed approval client for Hold My Agent"
 readme = "README.md"
 license = {text = "MIT"}

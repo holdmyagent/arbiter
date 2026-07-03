@@ -9,7 +9,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -39,7 +39,14 @@ def _migrate_1_to_2(conn):
     if "callback_url" not in cols:
         conn.execute("ALTER TABLE requests ADD COLUMN callback_url TEXT")
 
-MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2]
+def _migrate_2_to_3(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+    if "severities" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN severities TEXT")
+    if "badge" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN badge INTEGER DEFAULT 0")
+
+MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3]
 
 class Database:
     def __init__(self, path: str):
@@ -60,6 +67,11 @@ class Database:
     def _row_to_request(self, r: sqlite3.Row) -> dict:
         d = dict(r)
         d["payload"] = json.loads(d["payload"])
+        return d
+
+    def _row_to_device(self, r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["severities"] = json.loads(d["severities"]) if d["severities"] is not None else None
         return d
 
     def add_audit(self, request_id: str, event: str, detail: dict | None = None):
@@ -121,25 +133,31 @@ class Database:
         return [self.get_request(r["id"]) for r in rows]
 
     def register_device(self, apns_token: str, name: str, min_severity: str = "low",
-                        notifications_enabled: bool = True, sound: bool = True) -> dict:
+                        notifications_enabled: bool = True, sound: bool = True,
+                        severities: dict | None = None, badge: bool = False) -> dict:
         ne_int = 1 if notifications_enabled else 0
         snd_int = 1 if sound else 0
+        badge_int = 1 if badge else 0
+        sev_json = json.dumps(severities) if severities is not None else None
         existing = self.conn.execute(
             "SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone()
         if existing:
             self.conn.execute(
-                "UPDATE devices SET name=?, min_severity=?, notifications_enabled=?, sound=? WHERE apns_token=?",
-                (name, min_severity, ne_int, snd_int, apns_token))
+                "UPDATE devices SET name=?, min_severity=?, notifications_enabled=?, sound=?, "
+                "severities=?, badge=? WHERE apns_token=?",
+                (name, min_severity, ne_int, snd_int, sev_json, badge_int, apns_token))
         else:
             self.conn.execute(
-                "INSERT INTO devices(id, apns_token, name, registered_at, min_severity, notifications_enabled, sound)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), apns_token, name, _iso(_utcnow()), min_severity, ne_int, snd_int))
+                "INSERT INTO devices(id, apns_token, name, registered_at, min_severity, "
+                "notifications_enabled, sound, severities, badge)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), apns_token, name, _iso(_utcnow()), min_severity,
+                 ne_int, snd_int, sev_json, badge_int))
         self.conn.commit()
-        return dict(self.conn.execute("SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone())
+        return self._row_to_device(self.conn.execute("SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone())
 
     def list_devices(self) -> list[dict]:
-        return [dict(r) for r in self.conn.execute("SELECT * FROM devices").fetchall()]
+        return [self._row_to_device(r) for r in self.conn.execute("SELECT * FROM devices").fetchall()]
 
     def get_audit(self, rid: str) -> list[dict]:
         return [dict(r) for r in self.conn.execute(

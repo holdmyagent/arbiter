@@ -45,3 +45,5 @@ class DeviceRegister(BaseModel):
     min_severity: Severity = "low"
     notifications_enabled: bool = True
     sound: bool = True
+    severities: dict[str, bool] | None = None
+    badge: bool = False

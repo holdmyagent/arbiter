@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## [0.2.1] - 2026-07-03
+
+### Added
+
+- **Per-severity notification preferences.** A device can now register a
+  `severities` map (`low`/`medium`/`high`/`critical` → on/off) that decides
+  push delivery per severity. When present, the map governs; when absent,
+  the existing `min_severity` threshold still applies, so devices registered
+  by earlier clients behave exactly as before.
+- **Badge preference.** A device that registers with `badge` enabled gets the
+  count of pending requests in the push payload's `aps.badge`, so the app
+  icon can mirror the outstanding-approval count. Devices without it receive
+  payloads with no badge key, unchanged.
+
 ## [0.2.0] - 2026-07-03
 
 > Republished as 0.2.0 (previously tagged 2.0.0): version lines stay below 1.0 until the 1.0 launch.

@@ -7,13 +7,15 @@ import jwt
 log = logging.getLogger("arbiter.apns")
 _LEVEL = {"low":"passive","medium":"active","high":"time-sensitive","critical":"critical"}
 
-def build_payload(req: dict, sound: bool = True) -> dict:
+def build_payload(req: dict, sound: bool = True, badge: int | None = None) -> dict:
     aps: dict = {
         "alert": {"title": req["title"], "body": req.get("description","") or req.get("action_type","")},
         "interruption-level": _LEVEL.get(req["severity"], "active"),
     }
     if sound:
         aps["sound"] = "default"
+    if badge is not None:
+        aps["badge"] = badge
     return {
         "aps": aps,
         "request_id": req["id"],

@@ -123,7 +123,8 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     @app.post("/v1/devices", dependencies=[appdep])
     async def register(body: DeviceRegister):
         dev = db.register_device(body.apns_token, body.name, body.min_severity,
-                                  body.notifications_enabled, body.sound)
+                                  body.notifications_enabled, body.sound,
+                                  severities=body.severities, badge=body.badge)
         await hub.publish("device.updated", "device", dev)
         return dev
 
