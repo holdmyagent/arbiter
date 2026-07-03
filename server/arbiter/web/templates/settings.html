@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block title %}Settings — Hold My Agent{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Tokens</h1>
+  <table>
+    <tr><th>Agent token</th><td class="mono">{{ cfg.auth.agent_token }}</td>
+      <td><form method="post" action="/dashboard/settings/rotate">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="agent">
+        <button class="btn" type="submit">Rotate</button></form></td></tr>
+    <tr><th>App token</th><td class="mono">{{ cfg.auth.app_token }}</td>
+      <td><form method="post" action="/dashboard/settings/rotate">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="app">
+        <button class="btn" type="submit">Rotate</button></form></td></tr>
+  </table>
+  <p class="muted">Rotating a token immediately invalidates the old one — re-pair devices / update agents.</p>
+</section>
+<section class="card">
+  <h1>Notifiers</h1>
+  <table>
+    <tr><th>APNs</th><td>{{ "configured" if cfg.apns.configured else "off" }}</td></tr>
+    <tr><th>ntfy</th><td>{{ cfg.ntfy.topic if cfg.ntfy.enabled else "off" }}</td></tr>
+    <tr><th>Webhook</th><td>{{ cfg.webhook.url if cfg.webhook.enabled else "off" }}</td></tr>
+  </table>
+  <p class="muted">Edit the config file and restart to change notifiers.</p>
+</section>
+<section class="card">
+  <form method="post" action="/dashboard/logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn" type="submit">Log out</button>
+  </form>
+</section>
+{% endblock %}

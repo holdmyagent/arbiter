@@ -93,4 +93,63 @@ def build_router(cfg, db, hub) -> APIRouter:
             "svg": buf.getvalue().decode(), "base": base,
             "csrf": csrf_token(cfg, sv)})
 
+    @r.get("/requests", response_class=HTMLResponse)
+    def requests_page(request: Request, sv: str = session, fragment: int = 0):
+        reqs = db.list_requests()
+        ctx = {"requests": reqs, "csrf": csrf_token(cfg, sv)}
+        tpl = "_request_rows.html" if fragment else "requests.html"
+        return TEMPLATES.TemplateResponse(request, tpl, ctx)
+
+    @r.get("/requests/{rid}", response_class=HTMLResponse)
+    def request_detail(request: Request, rid: str, sv: str = session):
+        req = db.get_request(rid)
+        if not req: raise HTTPException(404)
+        return TEMPLATES.TemplateResponse(request, "request_detail.html",
+            {"r": req, "audit": db.list_audit(rid), "csrf": csrf_token(cfg, sv)})
+
+    @r.get("/devices", response_class=HTMLResponse)
+    def devices_page(request: Request, sv: str = session):
+        return TEMPLATES.TemplateResponse(request, "devices.html",
+            {"devices": db.list_devices(), "csrf": csrf_token(cfg, sv)})
+
+    @r.post("/devices/{did}/rename")
+    def device_rename(request: Request, did: str, sv: str = session,
+                      name: str = Form(...), csrf: str = Form(default="")):
+        _check_csrf(cfg, sv, csrf)
+        if not db.rename_device(did, name): raise HTTPException(404)
+        return RedirectResponse("/dashboard/devices", status_code=303)
+
+    @r.post("/devices/{did}/delete")
+    def device_delete(request: Request, did: str, sv: str = session, csrf: str = Form(default="")):
+        _check_csrf(cfg, sv, csrf)
+        if not db.delete_device(did): raise HTTPException(404)
+        return RedirectResponse("/dashboard/devices", status_code=303)
+
+    @r.get("/audit", response_class=HTMLResponse)
+    def audit_page(request: Request, sv: str = session, request_id: str | None = None):
+        return TEMPLATES.TemplateResponse(request, "audit.html",
+            {"events": db.list_audit(request_id), "request_id": request_id or ""})
+
+    @r.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request, sv: str = session):
+        return TEMPLATES.TemplateResponse(request, "settings.html", {
+            "cfg": cfg, "csrf": csrf_token(cfg, sv)})
+
+    @r.post("/settings/rotate")
+    def rotate(request: Request, sv: str = session,
+               which: str = Form(...), csrf: str = Form(default="")):
+        import secrets as s, tomlkit
+        from pathlib import Path
+        from ..config import Config
+        _check_csrf(cfg, sv, csrf)
+        if which not in ("agent", "app"): raise HTTPException(400)
+        new = s.token_hex(32)
+        path = Path(Config.default_path())
+        doc = tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()
+        doc.setdefault("auth", tomlkit.table())[f"{which}_token"] = new
+        path.write_text(tomlkit.dumps(doc))
+        setattr(cfg.auth, f"{which}_token", new)
+        db.add_audit("-", "token_rotated", {"which": which})
+        return RedirectResponse("/dashboard/settings", status_code=303)
+
     return r

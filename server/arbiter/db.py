@@ -135,3 +135,24 @@ class Database:
     def get_audit(self, rid: str) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM audit WHERE request_id=? ORDER BY at", (rid,)).fetchall()]
+
+    def list_audit(self, request_id: str | None = None, limit: int = 200) -> list[dict]:
+        if request_id:
+            rows = self.conn.execute(
+                "SELECT * FROM audit WHERE request_id=? ORDER BY at DESC LIMIT ?",
+                (request_id, limit)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM audit ORDER BY at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def rename_device(self, device_id: str, name: str) -> dict | None:
+        self.conn.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
+        self.conn.commit()
+        r = self.conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        return dict(r) if r else None
+
+    def delete_device(self, device_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
+        self.conn.commit()
+        return cur.rowcount > 0

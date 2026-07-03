@@ -16,6 +16,7 @@ function connect() {
     if (!evt.startsWith("request.") && !evt.startsWith("device.")) return;
     document.querySelectorAll("[data-live]").forEach(async (el) => {
       const r = await fetch(el.dataset.live, {credentials: "same-origin"});
+      if (r.redirected) { location.href = r.url; return; }
       if (r.ok) el.innerHTML = await r.text();
     });
   };

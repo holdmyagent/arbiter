@@ -1,0 +1,28 @@
+{% extends "base.html" %}{% block title %}Devices — Hold My Agent{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Devices</h1>
+  <table>
+    <tr><th>Name</th><th>Min severity</th><th>Registered</th><th></th></tr>
+    {% for d in devices %}
+    <tr>
+      <td>
+        <form method="post" action="/dashboard/devices/{{ d.id }}/rename" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input name="name" value="{{ d.name }}"><button class="btn" type="submit">Rename</button>
+        </form>
+      </td>
+      <td><span class="pill {{ d.min_severity }}">{{ d.min_severity }}</span></td>
+      <td class="mono muted">{{ d.registered_at }}</td>
+      <td>
+        <form method="post" action="/dashboard/devices/{{ d.id }}/delete">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if not devices %}<p class="muted">No devices paired yet — see <a href="/dashboard/pair">Pair</a>.</p>{% endif %}
+</section>
+{% endblock %}

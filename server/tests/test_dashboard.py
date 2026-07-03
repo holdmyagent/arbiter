@@ -49,3 +49,52 @@ def test_logout_invalidates_session_replay(client):
     client.cookies.set("hma_session", old_cookie)  # replay the pre-logout value
     r = client.get("/dashboard/pair", follow_redirects=False)
     assert r.status_code == 303 and "/dashboard/login" in r.headers["location"]
+
+def test_requests_page_lists_and_fragment(client, agent_headers):
+    _login(client)
+    client.post("/v1/requests", headers=agent_headers, json={"title": "Deploy X", "severity": "critical"})
+    page = client.get("/dashboard/requests")
+    assert "Deploy X" in page.text and "critical" in page.text
+    frag = client.get("/dashboard/requests?fragment=1")
+    assert "Deploy X" in frag.text and "<html" not in frag.text
+
+def test_request_detail_slip(client, agent_headers):
+    _login(client)
+    rid = client.post("/v1/requests", headers=agent_headers,
+                      json={"title": "Deploy", "target": "prod-cluster"}).json()["id"]
+    page = client.get(f"/dashboard/requests/{rid}")
+    assert "prod-cluster" in page.text and "created" in page.text  # audit inline
+    assert "Approve" not in page.text and "Deny" not in page.text  # view-only
+
+def test_devices_rename_and_delete(client, app_headers):
+    _login(client)
+    client.post("/v1/devices", headers=app_headers, json={"apns_token": "tok1", "name": "iPhone"})
+    did = client.get("/v1/devices", headers=app_headers).json()[0]["id"]
+    csrf = client.get("/dashboard/devices").text.split('name="csrf" value="')[1].split('"')[0]
+    client.post(f"/dashboard/devices/{did}/rename", data={"name": "Kevin's iPhone", "csrf": csrf})
+    assert "Kevin" in client.get("/dashboard/devices").text
+    client.post(f"/dashboard/devices/{did}/delete", data={"csrf": csrf})
+    assert client.get("/v1/devices", headers=app_headers).json() == []
+
+def test_audit_page_filters(client, agent_headers):
+    _login(client)
+    rid = client.post("/v1/requests", headers=agent_headers, json={"title": "A"}).json()["id"]
+    page = client.get(f"/dashboard/audit?request_id={rid}")
+    assert "created" in page.text
+
+def test_rotate_app_token_persists_and_audits(client, tmp_path, cfg, monkeypatch):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(f'[auth]\nagent_token = "test-agent"\napp_token = "test-app"\n'
+                        f'admin_password = "test-admin"\nsession_secret = "test-secret"\n')
+    monkeypatch.setenv("HMA_CONFIG", str(cfg_file))
+    _login(client)
+    csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]
+    r = client.post("/dashboard/settings/rotate", data={"which": "app", "csrf": csrf})
+    assert r.status_code in (200, 303)
+    assert 'app_token = "test-app"' not in cfg_file.read_text()
+    assert cfg.auth.app_token != "test-app"
+
+def test_no_decision_routes_under_dashboard(client):
+    # openapi() gives the flattened path list regardless of internal router nesting
+    paths = client.app.openapi()["paths"].keys()
+    assert not any("decision" in p for p in paths if p.startswith("/dashboard"))

@@ -35,3 +35,9 @@ def agent_headers():
 @pytest.fixture
 def app_headers():
     return {"Authorization": "Bearer test-app"}
+
+@pytest.fixture(autouse=True)
+def _clear_revoked():
+    from arbiter import web
+    web._REVOKED.clear()
+    yield

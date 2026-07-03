@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}Audit — Hold My Agent{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Audit log</h1>
+  <form method="get" action="/dashboard/audit">
+    <input name="request_id" value="{{ request_id }}" placeholder="Filter by request id">
+    <button class="btn" type="submit">Filter</button>
+  </form>
+  <table>
+    <tr><th>At</th><th>Request</th><th>Event</th><th>Detail</th></tr>
+    {% for e in events %}
+    <tr><td class="mono">{{ e.at }}</td>
+        <td class="mono"><a href="/dashboard/requests/{{ e.request_id }}">{{ e.request_id[:8] }}</a></td>
+        <td>{{ e.event }}</td><td class="mono muted">{{ e.detail }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

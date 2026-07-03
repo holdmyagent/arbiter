@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}Requests — Hold My Agent{% endblock %}
+{% block content %}
+<section class="card" data-live="/dashboard/requests?fragment=1">
+  {% include "_request_rows.html" %}
+</section>
+{% endblock %}

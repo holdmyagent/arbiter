@@ -1,0 +1,25 @@
+{% extends "base.html" %}{% block title %}{{ r.title }} — Hold My Agent{% endblock %}
+{% block content %}
+<section class="card">
+  <p><span class="pill {{ r.severity }}">{{ r.severity }}</span>
+     {% if r.status == "pending" %}<span class="muted">expires in
+       <span class="countdown" data-expires="{{ r.expires_at }}"></span></span>{% endif %}</p>
+  <h1>{{ r.title }}</h1>
+  {% if r.payload %}<pre class="mono">{{ r.payload | tojson(indent=2) }}</pre>{% endif %}
+  <table>
+    <tr><th>Requested by</th><td>{{ r.action_type }}</td></tr>
+    <tr><th>Target</th><td class="mono">{{ r.target or "—" }}</td></tr>
+    <tr><th>Requested</th><td>{{ r.created_at }}</td></tr>
+    <tr><th>Status</th><td class="status {{ r.status }}">{{ r.status }}
+        {% if r.decided_by %} by {{ r.decided_by }} at {{ r.decided_at }}{% endif %}</td></tr>
+  </table>
+  <p class="muted">Decisions happen on a paired device with biometric step-up — never here.</p>
+</section>
+<section class="card">
+  <h2>Audit trail</h2>
+  <table>
+    {% for e in audit %}<tr><td class="mono">{{ e.at }}</td><td>{{ e.event }}</td>
+      <td class="mono muted">{{ e.detail }}</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}

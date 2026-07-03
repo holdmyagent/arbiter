@@ -1,0 +1,13 @@
+<table>
+  <tr><th>Severity</th><th>Title</th><th>Target</th><th>Status</th><th>Expires</th></tr>
+  {% for q in requests %}
+  <tr>
+    <td><span class="pill {{ q.severity }}">{{ q.severity }}</span></td>
+    <td><a href="/dashboard/requests/{{ q.id }}">{{ q.title }}</a></td>
+    <td class="mono">{{ q.target or "—" }}</td>
+    <td class="status {{ q.status }}">{{ q.status }}</td>
+    <td>{% if q.status == "pending" %}<span class="countdown" data-expires="{{ q.expires_at }}"></span>
+        {% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
