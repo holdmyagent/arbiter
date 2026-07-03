@@ -25,7 +25,8 @@ def cfg(tmp_path):
 @pytest.fixture
 def client(cfg):
     app = create_app(cfg, Database(":memory:"), APNsSender(cfg))
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 @pytest.fixture
 def agent_headers():

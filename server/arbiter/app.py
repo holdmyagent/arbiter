@@ -5,13 +5,14 @@ import secrets
 from contextlib import asynccontextmanager
 
 import segno
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from .auth import require_agent, require_app, require_agent_or_app, SlidingWindowLimiter
 from .models import RequestCreate, Decision, DeviceRegister, severity_rank
 from .apns import build_payload, send_with_retry
 from .pair import build_pairing_payload, local_ip
+from .stream import Hub
 
 
 def _build_svg(payload: str, scale: int = 4) -> str:
@@ -21,16 +22,22 @@ def _build_svg(payload: str, scale: int = 4) -> str:
     return buf.getvalue().decode("utf-8")
 
 
-def create_app(cfg, db, sender):
+def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0):
+    hub = hub or Hub()
+
     @asynccontextmanager
     async def lifespan(app):
         async def sweep():
             while True:
-                db.expire_due(); await asyncio.sleep(1)
+                for req in db.expire_due():
+                    await hub.publish("request.expired", "request", req)
+                await asyncio.sleep(1)
         task = asyncio.create_task(sweep())
         yield
         task.cancel()
     app = FastAPI(title="Arbiter", lifespan=lifespan)
+    app.state.hub = hub
+    app.state.session_check = lambda cookie_value: False  # replaced by web router (Task 8)
     limiter = SlidingWindowLimiter(10, 60.0)
     app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
     agent = Depends(require_agent(cfg, limiter))
@@ -154,6 +161,7 @@ def create_app(cfg, db, sender):
                 payload = build_payload(req, sound=bool(dev["sound"]))
                 # fire-and-forget; S3 wraps this in send_with_retry
                 asyncio.create_task(send_with_retry(sender, dev["apns_token"], payload))
+        await hub.publish("request.created", "request", req)
         return req
 
     @app.get("/v1/requests", dependencies=[appdep])
@@ -167,22 +175,48 @@ def create_app(cfg, db, sender):
         return r
 
     @app.post("/v1/requests/{rid}/decision", dependencies=[appdep])
-    def decide(rid: str, body: Decision):
+    async def decide(rid: str, body: Decision):
         r = db.get_request(rid)
         if not r: raise HTTPException(404, "not found")
         devices = db.list_devices()
         decided_by = devices[0]["name"] if len(devices) == 1 else "app"
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated: raise HTTPException(409, f"not pending (status={r['status']})")
+        await hub.publish("request.decided", "request", updated)
         return updated
 
     @app.post("/v1/devices", dependencies=[appdep])
-    def register(body: DeviceRegister):
-        return db.register_device(body.apns_token, body.name, body.min_severity,
+    async def register(body: DeviceRegister):
+        dev = db.register_device(body.apns_token, body.name, body.min_severity,
                                   body.notifications_enabled, body.sound)
+        await hub.publish("device.updated", "device", dev)
+        return dev
 
     @app.get("/v1/devices", dependencies=[appdep])
     def devices():
         return db.list_devices()
+
+    @app.websocket("/v1/stream")
+    async def stream(ws: WebSocket):
+        auth = ws.headers.get("authorization", "")
+        cookie = ws.cookies.get("hma_session", "")
+        token_ok = auth.startswith("Bearer ") and secrets.compare_digest(
+            auth.removeprefix("Bearer "), cfg.auth.app_token)
+        if not (token_ok or app.state.session_check(cookie)):
+            await ws.close(code=4401); return
+        await ws.accept()
+        q = hub.subscribe()
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(ws_heartbeat)
+                await hub.publish("ping", "data", {})
+        hb = asyncio.create_task(heartbeat())
+        try:
+            while True:
+                await ws.send_json(await q.get())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            hb.cancel(); hub.unsubscribe(q)
 
     return app
