@@ -107,21 +107,30 @@ an exit code.
 
 ## How it works
 
-```
-agent               arbiter server            notifiers            human
-  |  POST /v1/requests    |                        |                  |
-  |----------------------->|  pending, TTL starts   |                  |
-  |                        |----------------------->| APNs / ntfy /    |
-  |                        |                        | webhook          |
-  |                        |                                          |
-  |   hma ask blocks,      |                                          |
-  |   polling status       |          decision made on a paired       |
-  |<- - - - - - - - - - -  |          device (biometric step-up) -----|
-  |                        |<-----------------------------------------|
-  |  200 approved/denied   |  POST /v1/requests/{id}/decision          |
-  |<-----------------------|  (app_token)                              |
-  v                        v
-exit 0/1/2          audit log entry, webhook/callback fired
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent as agent (hma ask / hold_sdk)
+    participant Server as arbiter server
+    participant Notifiers as notifiers (APNs · ntfy · webhook)
+    participant Human as human (paired device)
+
+    Agent->>Server: POST /v1/requests (agent token)
+    activate Server
+    Note over Server: request pending — TTL countdown starts
+    Server-->>Notifiers: fan out notification
+    Notifiers-->>Human: push arrives, deep-links to the request
+
+    loop until decided or TTL expires
+        Agent->>Server: GET /v1/requests/{id} (poll)
+        Server-->>Agent: status: pending
+    end
+
+    Human->>Server: POST /v1/requests/{id}/decision (app token,<br/>biometric step-up on the device)
+    Note over Server: append-only audit entry,<br/>webhook / callback_url fired
+    Server-->>Agent: status: approved | denied | expired
+    deactivate Server
+    Note over Agent: exit 0 approved · 1 denied/expired · 2 error<br/>(every nonzero is a "no" — fail-closed)
 ```
 
 Every state change — created, decided, expired, a notifier failure — is
