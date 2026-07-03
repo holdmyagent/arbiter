@@ -94,7 +94,22 @@ def test_rotate_app_token_persists_and_audits(client, tmp_path, cfg, monkeypatch
     assert 'app_token = "test-app"' not in cfg_file.read_text()
     assert cfg.auth.app_token != "test-app"
 
+def _all_paths(router):
+    # Schema-independent route enumeration: walks nested routers (FastAPI's
+    # _IncludedRouter exposes original_router), so include_in_schema=False
+    # routes are still seen — unlike openapi()["paths"].
+    paths = []
+    for r in getattr(router, "routes", []):
+        p = getattr(r, "path", None)
+        if p is not None:
+            paths.append(p)
+        inner = getattr(r, "original_router", None) or (r if hasattr(r, "routes") and p is None else None)
+        if inner is not None and inner is not router:
+            paths.extend(_all_paths(inner))
+    return paths
+
 def test_no_decision_routes_under_dashboard(client):
-    # openapi() gives the flattened path list regardless of internal router nesting
-    paths = client.app.openapi()["paths"].keys()
-    assert not any("decision" in p for p in paths if p.startswith("/dashboard"))
+    paths = _all_paths(client.app.router)
+    dash = [p for p in paths if p.startswith("/dashboard")]
+    assert len(dash) >= 11          # guards against a silently-empty walk
+    assert not any("decision" in p for p in dash)
