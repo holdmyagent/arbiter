@@ -181,3 +181,12 @@ def test_root_links_to_pair(client):
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     assert "/pair" in r.text
+
+
+def test_target_and_callback_roundtrip(client):
+    r = client.post("/v1/requests", headers={"Authorization": "Bearer test-agent"},
+                    json={"title": "Deploy", "target": "prod-cluster",
+                          "callback_url": "http://127.0.0.1:1/cb"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["target"] == "prod-cluster" and body["callback_url"] == "http://127.0.0.1:1/cb"

@@ -10,7 +10,8 @@ def test_decision_is_terminal(db, make):
 
 def test_expire_due(db, make):
     r = db.create_request(make(ttl_seconds=-1))
-    assert db.expire_due() == 1
+    expired = db.expire_due()
+    assert [e["id"] for e in expired] == [r["id"]] and expired[0]["status"] == "expired"
     assert db.get_request(r["id"])["status"]=="expired"
     events = [a["event"] for a in db.get_audit(r["id"])]
     assert "created" in events and "expired" in events

@@ -17,6 +17,8 @@ class RequestCreate(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     severity: Severity = "medium"
     ttl_seconds: int = 300
+    target: str | None = None
+    callback_url: str | None = None
 
 class ApprovalRequest(BaseModel):
     id: str
@@ -31,6 +33,8 @@ class ApprovalRequest(BaseModel):
     expires_at: str
     decided_at: str | None = None
     decided_by: str | None = None
+    target: str | None = None
+    callback_url: str | None = None
 
 class Decision(BaseModel):
     decision: Literal["approve", "deny"]
