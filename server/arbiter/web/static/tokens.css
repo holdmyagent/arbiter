@@ -246,6 +246,9 @@ input:focus, select:focus, textarea:focus {
 .via .fi { width: 15px; height: 15px; color: var(--auth); flex: none; }
 .via .dev { color: var(--text-dim); }
 
+/* ============ AUDIT ============ */
+.audit-filter { display: flex; gap: 10px; margin-bottom: 16px; }
+
 /* ============ DEVICES ============ */
 .drow { grid-template-columns: 1fr 150px 70px 110px 96px; }
 .drow .name { color: var(--text); font-weight: 600; display: flex; align-items: center; gap: 9px; }
