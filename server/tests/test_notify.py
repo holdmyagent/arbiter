@@ -178,3 +178,27 @@ def test_policy_does_not_gate_ntfy(cfg, db, monkeypatch):
            "severity": "low", "status": "pending"}
     asyncio.run(d.request_created(req))
     assert calls == ["r-ntfy"]
+
+
+def test_policy_gates_min_severity_fallback_devices(cfg, db):
+    db.register_device("tok-legacy", "OldPhone", min_severity="low")  # no severities map
+    cfg.notify_severities["low"] = False
+    sender = asyncio.run(_dispatch_created(cfg, db, "low"))
+    assert sender.sent == []
+
+
+def test_policy_does_not_gate_webhook(cfg, db, monkeypatch):
+    from arbiter.notify import Dispatcher
+    cfg.webhook.url = "https://example.invalid/hook"   # enables webhook
+    cfg.notify_severities["low"] = False
+    d = Dispatcher(cfg, db, sender=_RecordingSender())
+    delivered = []
+
+    async def fake_deliver(url, event, req):
+        delivered.append((url, event, req["id"]))
+        return True
+    monkeypatch.setattr(d.webhook, "deliver", fake_deliver)
+    req = {"id": "r-wh", "title": "t", "description": "", "action_type": "agent",
+           "severity": "low", "status": "pending"}
+    asyncio.run(d.request_created(req))
+    assert delivered and delivered[0][1] == "request.created"
