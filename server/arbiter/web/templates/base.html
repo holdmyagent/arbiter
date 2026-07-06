@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Hold My Agent{% endblock %}</title>
@@ -7,17 +7,46 @@
 </head>
 <body>
   <header class="topbar">
-    <span class="brand">Hold My Agent</span>
-    <nav>
-      <a href="/dashboard/requests">Requests</a>
-      <a href="/dashboard/devices">Devices</a>
-      <a href="/dashboard/audit">Audit</a>
-      <a href="/dashboard/pair">Pair</a>
-      <a href="/dashboard/settings">Settings</a>
-    </nav>
-    <button id="theme-toggle" type="button">◐</button>
+    <div class="topbar-inner">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="hma-mark-g" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#6a5cff"/>
+              <stop offset="1" stop-color="#4a3fd0"/>
+            </linearGradient>
+          </defs>
+          <rect width="32" height="32" rx="7.2" fill="url(#hma-mark-g)"/>
+          <g transform="translate(6,6) scale(0.8333)">
+            <path d="M7 4C4.5 6.5 4.5 17.5 7 20" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M17 4C19.5 6.5 19.5 17.5 17 20" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+            <circle cx="12" cy="12" r="2.6" fill="#fff"/>
+          </g>
+        </svg>
+        <span>Hold My Agent</span>
+        {% if server_version %}<span class="server-tag">{{ server_version }}</span>{% endif %}
+      </div>
+      {% set p = request.url.path %}
+      <nav class="tabs" aria-label="Dashboard">
+        <a class="tab" href="/dashboard/requests" {% if p.startswith('/dashboard/requests') %}aria-current="page"{% endif %}>Requests</a>
+        <a class="tab" href="/dashboard/devices" {% if p.startswith('/dashboard/devices') %}aria-current="page"{% endif %}>Devices</a>
+        <a class="tab" href="/dashboard/audit" {% if p.startswith('/dashboard/audit') %}aria-current="page"{% endif %}>Audit</a>
+        <a class="tab" href="/dashboard/pair" {% if p.startswith('/dashboard/pair') %}aria-current="page"{% endif %}>Pair</a>
+        <a class="tab" href="/dashboard/settings" {% if p.startswith('/dashboard/settings') %}aria-current="page"{% endif %}>Settings</a>
+      </nav>
+      <div class="controls">
+        <button class="icon-btn" id="face-toggle" type="button" title="Toggle typeface">Aa</button>
+        <button class="icon-btn" id="theme-toggle" type="button" title="Toggle theme">◐ Dark</button>
+      </div>
+    </div>
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <main class="wrap">
+    <div class="eyebrow">ARBITER · <b>{% block page_label %}CONSOLE{% endblock %}</b> ·
+      <span class="cmd">{% block page_cmd %}status{% endblock %}</span><span class="spacer"></span>
+      <span class="count">{% block page_count %}{% endblock %}</span></div>
+    {% block content %}{% endblock %}
+    <div class="seal"><b>Append-only</b> · <b>Tamper-evident</b> · <b>Yours</b></div>
+  </main>
   <script src="/static/dashboard.js"></script>
 </body>
 </html>

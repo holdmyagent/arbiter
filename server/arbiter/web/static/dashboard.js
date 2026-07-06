@@ -1,12 +1,74 @@
-// Theme toggle (mirrors the marketing site's data-theme mechanism)
-const KEY = "hma-theme";
+// Theme + typeface (persisted via localStorage; CSS defaults dark, honors
+// the OS light preference when no explicit choice has been stamped).
+const THEME_KEY = "hma-theme";
+const FACE_KEY = "hma-face";
 const root = document.documentElement;
-const stored = localStorage.getItem(KEY);
-if (stored === "light" || stored === "dark") root.dataset.theme = stored;
+
+const storedTheme = localStorage.getItem(THEME_KEY);
+if (storedTheme === "light" || storedTheme === "dark") root.dataset.theme = storedTheme;
+const storedFace = localStorage.getItem(FACE_KEY);
+if (storedFace === "mono" || storedFace === "sans") root.dataset.face = storedFace;
+
+function effectiveTheme() {
+  if (root.dataset.theme === "light" || root.dataset.theme === "dark") return root.dataset.theme;
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function effectiveFace() {
+  return root.dataset.face === "sans" ? "sans" : "mono";
+}
+
+function syncChrome() {
+  const themeBtn = document.getElementById("theme-toggle");
+  if (themeBtn) themeBtn.textContent = effectiveTheme() === "dark" ? "◐ Dark" : "◑ Light";
+  document.querySelectorAll("[data-set-theme]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.setTheme === effectiveTheme());
+  });
+  document.querySelectorAll("[data-set-face]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.setFace === effectiveFace());
+  });
+}
+
+function setTheme(mode) {
+  root.dataset.theme = mode;
+  localStorage.setItem(THEME_KEY, mode);
+  syncChrome();
+}
+
+function setFace(face) {
+  root.dataset.face = face;
+  localStorage.setItem(FACE_KEY, face);
+  syncChrome();
+}
+
 document.getElementById("theme-toggle")?.addEventListener("click", () => {
-  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
-  localStorage.setItem(KEY, root.dataset.theme);
+  setTheme(effectiveTheme() === "dark" ? "light" : "dark");
 });
+document.getElementById("face-toggle")?.addEventListener("click", () => {
+  setFace(effectiveFace() === "mono" ? "sans" : "mono");
+});
+
+// Delegated handlers: Settings segmented controls + copy buttons.
+document.addEventListener("click", (e) => {
+  const themeSeg = e.target.closest("[data-set-theme]");
+  if (themeSeg) { setTheme(themeSeg.dataset.setTheme); return; }
+  const faceSeg = e.target.closest("[data-set-face]");
+  if (faceSeg) { setFace(faceSeg.dataset.setFace); return; }
+  const copyBtn = e.target.closest(".copy-btn[data-copy]");
+  if (copyBtn) {
+    const txt = copyBtn.getAttribute("data-copy") || "";
+    navigator.clipboard?.writeText(txt);
+    const old = copyBtn.textContent;
+    copyBtn.textContent = "Copied";
+    copyBtn.classList.add("done");
+    setTimeout(() => {
+      copyBtn.textContent = old;
+      copyBtn.classList.remove("done");
+    }, 1200);
+  }
+});
+
+syncChrome();
 
 // Live refresh: any request.* event reloads elements marked data-live (Task 9 pages use this)
 function connect() {
@@ -31,5 +93,6 @@ setInterval(() => {
     el.textContent = left > 0
       ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, "0")}`
       : "expired";
+    el.classList.toggle("warn", left > 0 && left < 60);
   });
 }, 1000);

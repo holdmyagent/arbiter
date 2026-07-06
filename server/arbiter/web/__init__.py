@@ -7,6 +7,11 @@ from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+try:
+    from importlib.metadata import version as _pkg_version
+    TEMPLATES.env.globals["server_version"] = _pkg_version("holdmyagent")
+except Exception:
+    TEMPLATES.env.globals["server_version"] = ""
 MAX_AGE = 7 * 24 * 3600
 
 # Logged-out session values. Deliberately a single-process in-memory revocation
