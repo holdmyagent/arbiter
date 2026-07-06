@@ -56,3 +56,26 @@ def test_validate_same_tokens(tmp_path):
     cfg.auth.admin_password = "pw"
     cfg.auth.session_secret = "s"
     assert cfg.validate_for_serve()
+
+
+def test_notify_severities_default_all_enabled(tmp_path):
+    from arbiter.config import Config
+    cfg = Config.load(str(tmp_path / "absent.toml"))
+    assert cfg.notify_severities == {"low": True, "medium": True, "high": True, "critical": True}
+
+
+def test_notify_severities_loaded_from_config(tmp_path):
+    from arbiter.config import Config
+    p = tmp_path / "config.toml"
+    p.write_text('[notify.severities]\nlow = false\nmedium = true\n')
+    cfg = Config.load(str(p))
+    assert cfg.notify_severities == {"low": False, "medium": True, "high": True, "critical": True}
+
+
+def test_notify_severities_ignores_unknown_keys(tmp_path):
+    from arbiter.config import Config
+    p = tmp_path / "config.toml"
+    p.write_text('[notify.severities]\nbogus = false\nhigh = false\n')
+    cfg = Config.load(str(p))
+    assert "bogus" not in cfg.notify_severities
+    assert cfg.notify_severities["high"] is False
