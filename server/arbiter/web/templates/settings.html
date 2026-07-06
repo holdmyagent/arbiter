@@ -48,14 +48,19 @@
     <div class="srow"><div class="lab">Webhook</div><div>{% if cfg.webhook.enabled %}<span class="ok">{{ cfg.webhook.url }}</span>{% else %}<span class="muted">off</span>{% endif %}</div></div>
     <div class="srow"><div class="sub">Edit the config file and restart to change notifiers.</div></div>
     <div class="srow">
-      <div><div class="lab">Alert severities</div><div class="sub">Each paired device chooses which severities it receives in the iOS app. A server-wide policy is not configurable yet.</div></div>
-      <!-- TODO: wire these to a server-side per-severity push policy once the server stores one -->
-      <div class="sev-toggles">
-        <button class="sev-tog low" type="button" disabled aria-pressed="true">low</button>
-        <button class="sev-tog medium" type="button" disabled aria-pressed="true">med</button>
-        <button class="sev-tog high" type="button" disabled aria-pressed="true">high</button>
-        <button class="sev-tog critical" type="button" disabled aria-pressed="true">crit</button>
+      <div>
+        <div class="lab">Alert severities</div>
+        <div class="sub">Which severities the server pushes to paired devices — the global gate.
+          Each device also chooses its own severities in the iOS app; a push needs both.</div>
       </div>
+      <form method="post" action="/dashboard/settings/notify-policy" class="sev-toggles">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        {% for s, label in [("low", "low"), ("medium", "med"), ("high", "high"), ("critical", "crit")] %}
+        <button class="sev-tog {{ s }}" type="submit" name="severity" value="{{ s }}"
+                aria-pressed="{{ "true" if cfg.notify_severities[s] else "false" }}"
+                title="Turn {{ s }} pushes {{ "off" if cfg.notify_severities[s] else "on" }} server-wide">{{ label }}</button>
+        {% endfor %}
+      </form>
     </div>
   </div>
   <div class="sgroup">
