@@ -1,15 +1,23 @@
 {% extends "base.html" %}{% block title %}Pair — Hold My Agent{% endblock %}
+{% block page_label %}PAIR{% endblock %}
+{% block page_cmd %}hma pair{% endblock %}
+{% block page_count %}awaiting device{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>Pair a device</h1>
-  <div class="qr">{{ svg | safe }}</div>
-  <p>Or run the CLI pairing command:</p>
-  <pre class="mono">$ hma pair</pre>
-  <p class="muted">Server URL: <code>{{ base }}</code>. The QR embeds your app token —
-     only display this page on a trusted network.</p>
-  <form method="post" action="/dashboard/logout">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button type="submit" class="btn">Log out</button>
-  </form>
-</section>
+<div class="pair-grid">
+  <div>
+    <div class="qr-card">{{ svg | safe }}<div class="qr-cap">SCAN TO PAIR</div></div>
+  </div>
+  <div class="pair-copy">
+    <h2>Pair a device</h2>
+    <p>Scan this code in the Hold My Agent app, or run the CLI command on a machine that can reach this server. The QR renders on a light card so it scans in either theme.</p>
+    <div class="field"><span class="k">url</span><span class="v">{{ base }}</span><button class="copy-btn" type="button" data-copy="{{ base }}" title="Copy URL">Copy</button></div>
+    <div class="field"><span class="k">token</span><span class="v">{{ token }}</span><button class="copy-btn" type="button" data-copy="{{ token }}" title="Copy token">Copy</button></div>
+    <div class="cmd-inline"><span class="d">$</span><span class="hma">hma</span> pair<button class="copy-btn" type="button" data-copy="hma pair" title="Copy command">Copy</button></div>
+    <p class="muted">The QR embeds your app token — only display this page on a trusted network.</p>
+    <form method="post" action="/dashboard/logout">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn" type="submit">Log out</button>
+    </form>
+  </div>
+</div>
 {% endblock %}
