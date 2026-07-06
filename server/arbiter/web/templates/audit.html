@@ -11,11 +11,12 @@
   <div class="console-head">Arbiter · Audit.log<span class="tf">{{ events|length }} events</span></div>
   <div class="ledger ledger-scroll">
     {% set sev_abbr = {"low": "low", "medium": "med", "high": "high", "critical": "crit"} %}
+    {% set verb_abbr = {"token_rotated": "rotated", "notify_failed": "failed", "notify_policy_changed": "policy"} %}
     <div class="lrow lhead"><span>Time</span><span>Status</span><span>Sev</span><span>Action</span><span class="via">Decided via</span></div>
     {% for e in events %}
     <div class="lrow">
       <span class="t">{{ e.at[11:19] }}Z</span>
-      <span class="status {{ e.event }}">{{ e.event }}</span>
+      <span class="status {{ e.event }}">{{ verb_abbr.get(e.event, e.event) }}</span>
       {% if e.severity %}<span class="pill {{ e.severity }} sm">{{ sev_abbr[e.severity] }}</span>{% else %}<span class="t">—</span>{% endif %}
       <span class="action" {% if e.detail and e.detail != "{}" %}title="{{ e.detail }}"{% endif %}>{% if e.req_title %}<a href="/dashboard/requests/{{ e.request_id }}">{{ e.req_title }}</a>{% else %}{{ e.event | replace("_", " ") }}{% endif %}</span>
       {% if e.event in ("approved", "denied") %}
