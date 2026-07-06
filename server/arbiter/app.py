@@ -132,6 +132,10 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     def devices():
         return db.list_devices()
 
+    @app.get("/v1/notify/policy", dependencies=[appdep])
+    def notify_policy():
+        return dict(cfg.notify_severities)
+
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
         auth = ws.headers.get("authorization", "")
