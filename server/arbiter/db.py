@@ -164,13 +164,23 @@ class Database:
             "SELECT * FROM audit WHERE request_id=? ORDER BY at", (rid,)).fetchall()]
 
     def list_audit(self, request_id: str | None = None, limit: int = 200) -> list[dict]:
+        # LEFT JOIN requests for severity/title/decided_by, plus a scalar subquery
+        # (not a JOIN on devices.name) to resolve the deciding device: a JOIN on
+        # name could fan out an audit row if two devices ever shared a name.
+        base = (
+            "SELECT a.id, a.request_id, a.event, a.at, a.detail,"
+            " r.severity AS severity, r.title AS req_title, r.status AS req_status,"
+            " r.decided_by AS decided_by,"
+            " (SELECT d.name FROM devices d WHERE d.name = r.decided_by LIMIT 1) AS decided_device"
+            " FROM audit a LEFT JOIN requests r ON a.request_id = r.id"
+        )
         if request_id:
             rows = self.conn.execute(
-                "SELECT * FROM audit WHERE request_id=? ORDER BY at DESC LIMIT ?",
+                base + " WHERE a.request_id = ? ORDER BY a.at DESC LIMIT ?",
                 (request_id, limit)).fetchall()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM audit ORDER BY at DESC LIMIT ?", (limit,)).fetchall()
+                base + " ORDER BY a.at DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     def rename_device(self, device_id: str, name: str) -> dict | None:

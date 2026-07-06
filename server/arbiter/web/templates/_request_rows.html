@@ -1,13 +1,38 @@
-<table>
-  <tr><th>Severity</th><th>Title</th><th>Target</th><th>Status</th><th>Expires</th></tr>
-  {% for q in requests %}
-  <tr>
-    <td><span class="pill {{ q.severity }}">{{ q.severity }}</span></td>
-    <td><a href="/dashboard/requests/{{ q.id }}">{{ q.title }}</a></td>
-    <td class="mono">{{ q.target or "—" }}</td>
-    <td class="status {{ q.status }}">{{ q.status }}</td>
-    <td>{% if q.status == "pending" %}<span class="countdown" data-expires="{{ q.expires_at }}"></span>
-        {% else %}—{% endif %}</td>
-  </tr>
-  {% endfor %}
-</table>
+{% set pending = requests | selectattr("status", "equalto", "pending") | list %}
+{% set history = requests | rejectattr("status", "equalto", "pending") | list %}
+{% if requests | length == 0 %}
+<div class="console"><div class="console-empty">Nothing yet — agents create requests with hma ask.</div></div>
+{% else %}
+{% if pending %}
+{% for q in pending %}
+<article class="approval">
+  <div class="approval-head">
+    <span class="pill {{ q.severity }}"><span class="dot"></span>{{ q.severity }}</span>
+    <span class="expiry">expires in <span class="countdown" data-expires="{{ q.expires_at }}"></span></span>
+  </div>
+  <h2 class="approval-title"><a href="/dashboard/requests/{{ q.id }}">{{ q.title }}</a></h2>
+  {% if q.description %}<div class="cmd-block"><span class="d">$</span>{{ q.description }}</div>
+  {% elif q.target %}<div class="cmd-block"><span class="d">$</span>{{ q.target }}</div>{% endif %}
+  <div class="approval-meta"><span>from <b>{{ q.action_type or "agent" }}</b></span><span>{{ q.created_at[11:19] }}Z</span></div>
+  <div class="faceid"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="M8 9v1M16 9v1M9 15c1.8 1.3 4.2 1.3 6 0M12 9v3.5H10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Biometrics may be required on the iOS app</div>
+</article>
+{% endfor %}
+{% else %}
+<div class="console"><div class="console-empty">No pending approvals.</div></div>
+{% endif %}
+
+<div class="console">
+  <div class="console-head">Recent · decisions<span class="live"><span class="dot"></span>{{ history | length }} recorded</span></div>
+  <div class="ledger">
+    <div class="lrow r4 lhead"><span>Time</span><span>Status</span><span>Sev</span><span>Action</span></div>
+    {% for q in history %}
+    <div class="lrow r4">
+      <span class="t">{{ q.created_at[11:19] }}Z</span>
+      <span class="status {{ q.status }}">{{ q.status }}</span>
+      <span class="pill {{ q.severity }} sm">{{ q.severity }}</span>
+      <span class="action"><a href="/dashboard/requests/{{ q.id }}">{{ q.title }}</a></span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

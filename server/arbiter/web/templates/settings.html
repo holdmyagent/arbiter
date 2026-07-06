@@ -1,32 +1,72 @@
 {% extends "base.html" %}{% block title %}Settings — Hold My Agent{% endblock %}
+{% block page_label %}SETTINGS{% endblock %}
+{% block page_cmd %}config{% endblock %}
+{% block page_count %}{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>Tokens</h1>
-  <table>
-    <tr><th>Agent token</th><td class="mono"><details><summary>Reveal</summary>{{ cfg.auth.agent_token }}</details></td>
-      <td><form method="post" action="/dashboard/settings/rotate">
-        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="agent">
-        <button class="btn" type="submit">Rotate</button></form></td></tr>
-    <tr><th>App token</th><td class="mono"><details><summary>Reveal</summary>{{ cfg.auth.app_token }}</details></td>
-      <td><form method="post" action="/dashboard/settings/rotate">
-        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="app">
-        <button class="btn" type="submit">Rotate</button></form></td></tr>
-  </table>
-  <p class="muted">Rotating a token immediately invalidates the old one — re-pair devices / update agents.</p>
-</section>
-<section class="card">
-  <h1>Notifiers</h1>
-  <table>
-    <tr><th>APNs</th><td>{{ "configured" if cfg.apns.configured else "off" }}</td></tr>
-    <tr><th>ntfy</th><td>{{ cfg.ntfy.topic if cfg.ntfy.enabled else "off" }}</td></tr>
-    <tr><th>Webhook</th><td>{{ cfg.webhook.url if cfg.webhook.enabled else "off" }}</td></tr>
-  </table>
-  <p class="muted">Edit the config file and restart to change notifiers.</p>
-</section>
-<section class="card">
-  <form method="post" action="/dashboard/logout">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="btn" type="submit">Log out</button>
-  </form>
-</section>
+<div class="settings">
+  <div class="sgroup">
+    <h3>Appearance</h3>
+    <div class="srow">
+      <div><div class="lab">Theme</div><div class="sub">Dark is the console default.</div></div>
+      <div class="seg"><button type="button" data-set-theme="dark">Dark</button><button type="button" data-set-theme="light">Light</button></div>
+    </div>
+    <div class="srow">
+      <div><div class="lab">Typeface</div><div class="sub">Monospace for the console feel, or a clean sans for reading comfort.</div></div>
+      <div class="seg"><button type="button" data-set-face="mono">Mono</button><button type="button" data-set-face="sans">Sans</button></div>
+    </div>
+  </div>
+  <div class="sgroup">
+    <h3>Server</h3>
+    <div class="srow">
+      <div><div class="lab">App token</div><div class="sub">Used by the app to decide requests.</div></div>
+      <div class="tokrow">
+        <span class="tok">{{ cfg.auth.app_token[:4] }}··········{{ cfg.auth.app_token[-4:] }}</span>
+        <button class="copy-btn" type="button" data-copy="{{ cfg.auth.app_token }}" title="Copy app token">Copy</button>
+        <form method="post" action="/dashboard/settings/rotate">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="app">
+          <button class="rotate" type="submit">Rotate</button>
+        </form>
+      </div>
+    </div>
+    <div class="srow">
+      <div><div class="lab">Agent token</div><div class="sub">Used by agents to create requests.</div></div>
+      <div class="tokrow">
+        <span class="tok">{{ cfg.auth.agent_token[:4] }}··········{{ cfg.auth.agent_token[-4:] }}</span>
+        <button class="copy-btn" type="button" data-copy="{{ cfg.auth.agent_token }}" title="Copy agent token">Copy</button>
+        <form method="post" action="/dashboard/settings/rotate">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="agent">
+          <button class="rotate" type="submit">Rotate</button>
+        </form>
+      </div>
+    </div>
+    <div class="srow"><div class="sub">Rotating a token immediately invalidates the old one — re-pair devices / update agents.</div></div>
+  </div>
+  <div class="sgroup">
+    <h3>Notifications</h3>
+    <div class="srow"><div class="lab">APNs push</div><div>{% if cfg.apns.configured %}<span class="ok">● connected</span>{% else %}<span class="muted">off</span>{% endif %}</div></div>
+    <div class="srow"><div class="lab">ntfy</div><div>{% if cfg.ntfy.enabled %}<span class="ok">{{ cfg.ntfy.topic }}</span>{% else %}<span class="muted">off</span>{% endif %}</div></div>
+    <div class="srow"><div class="lab">Webhook</div><div>{% if cfg.webhook.enabled %}<span class="ok">{{ cfg.webhook.url }}</span>{% else %}<span class="muted">off</span>{% endif %}</div></div>
+    <div class="srow"><div class="sub">Edit the config file and restart to change notifiers.</div></div>
+    <div class="srow">
+      <div><div class="lab">Alert severities</div><div class="sub">Each paired device chooses which severities it receives in the iOS app. A server-wide policy is not configurable yet.</div></div>
+      <!-- TODO: wire these to a server-side per-severity push policy once the server stores one -->
+      <div class="sev-toggles">
+        <button class="sev-tog low" type="button" disabled aria-pressed="true">low</button>
+        <button class="sev-tog medium" type="button" disabled aria-pressed="true">med</button>
+        <button class="sev-tog high" type="button" disabled aria-pressed="true">high</button>
+        <button class="sev-tog critical" type="button" disabled aria-pressed="true">crit</button>
+      </div>
+    </div>
+  </div>
+  <div class="sgroup">
+    <h3>Session</h3>
+    <div class="srow">
+      <div class="muted">Signed in as admin</div>
+      <form method="post" action="/dashboard/logout">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn" type="submit">Log out</button>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}

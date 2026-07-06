@@ -7,6 +7,11 @@ from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+try:
+    from importlib.metadata import version as _pkg_version
+    TEMPLATES.env.globals["server_version"] = _pkg_version("holdmyagent")
+except Exception:
+    TEMPLATES.env.globals["server_version"] = ""
 MAX_AGE = 7 * 24 * 3600
 
 # Logged-out session values. Deliberately a single-process in-memory revocation
@@ -93,9 +98,11 @@ def build_router(cfg, db, hub) -> APIRouter:
         base = f"http://{local_ip()}:{cfg.server.port}"
         payload = build_pairing_payload(base, cfg.auth.app_token)
         buf = io.BytesIO()
-        segno.make(payload).save(buf, kind="svg", xmldecl=False, nl=False, scale=4)
+        segno.make(payload).save(buf, kind="svg", xmldecl=False, nl=False, scale=4,
+                                  dark="#000000", light="#ffffff", border=4)
         return TEMPLATES.TemplateResponse(request, "pair.html", {
             "svg": buf.getvalue().decode(), "base": base,
+            "token": cfg.auth.app_token,
             "csrf": csrf_token(cfg, sv)})
 
     @r.get("/requests", response_class=HTMLResponse)
