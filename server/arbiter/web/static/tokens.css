@@ -215,10 +215,11 @@ input:focus, select:focus, textarea:focus {
 }
 .console-head { border-bottom: 1px solid var(--border); }
 .console-foot { border-top: 1px solid var(--border); gap: 10px; }
-.console-head .tf { color: var(--text-dim); }
+.console-head .tf, .console-foot .tf { color: var(--text-dim); }
 .console-head .live { color: var(--approved); display: inline-flex; align-items: center; gap: 6px; }
 .console-head .live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--approved); box-shadow: 0 0 8px 0 var(--approved); animation: pulse 1.8s ease infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
+.console-empty { padding: 15px 20px; color: var(--text-dim); font-size: 13px; }
 
 .ledger { padding: 6px 0; }
 .ledger-scroll { overflow-x: auto; }
@@ -244,7 +245,6 @@ input:focus, select:focus, textarea:focus {
 .lrow .action { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lrow .action a { color: inherit; text-decoration: none; }
 .lrow .action a:hover { color: var(--auth); }
-.lrow .action .who { color: var(--text-faint); }
 .lrow .via { color: var(--text-dim); text-align: right; white-space: nowrap; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .via .fi { width: 15px; height: 15px; color: var(--auth); flex: none; }
 .via .dev { color: var(--text-dim); }
@@ -262,6 +262,7 @@ input:focus, select:focus, textarea:focus {
 .drow .seen { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .drow input[name="name"] { width: 20ch; padding: .25em .5em; }
 .drow .btn-danger { justify-self: start; }
+.rename { display: flex; align-items: center; gap: 6px; }
 .edit-btn {
   font-family: var(--mono); font-size: 11px; letter-spacing: .3px; color: var(--text-faint);
   background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;

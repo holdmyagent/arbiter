@@ -48,6 +48,53 @@ document.getElementById("face-toggle")?.addEventListener("click", () => {
   setFace(effectiveFace() === "mono" ? "sans" : "mono");
 });
 
+// Copy-to-clipboard: async Clipboard API when available (insecure-context /
+// http://LAN-IP has none), else a hidden-textarea execCommand fallback. The
+// button only claims success when a method actually reported one.
+const copyRevertTimers = new WeakMap();
+
+function legacyCopy(txt) {
+  const ta = document.createElement("textarea");
+  ta.value = txt;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  ta.style.left = "-1000px";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+async function copyToButton(btn) {
+  btn.dataset.label ||= btn.textContent;
+  const txt = btn.getAttribute("data-copy") || "";
+  let ok = false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(txt);
+      ok = true;
+    } catch {
+      ok = legacyCopy(txt);
+    }
+  } else {
+    ok = legacyCopy(txt);
+  }
+  clearTimeout(copyRevertTimers.get(btn));
+  btn.textContent = ok ? "Copied" : "Failed";
+  btn.classList.toggle("done", ok);
+  copyRevertTimers.set(btn, setTimeout(() => {
+    btn.textContent = btn.dataset.label;
+    btn.classList.remove("done");
+  }, 1200));
+}
+
 // Delegated handlers: Settings segmented controls + copy buttons.
 document.addEventListener("click", (e) => {
   const themeSeg = e.target.closest("[data-set-theme]");
@@ -55,17 +102,7 @@ document.addEventListener("click", (e) => {
   const faceSeg = e.target.closest("[data-set-face]");
   if (faceSeg) { setFace(faceSeg.dataset.setFace); return; }
   const copyBtn = e.target.closest(".copy-btn[data-copy]");
-  if (copyBtn) {
-    const txt = copyBtn.getAttribute("data-copy") || "";
-    navigator.clipboard?.writeText(txt);
-    const old = copyBtn.textContent;
-    copyBtn.textContent = "Copied";
-    copyBtn.classList.add("done");
-    setTimeout(() => {
-      copyBtn.textContent = old;
-      copyBtn.classList.remove("done");
-    }, 1200);
-  }
+  if (copyBtn) { copyToButton(copyBtn); return; }
 });
 
 syncChrome();
@@ -93,6 +130,8 @@ setInterval(() => {
     el.textContent = left > 0
       ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, "0")}`
       : "expired";
-    el.classList.toggle("warn", left > 0 && left < 60);
+    const warn = left > 0 && left < 60;
+    el.classList.toggle("warn", warn);
+    el.closest(".expiry")?.classList.toggle("warn", warn);
   });
 }, 1000);

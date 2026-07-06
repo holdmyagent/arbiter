@@ -29,7 +29,7 @@
     </div>
     {% endfor %}
   </div>
-  {% if not devices %}<p class="muted">No devices paired yet — see <a href="/dashboard/pair">Pair</a>.</p>{% endif %}
+  {% if not devices %}<div class="console-empty">No devices paired yet — see <a href="/dashboard/pair">Pair</a>.</div>{% endif %}
   <div class="console-foot"><span>Only paired devices can decide.</span><span class="tf">{{ devices|length }} registered</span></div>
 </div>
 {% endblock %}

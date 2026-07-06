@@ -1,7 +1,7 @@
 {% set pending = requests | selectattr("status", "equalto", "pending") | list %}
 {% set history = requests | rejectattr("status", "equalto", "pending") | list %}
 {% if requests | length == 0 %}
-<div class="console"><div class="console-head">Nothing yet — agents create requests with hma ask.</div></div>
+<div class="console"><div class="console-empty">Nothing yet — agents create requests with hma ask.</div></div>
 {% else %}
 {% if pending %}
 {% for q in pending %}
@@ -18,11 +18,11 @@
 </article>
 {% endfor %}
 {% else %}
-<div class="console"><div class="console-head">No pending approvals.</div></div>
+<div class="console"><div class="console-empty">No pending approvals.</div></div>
 {% endif %}
 
 <div class="console">
-  <div class="console-head">Recent · decisions<span class="tf">{{ history | length }} recorded</span></div>
+  <div class="console-head">Recent · decisions<span class="live"><span class="dot"></span>{{ history | length }} recorded</span></div>
   <div class="ledger">
     <div class="lrow r4 lhead"><span>Time</span><span>Status</span><span>Sev</span><span>Action</span></div>
     {% for q in history %}
