@@ -162,6 +162,17 @@ def test_root_redirects_into_dashboard(client):
     assert r.headers["location"] == "/dashboard"
 
 
+def test_notify_policy_requires_app_token(client):
+    assert client.get("/v1/notify/policy").status_code == 401
+
+
+def test_notify_policy_returns_config(client, app_headers, cfg):
+    cfg.notify_severities["medium"] = False
+    r = client.get("/v1/notify/policy", headers=app_headers)
+    assert r.status_code == 200
+    assert r.json() == {"low": True, "medium": False, "high": True, "critical": True}
+
+
 def test_target_and_callback_roundtrip(client):
     r = client.post("/v1/requests", headers={"Authorization": "Bearer test-agent"},
                     json={"title": "Deploy", "target": "prod-cluster",
