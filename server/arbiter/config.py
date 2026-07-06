@@ -58,7 +58,7 @@ class Config:
     apns: ApnsCfg = field(default_factory=ApnsCfg)
     ntfy: NtfyCfg = field(default_factory=NtfyCfg)
     webhook: WebhookCfg = field(default_factory=WebhookCfg)
-    notify_severities: dict = field(
+    notify_severities: dict[str, bool] = field(
         default_factory=lambda: {s: True for s in SEVERITIES})
     loaded_path: str = ""
 

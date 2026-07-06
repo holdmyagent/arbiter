@@ -20,7 +20,8 @@
 
 - Ledger severity pills no longer overlap the action column; audit rows expose
   event detail as a tooltip; live refresh keeps the header counts current;
-  the server version is shown only after login.
+  the server version is shown only after login; multi-word audit status verbs
+  are abbreviated to fit the ledger column.
 
 ## [0.2.1] - 2026-07-03
 

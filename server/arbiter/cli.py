@@ -42,6 +42,8 @@ token = ""
 [notify.webhook]            # optional — generic integration
 url = ""
 secret = ""
+
+# [notify.severities]       # server-wide push policy — managed from the dashboard (Settings → Alert severities)
 """
 
 @click.group()
