@@ -24,12 +24,13 @@
 <div class="console">
   <div class="console-head">Recent · decisions<span class="live"><span class="dot"></span>{{ history | length }} recorded</span></div>
   <div class="ledger">
+    {% set sev_abbr = {"low": "low", "medium": "med", "high": "high", "critical": "crit"} %}
     <div class="lrow r4 lhead"><span>Time</span><span>Status</span><span>Sev</span><span>Action</span></div>
     {% for q in history %}
     <div class="lrow r4">
       <span class="t">{{ q.created_at[11:19] }}Z</span>
       <span class="status {{ q.status }}">{{ q.status }}</span>
-      <span class="pill {{ q.severity }} sm">{{ q.severity }}</span>
+      <span class="pill {{ q.severity }} sm">{{ sev_abbr[q.severity] }}</span>
       <span class="action"><a href="/dashboard/requests/{{ q.id }}">{{ q.title }}</a></span>
     </div>
     {% endfor %}
