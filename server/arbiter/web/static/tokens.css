@@ -227,6 +227,7 @@ input:focus, select:focus, textarea:focus {
   padding: 9px 20px; font-family: var(--mono); font-size: 13px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
 .lrow.r4 { grid-template-columns: 88px 92px 64px 1fr; }
+.lrow.a3 { grid-template-columns: 88px 130px 1fr; }
 .lrow:last-child { border-bottom: 0; }
 .lrow:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
 .lhead { font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--text-faint); border-bottom: 1px solid var(--border); }
@@ -245,6 +246,11 @@ input:focus, select:focus, textarea:focus {
 .lrow .via { color: var(--text-dim); text-align: right; white-space: nowrap; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .via .fi { width: 15px; height: 15px; color: var(--auth); flex: none; }
 .via .dev { color: var(--text-dim); }
+
+/* ============ SLIP (request detail receipt) ============ */
+.slip { padding: 20px; }
+.slip-row { display: flex; align-items: baseline; gap: 12px; padding: 5px 0; font-size: 13px; }
+.slip-key { color: var(--text-faint); min-width: 128px; }
 
 /* ============ AUDIT ============ */
 .audit-filter { display: flex; gap: 10px; margin-bottom: 16px; }
