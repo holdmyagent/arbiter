@@ -144,6 +144,35 @@ def test_rotate_creates_missing_parent_dir(tmp_path):
     assert oct(custom.stat().st_mode & 0o777) == "0o600"
     assert cfg.auth.agent_token != "test-agent"
 
+def test_notify_policy_toggle_persists_and_applies(tmp_path, monkeypatch):
+    from arbiter.config import Config
+    p = tmp_path / "config.toml"
+    p.write_text('[auth]\nagent_token = "test-agent"\napp_token = "test-app"\n'
+                 'admin_password = "test-admin"\nsession_secret = "test-secret"\n')
+    cfg = Config.load(str(p))
+    cfg.server.db_path = str(tmp_path / "t.sqlite3")
+    with _client_for(cfg) as client:
+        _login(client)
+        csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]
+        r = client.post("/dashboard/settings/notify-policy",
+                        data={"severity": "low", "csrf": csrf}, follow_redirects=False)
+        assert r.status_code == 303
+        assert cfg.notify_severities["low"] is False          # in-memory flip
+        assert Config.load(str(p)).notify_severities["low"] is False  # persisted
+        # toggling again re-enables
+        client.post("/dashboard/settings/notify-policy", data={"severity": "low", "csrf": csrf})
+        assert cfg.notify_severities["low"] is True
+        assert oct(p.stat().st_mode & 0o777) == "0o600"
+
+
+def test_notify_policy_requires_csrf_and_valid_severity(client):
+    _login(client)
+    assert client.post("/dashboard/settings/notify-policy",
+                       data={"severity": "low"}).status_code == 403
+    csrf = client.get("/dashboard/settings").text.split('name="csrf" value="')[1].split('"')[0]
+    assert client.post("/dashboard/settings/notify-policy",
+                       data={"severity": "bogus", "csrf": csrf}).status_code == 400
+
 def _all_paths(router):
     # Schema-independent route enumeration: walks nested routers (FastAPI's
     # _IncludedRouter exposes original_router), so include_in_schema=False

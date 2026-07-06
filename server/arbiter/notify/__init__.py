@@ -40,16 +40,19 @@ class Dispatcher:
 
     async def request_created(self, req: dict) -> None:
         pending = None
-        for dev in self.db.list_devices():
-            if _wants(dev, req):
-                badge = None
-                if dev["badge"]:
-                    if pending is None:
-                        pending = len(self.db.list_requests("pending"))
-                    badge = pending
-                payload = build_payload(req, sound=bool(dev["sound"]), badge=badge)
-                await self._guard("apns", req["id"],
-                                  send_with_retry(self.sender, dev["apns_token"], payload))
+        # Server-wide severity policy gates pushes to paired devices; each
+        # device's own opt-in still applies below (both must allow it).
+        if self.cfg.notify_severities.get(req["severity"], True):
+            for dev in self.db.list_devices():
+                if _wants(dev, req):
+                    badge = None
+                    if dev["badge"]:
+                        if pending is None:
+                            pending = len(self.db.list_requests("pending"))
+                        badge = pending
+                    payload = build_payload(req, sound=bool(dev["sound"]), badge=badge)
+                    await self._guard("apns", req["id"],
+                                      send_with_retry(self.sender, dev["apns_token"], payload))
         if self.ntfy:
             await self._guard("ntfy", req["id"], self.ntfy.send(req))
         if self.cfg.webhook.enabled:
