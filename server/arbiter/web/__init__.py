@@ -59,6 +59,32 @@ def _set_cookie(resp, request: Request, value: str):
     resp.set_cookie("hma_session", value, httponly=True, samesite="lax",
                     secure=secure, max_age=MAX_AGE)
 
+def _write_config_value(cfg, path: list[str], key: str, value):
+    """Persist one key into the loaded config file: atomic write, 0600."""
+    import os
+    import tomlkit
+    from pathlib import Path
+    from ..config import Config
+    # Write back to the file this cfg was actually loaded from (a `--config`
+    # deployment's custom path), not the env/default path — the two can
+    # differ, and writing the wrong one silently desyncs the running
+    # server's tokens from what's on disk.
+    p = Path(cfg.loaded_path or Config.default_path())
+    p.parent.mkdir(parents=True, exist_ok=True)
+    doc = tomlkit.parse(p.read_text()) if p.exists() else tomlkit.document()
+    node = doc
+    for part in path:
+        node = node.setdefault(part, tomlkit.table())
+    node[key] = value
+    # Atomic + 0600: write to a sibling tmp file then rename over the
+    # target, so a crash mid-write never leaves a partial config, and the
+    # file never has a moment at default (world-readable) permissions.
+    tmp = p.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tomlkit.dumps(doc))
+    os.replace(tmp, p)
+
 def build_router(cfg, db, hub) -> APIRouter:
     r = APIRouter(prefix="/dashboard")
     session = Depends(require_session(cfg))
@@ -153,33 +179,27 @@ def build_router(cfg, db, hub) -> APIRouter:
     @r.post("/settings/rotate")
     def rotate(request: Request, sv: str = session,
                which: str = Form(...), csrf: str = Form(default="")):
-        import os
         import secrets as s
-        import tomlkit
-        from pathlib import Path
-        from ..config import Config
         _check_csrf(cfg, sv, csrf)
         if which not in ("agent", "app"):
             raise HTTPException(400)
         new = s.token_hex(32)
-        # Write back to the file this cfg was actually loaded from (a `--config`
-        # deployment's custom path), not the env/default path — the two can
-        # differ, and writing the wrong one silently desyncs the running
-        # server's tokens from what's on disk.
-        path = Path(cfg.loaded_path or Config.default_path())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        doc = tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()
-        doc.setdefault("auth", tomlkit.table())[f"{which}_token"] = new
-        # Atomic + 0600: write to a sibling tmp file then rename over the
-        # target, so a crash mid-write never leaves a partial config, and the
-        # file never has a moment at default (world-readable) permissions.
-        tmp = path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(tomlkit.dumps(doc))
-        os.replace(tmp, path)
+        _write_config_value(cfg, ["auth"], f"{which}_token", new)
         setattr(cfg.auth, f"{which}_token", new)
         db.add_audit("-", "token_rotated", {"which": which})
+        return RedirectResponse("/dashboard/settings", status_code=303)
+
+    @r.post("/settings/notify-policy")
+    def notify_policy(request: Request, sv: str = session,
+                      severity: str = Form(...), csrf: str = Form(default="")):
+        from ..config import SEVERITIES
+        _check_csrf(cfg, sv, csrf)
+        if severity not in SEVERITIES:
+            raise HTTPException(400)
+        new_value = not cfg.notify_severities[severity]
+        _write_config_value(cfg, ["notify", "severities"], severity, new_value)
+        cfg.notify_severities[severity] = new_value
+        db.add_audit("-", "notify_policy_changed", {"severity": severity, "enabled": new_value})
         return RedirectResponse("/dashboard/settings", status_code=303)
 
     return r
