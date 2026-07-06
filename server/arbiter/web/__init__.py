@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import threading
 from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -59,31 +60,36 @@ def _set_cookie(resp, request: Request, value: str):
     resp.set_cookie("hma_session", value, httponly=True, samesite="lax",
                     secure=secure, max_age=MAX_AGE)
 
+_CONFIG_WRITE_LOCK = threading.Lock()
+
 def _write_config_value(cfg, path: list[str], key: str, value):
     """Persist one key into the loaded config file: atomic write, 0600."""
     import os
     import tomlkit
-    from pathlib import Path
     from ..config import Config
-    # Write back to the file this cfg was actually loaded from (a `--config`
-    # deployment's custom path), not the env/default path — the two can
-    # differ, and writing the wrong one silently desyncs the running
-    # server's tokens from what's on disk.
-    p = Path(cfg.loaded_path or Config.default_path())
-    p.parent.mkdir(parents=True, exist_ok=True)
-    doc = tomlkit.parse(p.read_text()) if p.exists() else tomlkit.document()
-    node = doc
-    for part in path:
-        node = node.setdefault(part, tomlkit.table())
-    node[key] = value
-    # Atomic + 0600: write to a sibling tmp file then rename over the
-    # target, so a crash mid-write never leaves a partial config, and the
-    # file never has a moment at default (world-readable) permissions.
-    tmp = p.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(tomlkit.dumps(doc))
-    os.replace(tmp, p)
+    with _CONFIG_WRITE_LOCK:
+        # Write back to the file this cfg was actually loaded from (a `--config`
+        # deployment's custom path), not the env/default path — the two can
+        # differ, and writing the wrong one silently desyncs the running
+        # server's tokens from what's on disk.
+        p = Path(cfg.loaded_path or Config.default_path())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        doc = tomlkit.parse(p.read_text()) if p.exists() else tomlkit.document()
+        node = doc
+        for part in path:
+            node = node.setdefault(part, tomlkit.table())
+        node[key] = value
+        # Atomic + 0600: write to a sibling tmp file then rename over the
+        # target, so a crash mid-write never leaves a partial config, and the
+        # file never has a moment at default (world-readable) permissions.
+        # A tmp file left behind by a previously crashed write is cleared
+        # first, so it can't collide with the O_EXCL open below.
+        tmp = p.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(tomlkit.dumps(doc))
+        os.replace(tmp, p)
 
 def build_router(cfg, db, hub) -> APIRouter:
     r = APIRouter(prefix="/dashboard")
