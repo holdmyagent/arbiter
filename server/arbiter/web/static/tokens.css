@@ -242,6 +242,8 @@ input:focus, select:focus, textarea:focus {
 .status.token_rotated { color: var(--auth); }
 .status.notify_failed { color: var(--sev-high); }
 .lrow .action { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .action a { color: inherit; text-decoration: none; }
+.lrow .action a:hover { color: var(--auth); }
 .lrow .action .who { color: var(--text-faint); }
 .lrow .via { color: var(--text-dim); text-align: right; white-space: nowrap; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .via .fi { width: 15px; height: 15px; color: var(--auth); flex: none; }
@@ -258,7 +260,7 @@ input:focus, select:focus, textarea:focus {
 /* ============ DEVICES ============ */
 .drow { grid-template-columns: 1fr 150px 70px 110px 96px; }
 .drow .seen { color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.drow input[name="name"] { width: 14ch; padding: .25em .5em; }
+.drow input[name="name"] { width: 20ch; padding: .25em .5em; }
 .drow .btn-danger { justify-self: start; }
 .edit-btn {
   font-family: var(--mono); font-size: 11px; letter-spacing: .3px; color: var(--text-faint);

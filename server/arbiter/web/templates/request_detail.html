@@ -26,7 +26,7 @@
     <div class="lrow a3 lhead"><span>Time</span><span>Event</span><span>Detail</span></div>
     {% for e in audit %}
     <div class="lrow a3">
-      <span class="t">{{ e.at }}</span>
+      <span class="t">{{ e.at[11:19] }}Z</span>
       <span class="status {{ e.event }}">{{ e.event }}</span>
       <span class="mono muted">{{ e.detail }}</span>
     </div>
