@@ -324,7 +324,6 @@ input:focus, select:focus, textarea:focus {
 .sev-tog.critical { color: var(--sev-critical); }
 .sev-tog[aria-pressed="true"] { background: color-mix(in srgb, currentColor 15%, transparent); }
 .sev-tog[aria-pressed="false"] { color: var(--text-faint); border-color: var(--border); }
-.sev-tog:disabled { cursor: default; }
 .ok { color: var(--approved); }
 
 /* ============ BUTTONS ============ */
