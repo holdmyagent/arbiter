@@ -128,3 +128,77 @@ def test_dispatcher_expired_status_sends_expired_event(tmp_path, db):
     req["status"] = "expired"
     asyncio.run(Dispatcher(c, db, transport=httpx.MockTransport(handler)).request_decided(req))
     assert seen == ["request.expired"]
+
+class _RecordingSender:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, device_token, payload):
+        self.sent.append((device_token, payload))
+        return "sent"
+
+
+async def _dispatch_created(cfg, db, severity):
+    from arbiter.notify import Dispatcher
+    sender = _RecordingSender()
+    d = Dispatcher(cfg, db, sender=sender)
+    req = {"id": "r-pol", "title": "t", "description": "", "action_type": "agent",
+           "severity": severity, "status": "pending"}
+    await d.request_created(req)
+    return sender
+
+
+def test_policy_disabled_severity_pushes_to_no_device(cfg, db):
+    db.register_device("tok-a", "iPhone", severities={"low": True, "medium": True,
+                                                      "high": True, "critical": True})
+    cfg.notify_severities["low"] = False
+    sender = asyncio.run(_dispatch_created(cfg, db, "low"))
+    assert sender.sent == []
+
+
+def test_policy_enabled_severity_still_pushes(cfg, db):
+    db.register_device("tok-a", "iPhone", severities={"low": True, "medium": True,
+                                                      "high": True, "critical": True})
+    cfg.notify_severities["low"] = False
+    sender = asyncio.run(_dispatch_created(cfg, db, "high"))
+    assert len(sender.sent) == 1
+
+
+def test_policy_does_not_gate_ntfy(cfg, db, monkeypatch):
+    from arbiter.notify import Dispatcher
+    cfg.ntfy.topic = "t0pic"          # enables ntfy
+    cfg.notify_severities["low"] = False
+    d = Dispatcher(cfg, db, sender=_RecordingSender())
+    calls = []
+
+    async def fake_send(req):
+        calls.append(req["id"])
+    monkeypatch.setattr(d.ntfy, "send", fake_send)
+    req = {"id": "r-ntfy", "title": "t", "description": "", "action_type": "agent",
+           "severity": "low", "status": "pending"}
+    asyncio.run(d.request_created(req))
+    assert calls == ["r-ntfy"]
+
+
+def test_policy_gates_min_severity_fallback_devices(cfg, db):
+    db.register_device("tok-legacy", "OldPhone", min_severity="low")  # no severities map
+    cfg.notify_severities["low"] = False
+    sender = asyncio.run(_dispatch_created(cfg, db, "low"))
+    assert sender.sent == []
+
+
+def test_policy_does_not_gate_webhook(cfg, db, monkeypatch):
+    from arbiter.notify import Dispatcher
+    cfg.webhook.url = "https://example.invalid/hook"   # enables webhook
+    cfg.notify_severities["low"] = False
+    d = Dispatcher(cfg, db, sender=_RecordingSender())
+    delivered = []
+
+    async def fake_deliver(url, event, req):
+        delivered.append((url, event, req["id"]))
+        return True
+    monkeypatch.setattr(d.webhook, "deliver", fake_deliver)
+    req = {"id": "r-wh", "title": "t", "description": "", "action_type": "agent",
+           "severity": "low", "status": "pending"}
+    asyncio.run(d.request_created(req))
+    assert delivered and delivered[0][1] == "request.created"

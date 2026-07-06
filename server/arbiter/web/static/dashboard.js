@@ -117,6 +117,12 @@ function connect() {
       const r = await fetch(el.dataset.live, {credentials: "same-origin"});
       if (r.redirected) { location.href = r.url; return; }
       if (r.ok) el.innerHTML = await r.text();
+      const count = document.querySelector(".eyebrow .count");
+      if (count && el.dataset.live.startsWith("/dashboard/requests")) {
+        const pending = el.querySelectorAll(".approval").length;
+        const decided = el.querySelectorAll(".lrow.r4:not(.lhead)").length;
+        count.textContent = `${pending} waiting · ${pending + decided} total`;
+      }
     });
   };
   ws.onclose = () => setTimeout(connect, 3000);
