@@ -17,6 +17,7 @@
       <span class="status {{ e.event }}">{{ e.event }}</span>
       {% if e.severity %}<span class="pill {{ e.severity }} sm">{{ e.severity }}</span>{% else %}<span class="t">—</span>{% endif %}
       <span class="action">{% if e.req_title %}<a href="/dashboard/requests/{{ e.request_id }}">{{ e.req_title }}</a>{% else %}{{ e.event | replace("_", " ") }}{% endif %}</span>
+      {% if e.event in ("approved", "denied") %}
       {% if e.decided_device %}
       {% set dn = e.decided_device | lower %}
       <span class="via" title="Decided on {{ e.decided_device }}">
@@ -33,6 +34,9 @@
       <span class="via"><span class="dev">admin · web</span></span>
       {% elif e.decided_by %}
       <span class="via"><span class="dev">{{ e.decided_by }}</span></span>
+      {% else %}
+      <span class="via"><span class="dev">—</span></span>
+      {% endif %}
       {% else %}
       <span class="via"><span class="dev">—</span></span>
       {% endif %}
