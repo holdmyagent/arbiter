@@ -49,6 +49,8 @@ class WebhookCfg:
 
 _DEFAULT_TOKENS = {"dev-agent-token", "dev-app-token"}
 
+SEVERITIES = ("low", "medium", "high", "critical")
+
 @dataclass
 class Config:
     server: ServerCfg = field(default_factory=ServerCfg)
@@ -56,6 +58,8 @@ class Config:
     apns: ApnsCfg = field(default_factory=ApnsCfg)
     ntfy: NtfyCfg = field(default_factory=NtfyCfg)
     webhook: WebhookCfg = field(default_factory=WebhookCfg)
+    notify_severities: dict = field(
+        default_factory=lambda: {s: True for s in SEVERITIES})
     loaded_path: str = ""
 
     @staticmethod
@@ -88,6 +92,9 @@ class Config:
             for k in ("url", "secret"):
                 if k in n.get("webhook", {}):
                     setattr(cfg.webhook, k, n["webhook"][k])
+            for k, v in n.get("severities", {}).items():
+                if k in cfg.notify_severities and isinstance(v, bool):
+                    cfg.notify_severities[k] = v
         env = os.environ
         m = [("HMA_HOST", cfg.server, "host", str), ("HMA_PORT", cfg.server, "port", int),
              ("HMA_DB_PATH", cfg.server, "db_path", str),
