@@ -1,6 +1,7 @@
 {% extends "base.html" %}{% block title %}Requests — Hold My Agent{% endblock %}
+{% block page_label %}REQUESTS{% endblock %}
+{% block page_cmd %}watch{% endblock %}
+{% block page_count %}{{ requests | selectattr("status", "equalto", "pending") | list | length }} waiting · {{ requests | length }} total{% endblock %}
 {% block content %}
-<section class="card" data-live="/dashboard/requests?fragment=1">
-  {% include "_request_rows.html" %}
-</section>
+<section class="stack" data-live="/dashboard/requests?fragment=1">{% include "_request_rows.html" %}</section>
 {% endblock %}

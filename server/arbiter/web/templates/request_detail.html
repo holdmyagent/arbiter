@@ -1,26 +1,36 @@
 {% extends "base.html" %}{% block title %}{{ r.title }} — Hold My Agent{% endblock %}
+{% block page_label %}REQUEST{% endblock %}
+{% block page_cmd %}cat {{ r.id[:8] }}{% endblock %}
+{% block page_count %}{{ r.status }}{% endblock %}
 {% block content %}
-<section class="card">
-  <p><span class="pill {{ r.severity }}">{{ r.severity }}</span>
-     {% if r.status == "pending" %}<span class="muted">expires in
-       <span class="countdown" data-expires="{{ r.expires_at }}"></span></span>{% endif %}</p>
-  <h1>{{ r.title }}</h1>
-  {% if r.description %}<pre class="mono">{{ r.description }}</pre>{% endif %}
-  {% if r.payload %}<pre class="mono">{{ r.payload | tojson(indent=2) }}</pre>{% endif %}
-  <table>
-    <tr><th>Requested by</th><td>{{ r.action_type }}</td></tr>
-    <tr><th>Target</th><td class="mono">{{ r.target or "—" }}</td></tr>
-    <tr><th>Requested</th><td>{{ r.created_at }}</td></tr>
-    <tr><th>Status</th><td class="status {{ r.status }}">{{ r.status }}
-        {% if r.decided_by %} by {{ r.decided_by }} at {{ r.decided_at }}{% endif %}</td></tr>
-  </table>
-  <p class="muted">Decisions happen on a paired device with biometric step-up — never here.</p>
-</section>
-<section class="card">
-  <h2>Audit trail</h2>
-  <table>
-    {% for e in audit %}<tr><td class="mono">{{ e.at }}</td><td>{{ e.event }}</td>
-      <td class="mono muted">{{ e.detail }}</td></tr>{% endfor %}
-  </table>
-</section>
+<div class="console">
+  <div class="console-head">Authorization slip<span class="tf">{{ r.id[:8] }}</span></div>
+  <div class="slip">
+    <p><span class="pill {{ r.severity }}"><span class="dot"></span>{{ r.severity }}</span>
+      {% if r.status == "pending" %}<span class="expiry">expires in <span class="countdown" data-expires="{{ r.expires_at }}"></span></span>{% endif %}</p>
+    <h2 class="approval-title">{{ r.title }}</h2>
+    {% if r.description %}<div class="cmd-block"><span class="d">$</span>{{ r.description }}</div>{% endif %}
+    {% if r.payload %}<pre>{{ r.payload | tojson(indent=2) }}</pre>{% endif %}
+    <div class="slip-row"><span class="slip-key mono">requested by</span><span class="mono">{{ r.action_type }}</span></div>
+    <div class="slip-row"><span class="slip-key mono">target</span><span class="mono">{{ r.target or "—" }}</span></div>
+    <div class="slip-row"><span class="slip-key mono">requested at</span><span class="mono">{{ r.created_at }}</span></div>
+    <div class="slip-row"><span class="slip-key mono">status</span><span class="status {{ r.status }}">{{ r.status }}</span></div>
+    {% if r.decided_by %}<div class="slip-row"><span class="slip-key mono">decided</span><span class="mono">{{ r.decided_by }} · {{ r.decided_at }}</span></div>{% endif %}
+  </div>
+  <div class="console-foot">Decisions happen on a paired device with biometric step-up — never here.</div>
+</div>
+
+<div class="console">
+  <div class="console-head">Audit trail<span class="tf">{{ audit | length }} events</span></div>
+  <div class="ledger">
+    <div class="lrow a3 lhead"><span>Time</span><span>Event</span><span>Detail</span></div>
+    {% for e in audit %}
+    <div class="lrow a3">
+      <span class="t">{{ e.at[11:19] }}Z</span>
+      <span class="status {{ e.event }}">{{ e.event }}</span>
+      <span class="mono muted">{{ e.detail }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
 {% endblock %}

@@ -30,3 +30,27 @@ def test_expires_at_computed(db, make):
     created = datetime.fromisoformat(r["created_at"])
     expires = datetime.fromisoformat(r["expires_at"])
     assert (expires - created).total_seconds() == 300
+
+def test_list_audit_joins_severity_and_decided_device(db, make):
+    db.register_device("tok1", "iPhone")
+    r = db.create_request(make(severity="high"))
+    db.set_decision(r["id"], "approve", "iPhone")
+    rows = {a["event"]: a for a in db.list_audit(r["id"])}
+    assert rows["approved"]["severity"] == "high"
+    assert rows["approved"]["req_title"] == "t"
+    assert rows["approved"]["decided_by"] == "iPhone"
+    assert rows["approved"]["decided_device"] == "iPhone"
+
+def test_list_audit_decided_device_none_when_no_match(db, make):
+    r = db.create_request(make())
+    db.set_decision(r["id"], "approve", "app")
+    rows = {a["event"]: a for a in db.list_audit(r["id"])}
+    assert rows["approved"]["decided_by"] == "app"
+    assert rows["approved"]["decided_device"] is None
+
+def test_list_audit_non_request_event_has_none_severity(db):
+    db.add_audit("-", "token_rotated", {"which": "agent"})
+    rows = db.list_audit()
+    row = next(a for a in rows if a["event"] == "token_rotated")
+    assert row["severity"] is None and row["req_title"] is None
+    assert row["decided_device"] is None

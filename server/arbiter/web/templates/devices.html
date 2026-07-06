@@ -1,35 +1,35 @@
 {% extends "base.html" %}{% block title %}Devices — Hold My Agent{% endblock %}
+{% block page_label %}DEVICES{% endblock %}
+{% block page_cmd %}list{% endblock %}
+{% block page_count %}{{ devices|length }} paired{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>Devices</h1>
-  {% set ranks = {"low": 0, "medium": 1, "high": 2, "critical": 3} %}
-  <table>
-    <tr><th>Name</th><th>Severities</th><th>Badge</th><th>Registered</th><th></th></tr>
+{% set ranks = {"low": 0, "medium": 1, "high": 2, "critical": 3} %}
+<div class="console">
+  <div class="console-head">Paired Devices<span class="tf">{{ devices|length }} active</span></div>
+  <div class="ledger ledger-scroll">
+    <div class="lrow drow lhead"><span>Device</span><span>Alerts</span><span>Badge</span><span>Registered</span><span>Actions</span></div>
     {% for d in devices %}
-    <tr>
-      <td>
-        <form method="post" action="/dashboard/devices/{{ d.id }}/rename" style="display:inline">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          <input name="name" value="{{ d.name }}"><button class="btn" type="submit">Rename</button>
-        </form>
-      </td>
-      <td>
+    <div class="lrow drow">
+      <form method="post" action="/dashboard/devices/{{ d.id }}/rename" class="rename">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input name="name" value="{{ d.name }}"><button class="edit-btn" type="submit"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>Rename</button>
+      </form>
+      <span>
         {% for s in ["low", "medium", "high", "critical"] %}
         {% set on = d.severities[s] if d.severities else ranks[s] >= ranks[d.min_severity] %}
-        <span class="pill {{ s }}{% if not on %} off{% endif %}" title="{{ s }}">{{ s[0]|upper }}</span>
+        <span class="pill {{ s }} sm{% if not on %} off{% endif %}" title="{{ s }}">{{ s[0]|upper }}</span>
         {% endfor %}
-      </td>
-      <td class="muted">{{ "on" if d.badge else "off" }}</td>
-      <td class="mono muted">{{ d.registered_at }}</td>
-      <td>
-        <form method="post" action="/dashboard/devices/{{ d.id }}/delete">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          <button class="btn" type="submit">Remove</button>
-        </form>
-      </td>
-    </tr>
+      </span>
+      <span class="muted">{{ "on" if d.badge else "off" }}</span>
+      <span class="seen">{{ d.registered_at[:10] }}</span>
+      <form method="post" action="/dashboard/devices/{{ d.id }}/delete">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn-danger" type="submit">Remove</button>
+      </form>
+    </div>
     {% endfor %}
-  </table>
-  {% if not devices %}<p class="muted">No devices paired yet — see <a href="/dashboard/pair">Pair</a>.</p>{% endif %}
-</section>
+  </div>
+  {% if not devices %}<div class="console-empty">No devices paired yet — see <a href="/dashboard/pair">Pair</a>.</div>{% endif %}
+  <div class="console-foot"><span>Only paired devices can decide.</span><span class="tf">{{ devices|length }} registered</span></div>
+</div>
 {% endblock %}
