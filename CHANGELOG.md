@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## [0.3.0] - 2026-07-06
+
+### Added
+
+- **Server-wide per-severity push policy.** `[notify.severities]` in config.toml
+  (default: all enabled) gates which severities push to paired devices at all;
+  each device's own opt-ins still apply — a push needs both. Editable live from
+  the dashboard's Settings page; readable by paired apps via `GET /v1/notify/policy`.
+- **Operator console dashboard.** The web dashboard was redesigned into an
+  operator-console language across every page, in dark and a designed light
+  theme: approval cards, ledger views with column headers and severity pills,
+  a device-aware audit "Decided via" column, an always-scannable pairing QR,
+  copyable tokens/commands, and theme + typeface toggles.
+
+### Fixed
+
+- Ledger severity pills no longer overlap the action column; audit rows expose
+  event detail as a tooltip; live refresh keeps the header counts current;
+  the server version is shown only after login.
+
 ## [0.2.1] - 2026-07-03
 
 ### Added
