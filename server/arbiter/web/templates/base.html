@@ -24,7 +24,7 @@
           </g>
         </svg>
         <span>Hold My Agent</span>
-        {% if server_version %}<span class="server-tag">{{ server_version }}</span>{% endif %}
+        {% if server_version and request.url.path != "/dashboard/login" %}<span class="server-tag">{{ server_version }}</span>{% endif %}
       </div>
       {% set p = request.url.path %}
       <nav class="tabs" aria-label="Dashboard">
