@@ -251,7 +251,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ============ DEVICES ============ */
 .drow { grid-template-columns: 1fr 150px 70px 110px 96px; }
-.drow .name { color: var(--text); font-weight: 600; display: flex; align-items: center; gap: 9px; }
+.drow .seen { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .drow input[name="name"] { width: 14ch; padding: .25em .5em; }
 .drow .btn-danger { justify-self: start; }
 .edit-btn {
