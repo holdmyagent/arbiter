@@ -160,3 +160,53 @@ def test_is_disabled(tmp_path):
     cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
     assert cp.is_disabled("acme") is False
     assert cp.is_disabled("ghost") is True         # absent -> fail closed
+
+
+def test_disable_then_resolution_reports_disabled(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    cp.disable_tenant("acme")
+    assert cp.is_disabled("acme") is True
+
+
+def test_tombstone_recreate_gets_new_epoch_and_stale_route_fails_closed(tmp_path):
+    cp = _open(tmp_path)
+    root = tmp_path / "tenants"
+    cp.create_tenant("acme", str(root / "acme"))       # epoch 1
+    h = "f" * 64
+    cp.add_route(h, "acme")                            # MAC bound to epoch 1
+    assert cp.resolve(h) == ("acme", 1)
+    cp.tombstone_tenant("acme")
+    # tenant_id is free again; recreate gets a fresh, higher, non-recycled epoch.
+    e2 = cp.create_tenant("acme", str(root / "acme-v2"))
+    assert e2 == 2
+    # The stale route (MAC over epoch 1) no longer verifies against live epoch 2.
+    assert cp.resolve(h) is None
+
+
+def test_resolve_fails_closed_on_tampered_mac(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    h = "1" * 64
+    cp.add_route(h, "acme")
+    cp.conn.execute("UPDATE token_route SET mac='deadbeef' WHERE token_hash=?", (h,))
+    cp.conn.commit()
+    assert cp.resolve(h) is None
+
+
+def test_resolve_fails_closed_on_stale_epoch_after_recreate(tmp_path):
+    cp = _open(tmp_path)
+    root = tmp_path / "tenants"
+    cp.create_tenant("acme", str(root / "acme"))       # epoch 1
+    h = "2" * 64
+    cp.add_route(h, "acme")                            # MAC bound to epoch 1
+    cp.tombstone_tenant("acme")
+    cp.create_tenant("acme", str(root / "acme-v2"))    # epoch 2
+    assert cp.resolve(h) is None                       # old route binds old epoch
+
+
+def test_is_disabled_true_for_disabled_tenant(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    cp.disable_tenant("acme")
+    assert cp.is_disabled("acme") is True
