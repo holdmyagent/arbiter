@@ -47,6 +47,15 @@ class WebhookCfg:
     def enabled(self) -> bool:
         return bool(self.url)
 
+@dataclass
+class PolicyCfg:
+    ttl_min_seconds: int = 30
+    ttl_max_seconds: int = 86400
+    approval_ttl_seconds: int = 600
+    rate_limit_per_minute: int = 30
+    deny_action_types: list[str] = field(default_factory=list)
+    severity_floors: dict[str, str] = field(default_factory=dict)
+
 _DEFAULT_TOKENS = {"dev-agent-token", "dev-app-token"}
 
 SEVERITIES = ("low", "medium", "high", "critical")
@@ -58,6 +67,7 @@ class Config:
     apns: ApnsCfg = field(default_factory=ApnsCfg)
     ntfy: NtfyCfg = field(default_factory=NtfyCfg)
     webhook: WebhookCfg = field(default_factory=WebhookCfg)
+    policy: PolicyCfg = field(default_factory=PolicyCfg)
     notify_severities: dict[str, bool] = field(
         default_factory=lambda: {s: True for s in SEVERITIES})
     loaded_path: str = ""

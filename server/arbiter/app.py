@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .auth import Identity, require_role, SlidingWindowLimiter
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher
+from .signing import load_or_create_keypair, public_jwks, sign_verdict
 from .stream import Hub
 from .web import build_router, session_valid
 
@@ -21,6 +23,24 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     hub = hub or Hub()
     dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
     notify_tasks: set = set()
+
+    config_dir = Path(cfg.loaded_path).expanduser().parent if cfg.loaded_path \
+        else Path("~/.config/holdmyagent").expanduser()
+    kid, signing_key = load_or_create_keypair(config_dir)
+
+    def _expire_pass(now=None) -> list[dict]:
+        """One sweep: flip overdue pending rows to expired and sign an 'expired'
+        verdict for each. Sync + clock-injectable so tests drive it directly
+        (no sleeping on the 1s loop)."""
+        out = []
+        for req in db.expire_due(now):
+            jws = sign_verdict(kid, signing_key, request_id=req["id"],
+                               action_hash=req["action_hash"], decision="expired",
+                               decided_at=req["expires_at"],
+                               approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+            db.set_verdict(req["id"], jws, kid)
+            out.append(db.get_request(req["id"]))
+        return out
 
     def _spawn(coro):
         # Hold a strong reference until done — a bare create_task() result is
@@ -35,7 +55,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         async def sweep():
             while True:
                 try:
-                    for req in db.expire_due():
+                    for req in _expire_pass():
                         _spawn(dispatcher.request_decided(req))
                         await hub.publish("request.expired", "request", req)
                 except Exception as exc:
@@ -49,6 +69,8 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     app.state.notify_tasks = notify_tasks
     limiter = SlidingWindowLimiter(10, 60.0)
     app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
+    app.state.expire_pass = _expire_pass
+    app.state.verdict_kid = kid
     # require_role deps read these three off request.app.state:
     app.state.auth_limiter = limiter
     app.state.cfg = cfg
@@ -88,14 +110,26 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     def health():
         return {"ok": True}
 
+    @app.get("/v1/keys")
+    def keys():
+        return public_jwks(kid, signing_key)
+
     # ── API v1 ───────────────────────────────────────────────────────────────
 
     @app.post("/v1/requests")
     async def create(body: RequestCreate,
                      identity: Identity = Depends(require_role("agent", "warden"))):
-        # Legacy config tokens stamp NULL (pre-0.4.0 convention); DB tokens stamp their name.
-        req = db.create_request(
-            body, requested_by=None if identity.legacy else identity.name)
+        # Legacy config tokens (identity.legacy, set by resolve_identity only
+        # for config tokens) stay unstamped (requested_by NULL) for
+        # back-compat reads; DB tokens are stamped with their name.
+        requested_by = None if identity.legacy else identity.name
+        if (body.canonical_action is None) != (body.action_hash is None):
+            raise HTTPException(422, "canonical_action and action_hash must be supplied together")
+        if body.canonical_action is not None:
+            computed = hashlib.sha256(body.canonical_action.encode()).hexdigest()
+            if computed != body.action_hash:
+                raise HTTPException(422, "action_hash does not match canonical_action")
+        req = db.create_request(body, requested_by=requested_by)
         _spawn(dispatcher.request_created(req))
         await hub.publish("request.created", "request", req)
         return req
@@ -121,14 +155,30 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
                 raise HTTPException(404, "not found")
         return r
 
+    @app.get("/v1/requests/{rid}/verdict")
+    def get_verdict(rid: str,
+                    identity: Identity = Depends(require_role("agent", "warden", "app"))):
+        r = db.get_request(rid)
+        if r and identity.role in ("agent", "warden"):   # app tokens: unrestricted
+            rb = r.get("requested_by")
+            if identity.legacy:                 # legacy config token: unstamped rows only
+                if rb is not None:
+                    r = None
+            elif rb != identity.name:           # DB tokens (agent AND warden): own rows only
+                r = None
+        if not r:
+            raise HTTPException(404, "not found")
+        if not r.get("verdict_jws"):
+            raise HTTPException(404, "no verdict yet")
+        return {"verdict": r["verdict_jws"], "kid": r["verdict_kid"]}
+
     @app.post("/v1/requests/{rid}/decision")
     async def decide(rid: str, body: Decision,
                      identity: Identity = Depends(require_role("app"))):
         r = db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
-        if identity.legacy:
-            # Legacy config app token: keep the single-device name heuristic.
+        if identity.name == "app" and identity.role == "app":
             devices = db.list_devices()
             decided_by = devices[0]["name"] if len(devices) == 1 else "app"
         else:
@@ -136,6 +186,13 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated:
             raise HTTPException(409, f"not pending (status={r['status']})")
+        jws = sign_verdict(kid, signing_key, request_id=updated["id"],
+                           action_hash=updated["action_hash"],
+                           decision=updated["status"],
+                           decided_at=updated["decided_at"],
+                           approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+        db.set_verdict(updated["id"], jws, kid)
+        updated = db.get_request(rid)
         _spawn(dispatcher.request_decided(updated))
         await hub.publish("request.decided", "request", updated)
         return updated

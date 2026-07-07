@@ -109,10 +109,12 @@ class Database:
         self.conn.execute(
             "INSERT INTO requests(id,created_at,title,description,action_type,payload,"
             "severity,status,ttl_seconds,expires_at,decided_at,decided_by,target,callback_url,"
-            "requested_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "canonical_action,action_hash,requested_by)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rid, _iso(now), c.title, c.description, c.action_type,
              json.dumps(c.payload), c.severity, "pending", c.ttl_seconds,
-             _iso(expires), None, None, c.target, c.callback_url, requested_by),
+             _iso(expires), None, None, c.target, c.callback_url,
+             c.canonical_action, c.action_hash, requested_by),
         )
         self.conn.commit()
         self.add_audit(rid, "created", {"severity": c.severity})
@@ -142,6 +144,11 @@ class Database:
         self.conn.commit()
         self.add_audit(rid, status, {"by": by})
         return self.get_request(rid)
+
+    def set_verdict(self, rid: str, jws: str, kid: str) -> None:
+        self.conn.execute("UPDATE requests SET verdict_jws=?, verdict_kid=? WHERE id=?",
+                          (jws, kid, rid))
+        self.conn.commit()
 
     def expire_due(self, now: datetime | None = None) -> list[dict]:
         now = now or _utcnow()
