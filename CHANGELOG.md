@@ -53,10 +53,14 @@ changes are additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working unchanged.
   enqueue is not co-committed with the request state change, so a crash in
   the instant between the state change committing and the outbox row
   committing can still lose that one notification (accepted v1 scope — no
-  transactional outbox). Max 3 attempts per row with retry gaps of 1s then
-  5s (ladder constants 1/5/25s; the third rung is unreachable at max 3
-  attempts); stale rows past the request's TTL are dropped; deliberately no
-  dead-letter queue.
+  transactional outbox). Conversely, because the row is deleted only after a
+  successful dispatch, a crash between dispatch-success and that delete
+  causes the startup drain to re-deliver — so delivery is at-least-once
+  across a crash (a push/webhook may be sent twice; channels are not
+  idempotent). Max 3 attempts per row with retry gaps of 1s then 5s (ladder
+  constants 1/5/25s; the third rung is unreachable at max 3 attempts); stale
+  rows past the request's TTL are dropped; deliberately no dead-letter
+  queue.
 - **Ops promotions.** `/health` now does a real DB ping (200/503);
   `hma ask` / `hma status` accept `--url` / `HMA_URL` for remote arbiters.
 - **Docs.** New consolidated references (`docs/api.md`, `docs/config.md`,

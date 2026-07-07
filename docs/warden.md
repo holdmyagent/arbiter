@@ -157,6 +157,12 @@ Registry rules (enforced at config load and at propose time):
   checks that every placeholder in `url`/`body_template` names a declared param, and the
   rendered body is bound by sha256 into the approved canonical document — at execution
   the warden refuses to send any body whose hash differs from what the human approved.
+  Unlike `argv` params, an `http` `url`/`body_template` `string` param is **not** required
+  to carry `pattern`/`max_len` — the loader accepts a bare `type = "string"`, so a
+  `/`-bearing value can flow into the URL or body. That is not an escape (the
+  `action_hash` binding still means the human approves the exact resolved target), but
+  registry authors SHOULD always set `pattern`/`max_len` on `http` string params anyway,
+  since the loader won't require it for you.
 - **Severity and TTL are warden-set**, never agent-set. The agent picks an action name
   and params; everything else comes from this file.
 - **Command environment is scrubbed**: `command` actions run without a shell and with a
