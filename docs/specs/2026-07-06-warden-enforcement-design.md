@@ -264,8 +264,9 @@ All /v1 changes are additive; existing clients (iOS 0.5.0, hold-sdk 0.2.1) keep 
   constructor param, and emit a loud warning when `verify=False` is passed — pointing at the
   right fix (add your CA to the trust store / use a real cert) rather than TLS bypass. Stays a
   pure arbiter client — the warden API is documented plain HTTP (3 endpoints), no SDK coupling.
-- **the agent hook example:** a worked PreToolUse HTTP-hook config + tiny script in
-  `docs/agent-hook.md` — the cooperative on-ramp (tier 1).
+- **the agent hook example:** a worked PreToolUse hook in `docs/agent-hook.md` — a
+  command hook shelling to `hma ask` as the fully-worked example, with the HTTP-hook variant
+  sketched alongside — the cooperative on-ramp (tier 1).
 - **Enforcement-models doc** (`docs/enforcement-models.md`): tier 0 prompt convention / tier 1
   harness hook / tier 2 warden — with the honest pitch line, and an explicit "what each tier does
   NOT protect against" per tier.
