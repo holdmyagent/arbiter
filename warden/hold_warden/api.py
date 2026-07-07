@@ -102,6 +102,8 @@ class WardenAPI:
         agent = self._authenticate(scope)
         if agent is None:
             return 401, {"detail": "invalid or missing bearer token"}
+        if method == "POST" and path == "/v1/propose":
+            return self._propose(agent, body)
         return 404, {"detail": "not found"}
 
     def _authenticate(self, scope) -> str | None:
@@ -118,6 +120,47 @@ class WardenAPI:
             if hmac.compare_digest(presented, expected.encode()):
                 return name
         return None
+
+    # ---------------------------------------------------------- propose
+    @staticmethod
+    def _parse(body: bytes) -> dict | None:
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _propose(self, agent: str, body: bytes):
+        data = self._parse(body)
+        if data is None:
+            return 422, {"detail": "body must be a JSON object"}
+        return self._propose_impl(agent, data)
+
+    def _propose_impl(self, agent: str, data: dict):
+        action = data.get("action")
+        params = data.get("params", {})
+        idem = data.get("idempotency_key")
+        if not isinstance(action, str) or not action:
+            return 422, {"detail": "'action' must be a non-empty string"}
+        if not isinstance(params, dict) or not all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in params.items()):
+            return 422, {"detail": "'params' must be an object with string values"}
+        if idem is not None and (not isinstance(idem, str)
+                                 or not idem or len(idem) > 128):
+            return 422, {"detail": "'idempotency_key' must be a string of 1-128 chars"}
+        try:
+            row = self.orch.propose(agent, action, params, idem)
+        except ParamValidationError as exc:
+            return 422, {"detail": str(exc)}
+        except ProposeError as exc:
+            return 404, {"detail": str(exc)}
+        except ArbiterAuthError:
+            return 502, {"detail": "arbiter rejected the warden token (see warden logs)"}
+        except ArbiterUnavailable:
+            return 502, {"detail": "arbiter unreachable"}
+        return 201, {"proposal_id": row["id"], "request_id": row["request_id"],
+                     "status": row["status"], "expires_at": row.get("expires_at")}
 
     # ----------------------------------------------------------- health
     def _health(self):
