@@ -6,6 +6,8 @@
 #   deny path  : propose -> deny -> proposal denied and NO side effect (marker file absent)
 #   expiry     : propose at the 30s policy-floor TTL, never answer -> expired, NO side effect
 #   wrong key  : second warden pinned to a WRONG Ed25519 key -> proposal failed, NO side effect
+#   tampered   : a REAL signed verdict with its payload mutated post-signature (decision
+#                denied->approved, ORIGINAL signature kept) -> VerdictVerifier rejects it
 # Ports: arbiter 8902, wardens 8903 + 8904 (scripts/smoke.sh uses 8901 — no clash).
 # Overall timeout budget: ~3 minutes — the expiry leg alone waits out a 30s TTL (90s deadline).
 set -euo pipefail
@@ -262,5 +264,53 @@ wait_proposal "$PID4" failed 8904 >/dev/null
 [ ! -e "$TMP/wrongkey-marker" ] \
   || { echo "FAIL: wrong-key warden executed the action (marker file exists)" >&2; exit 1; }
 echo "ok: wrong pinned key refused — proposal failed with no side effect"
+
+# ── tampered verdict: mutate a REAL signed verdict's payload -> rejected ──
+# Drive a fresh proposal to a decided state (deny — any signed verdict works),
+# then prove the signature binds the verdict CONTENT: a legitimately-signed JWS
+# whose payload is mutated post-signature must be refused by the SHIPPED verifier.
+P5=$(curl -fsS -X POST localhost:8903/v1/propose \
+  -H "Authorization: Bearer $SMOKE_AGENT_TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"echo_marker","params":{"marker":"tamper-test"}}')
+PID5=$(json_get "$P5" proposal_id)
+RID5=$(json_get "$P5" request_id)
+curl -fsS -X POST "localhost:8902/v1/requests/$RID5/decision" \
+  -H "Authorization: Bearer $APP_TOKEN" -H 'content-type: application/json' \
+  -d '{"decision":"deny"}' >/dev/null
+wait_proposal "$PID5" denied >/dev/null
+VBODY5=$(curl -fsS "localhost:8902/v1/requests/$RID5/verdict" \
+  -H "Authorization: Bearer $APP_TOKEN")
+JWS5=$(json_get "$VBODY5" verdict)
+RBODY5=$(curl -fsS "localhost:8902/v1/requests/$RID5" \
+  -H "Authorization: Bearer $APP_TOKEN")
+HASH5=$(json_get "$RBODY5" action_hash)
+"$PY" - "$JWS5" "$RID5" "$HASH5" "$ARBITER_PUBKEY" <<'PYEOF'
+import base64, json, sys
+from hold_warden.verdict import VerdictError, VerdictVerifier
+
+jws, request_id, action_hash, pubkey = sys.argv[1:5]
+expected_hash = None if action_hash in ("", "None", "null") else action_hash
+verifier = VerdictVerifier(pubkey)  # the shipped verifier, pinned to the REAL arbiter key
+
+# baseline: the genuine verdict MUST verify, so the rejection below can't be vacuous
+genuine = verifier.verify(jws, request_id, expected_hash)
+if genuine.decision != "denied":
+    sys.exit(f"FAIL: expected a denied verdict to tamper, got {genuine.decision!r}")
+
+# tamper: flip the bound decision claim, keep the ORIGINAL signature
+header, payload_b64, sig = jws.split(".")
+payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+payload["hma"]["decision"] = "approved"
+forged = base64.urlsafe_b64encode(
+    json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=").decode()
+tampered = f"{header}.{forged}.{sig}"
+try:
+    verifier.verify(tampered, request_id, expected_hash)
+except VerdictError:
+    pass  # exactly what must happen — the signature binds the payload
+else:
+    sys.exit("FAIL: tampered verdict verified — signature does not bind the verdict content")
+PYEOF
+echo "ok: tampered verdict rejected"
 
 echo "SMOKE-WARDEN OK"
