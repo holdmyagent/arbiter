@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
 import os
 import secrets as pysecrets
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -192,6 +194,85 @@ def ask(title, severity, target, ttl, description, config_path):
                               severity=severity, target=target, ttl=ttl, description=description)
     click.echo(json.dumps(decision, indent=2))
     sys.exit(code)
+
+# ── per-identity tokens (stored hashed; see `tokens` table, migration 4) ────
+
+_RESERVED_TOKEN_NAMES = {"agent", "app"}  # fixed identity names of the legacy config tokens
+
+def _hash_token(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+@main.group()
+def token():
+    """Manage per-identity API tokens (secrets shown once, stored as sha256)."""
+
+@token.command("create")
+@click.argument("name")
+@click.option("--role", type=click.Choice(["agent", "warden", "app"]), required=True,
+              help="agent: create+read own · warden: create/read-own/consume · app: decide/list.")
+@click.option("--action-types", default=None,
+              help="Comma-separated action_type allowlist scope (e.g. deploy,restart).")
+@click.option("--max-severity", type=click.Choice(["low", "medium", "high", "critical"]),
+              default=None, help="Severity cap scope.")
+@click.option("--expires-days", type=int, default=None, help="Expire the token after N days.")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def token_create(name, role, action_types, max_severity, expires_days, config_path):
+    """Mint a token for NAME. The secret is printed ONCE and never stored."""
+    from datetime import datetime, timedelta, timezone
+    from .db import Database
+    if name in _RESERVED_TOKEN_NAMES:
+        raise click.ClickException(
+            f"'{name}' is reserved for the legacy config-token identity")
+    cfg = Config.load(config_path)
+    db = Database(cfg.db_path_expanded())
+    scopes = None
+    if action_types or max_severity:
+        scopes = {}
+        if action_types:
+            scopes["action_types"] = [a.strip() for a in action_types.split(",") if a.strip()]
+        if max_severity:
+            scopes["max_severity"] = max_severity
+    expires_at = None
+    if expires_days is not None:
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
+    value = f"hma_{role}_{pysecrets.token_hex(24)}"
+    try:
+        db.create_token(name, role, _hash_token(value), scopes, expires_at)
+    except sqlite3.IntegrityError:
+        raise click.ClickException(f"token name '{name}' already exists")
+    db.add_audit("-", "token_created",
+                 {"name": name, "role": role, "scopes": scopes, "expires_at": expires_at})
+    click.echo(f"token: {value}")
+    click.echo("Shown once — only its sha256 hash is stored.")
+
+@token.command("list")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def token_list(config_path):
+    """List tokens (never shows secrets or hashes)."""
+    from .db import Database
+    cfg = Config.load(config_path)
+    db = Database(cfg.db_path_expanded())
+    rows = db.list_tokens()
+    if not rows:
+        click.echo("no tokens")
+        return
+    for t in rows:
+        state = "revoked" if t["revoked_at"] else "active"
+        click.echo(f"{t['name']}  role={t['role']}  {state}  created={t['created_at']}  "
+                   f"expires={t['expires_at'] or '-'}  last_used={t['last_used_at'] or '-'}")
+
+@token.command("revoke")
+@click.argument("name")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def token_revoke(name, config_path):
+    """Revoke the token named NAME (takes effect on its next request)."""
+    from .db import Database
+    cfg = Config.load(config_path)
+    db = Database(cfg.db_path_expanded())
+    if db.revoke_token(name) is None:
+        raise click.ClickException(f"no token named '{name}'")
+    db.add_audit("-", "token_revoked", {"name": name})
+    click.echo(f"revoked {name}")
 
 if __name__ == "__main__":
     main()
