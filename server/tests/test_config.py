@@ -89,3 +89,10 @@ def test_policy_defaults(tmp_path):
     assert cfg.policy.rate_limit_per_minute == 30
     assert cfg.policy.deny_action_types == []
     assert cfg.policy.severity_floors == {}
+
+
+def test_policy_approval_ttl_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text("[policy]\napproval_ttl_seconds = 120\n")
+    cfg = Config.load(str(p))
+    assert cfg.policy.approval_ttl_seconds == 120

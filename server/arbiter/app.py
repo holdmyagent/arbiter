@@ -29,9 +29,10 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     kid, signing_key = load_or_create_keypair(config_dir)
 
     def _expire_pass(now=None) -> list[dict]:
-        """One sweep: flip overdue pending rows to expired and sign an 'expired'
-        verdict for each. Sync + clock-injectable so tests drive it directly
-        (no sleeping on the 1s loop)."""
+        """One sweep: (1) flip overdue pending rows to expired and sign an
+        'expired' verdict for each; (2) flip stale unconsumed approvals to
+        expired, KEEPING the original decision verdict. Sync + clock-injectable
+        so tests drive it directly (no sleeping on the 1s loop)."""
         out = []
         for req in db.expire_due(now):
             jws = sign_verdict(kid, signing_key, request_id=req["id"],
@@ -40,6 +41,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
             db.set_verdict(req["id"], jws, kid)
             out.append(db.get_request(req["id"]))
+        out.extend(db.expire_stale_approvals(cfg.policy.approval_ttl_seconds, now))
         return out
 
     def _spawn(coro):
@@ -196,6 +198,21 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         _spawn(dispatcher.request_decided(updated))
         await hub.publish("request.decided", "request", updated)
         return updated
+
+    @app.post("/v1/requests/{rid}/consume")
+    def consume(rid: str, identity: Identity = Depends(require_role("warden"))):
+        # Sync (not async) on purpose: it runs in the threadpool, so concurrent
+        # consumes genuinely race and the guarded UPDATE decides the winner.
+        code, row = db.consume_request(
+            rid, approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+        if code == 404:
+            raise HTTPException(404, "not found")
+        if code == 410:
+            raise HTTPException(410, "approval stale")
+        if code == 409:
+            raise HTTPException(
+                409, f"not consumable (status={row['status']}, consumed_at={row['consumed_at']})")
+        return {"consumed_at": row["consumed_at"]}
 
     @app.post("/v1/devices", dependencies=[appdep])
     async def register(body: DeviceRegister):
