@@ -40,6 +40,18 @@ def _load_config(config_path: Path) -> WardenConfig:
         raise click.ClickException(f"config error: {exc}")
 
 
+def _write_private(path: Path, text: str) -> None:
+    """Write a secret-bearing file created 0600 atomically (no chmod window).
+
+    O_CREAT's mode only applies to fresh files; the fchmod fixes the mode on a
+    pre-existing file BEFORE any secret bytes are written to it.
+    """
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        os.fchmod(fd, 0o600)
+        fh.write(text)
+
+
 @click.group()
 def main() -> None:
     """hma-warden - the trusted component that executes approved actions."""
@@ -105,14 +117,12 @@ def init(arbiter_url: str, config_path: Path) -> None:
     config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     agent_token = token_hex(32)
     token_path = config_path.parent / "agent.default.token"
-    token_path.write_text(agent_token + "\n")
-    os.chmod(token_path, 0o600)
+    _write_private(token_path, agent_token + "\n")
 
-    config_path.write_text(_CONFIG_TEMPLATE.format(
+    _write_private(config_path, _CONFIG_TEMPLATE.format(
         arbiter_url=base, pinned_key=pinned,
         warden_name=f"{socket.gethostname()}-warden",
         token_path=token_path))
-    os.chmod(config_path, 0o600)
 
     click.echo(f"Wrote {config_path} (0600)")
     click.echo(f"Pinned arbiter verdict key: {pinned}")
