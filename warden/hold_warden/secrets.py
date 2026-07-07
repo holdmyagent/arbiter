@@ -78,7 +78,12 @@ def _resolve_file(path_str: str) -> str:
 
 
 def _resolve_cmd(cmdline: str, timeout_s: int) -> str:
-    argv = shlex.split(cmdline)
+    try:
+        argv = shlex.split(cmdline)
+    except ValueError as exc:
+        # Message carries only shlex's error text, never the cmdline itself.
+        raise SecretResolutionError(
+            f"cmd: malformed command line ({exc})", reason="malformed reference") from exc
     if not argv:
         raise SecretResolutionError("cmd: ref has an empty command", reason="empty command")
     try:
