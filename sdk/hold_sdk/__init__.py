@@ -5,18 +5,23 @@ import httpx
 def request_approval(title, *, description="", severity="medium", target=None,
                      ttl_seconds=300, payload=None, action_type="generic",
                      server_url=None, token=None, poll_interval=2, timeout=None,
+                     idempotency_key=None, callback_url=None,
                      _transport=None) -> str:
     server_url = server_url or os.environ.get("HMA_SERVER_URL")
     token = token or os.environ.get("HMA_AGENT_TOKEN")
     if not server_url or not token:
         return "denied"  # fail-closed: unconfigured is a no
     hdr = {"Authorization": f"Bearer {token}"}
+    body = {"title": title, "description": description, "action_type": action_type,
+            "payload": payload or {}, "severity": severity,
+            "ttl_seconds": ttl_seconds, "target": target}
+    if idempotency_key is not None:
+        body["idempotency_key"] = idempotency_key
+    if callback_url is not None:
+        body["callback_url"] = callback_url
     try:
         with httpx.Client(base_url=server_url.rstrip("/"), timeout=10, transport=_transport) as c:
-            r = c.post("/v1/requests", headers=hdr, json={
-                "title": title, "description": description, "action_type": action_type,
-                "payload": payload or {}, "severity": severity,
-                "ttl_seconds": ttl_seconds, "target": target})
+            r = c.post("/v1/requests", headers=hdr, json=body)
             r.raise_for_status()
             rid = r.json()["id"]
             deadline = time.time() + (timeout if timeout is not None else ttl_seconds + 5)
