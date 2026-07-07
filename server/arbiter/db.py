@@ -131,6 +131,17 @@ class Database:
         with self._lock:
             self.conn.execute("SELECT 1")
 
+    def checkpoint_and_close(self) -> None:
+        """Fold the WAL back into the main file and close the connection. Called
+        by the registry ONLY on eviction of a refcount==0 cell, and NEVER while
+        the registry map lock is held (the map lock is the outer lock; this takes
+        only this connection's own inner RLock). After this returns the cell's
+        connection is dead — the cell object must be unreachable from the map."""
+        with self._lock:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.conn.commit()
+            self.conn.close()
+
     def add_audit(self, request_id: str, event: str, detail: dict | None = None):
         with self._lock:
             self.conn.execute(
