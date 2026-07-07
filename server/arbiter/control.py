@@ -7,6 +7,24 @@ from pathlib import Path
 # SQL or path joins, always parameterized. Validate at the mint boundary.
 _TENANT_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
+
+def assert_dir_isolated(candidate, existing) -> None:
+    """§15.7 non-overlap guard. Raises ValueError if `candidate` (realpath-resolved)
+    equals, contains, or is contained by any resolved dir in `existing`. This lives in
+    control.py — the leaf module (`Consumes: nothing`) — so BOTH mint
+    (`ControlPlane.create_tenant`, below) AND open (`arbiter.registry.open_cell`, which
+    imports this) share ONE implementation, closing the "isolation AND at open" half of
+    §15.7 without an import cycle. The check is byte-identical to Group H's
+    `provisioning.assert_dir_isolated` (which raises the provisioning-local `TenantDirError`);
+    §15.7 requires the two copies to stay identical. Raising `ValueError` here keeps
+    `create_tenant`'s error contract uniform (its charset/under-root/duplicate guards all
+    raise `ValueError`, which the admin CLI already catches)."""
+    c = Path(candidate).resolve()
+    for other in existing:
+        o = Path(other).resolve()
+        if c == o or c.is_relative_to(o) or o.is_relative_to(c):
+            raise ValueError(f"tenant dir overlaps an existing/open cell dir: {c} vs {o}")
+
 # control.db is a ROUTER ONLY (§4). This module owns the tenants(tenant_id, dir,
 # epoch, disabled_at) slice + a monotonic epoch counter. The routing group ADDS
 # the token_route table, the (token_hash, tenant_id, epoch) MAC, resolve(),

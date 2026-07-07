@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from arbiter.control import ControlPlane
+from arbiter.control import ControlPlane, assert_dir_isolated
 
 
 def test_create_tenant_returns_monotonic_epoch(tmp_path):
@@ -54,3 +54,27 @@ def test_list_tenants_and_tenant_epoch(tmp_path):
     ids = [t["tenant_id"] for t in c.list_tenants()]
     assert ids == ["acme", "default"]          # ORDER BY tenant_id
     assert c.tenant_epoch("acme") == 2 and c.tenant_epoch("nope") is None
+
+
+def test_assert_dir_isolated_exact_duplicate(tmp_path):
+    a = tmp_path / "acme"
+    with pytest.raises(ValueError):
+        assert_dir_isolated(a, [a])
+
+
+def test_assert_dir_isolated_nested_under_existing(tmp_path):
+    a = tmp_path / "acme"
+    with pytest.raises(ValueError):
+        assert_dir_isolated(a / "sub", [a])
+
+
+def test_assert_dir_isolated_candidate_is_parent_of_existing(tmp_path):
+    a = tmp_path / "acme"
+    with pytest.raises(ValueError):
+        assert_dir_isolated(a, [a / "sub"])
+
+
+def test_assert_dir_isolated_disjoint_sibling_ok(tmp_path):
+    a = tmp_path / "acme"
+    b = tmp_path / "bob"
+    assert_dir_isolated(b, [a])  # no raise
