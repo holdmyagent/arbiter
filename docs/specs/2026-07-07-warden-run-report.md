@@ -59,11 +59,11 @@ Carried-forward observations (deliberately scoped out of *this* run, not silentl
 
 | Suite | Result |
 |---|---|
-| `server` (`cd server && ../.venv/bin/python -m pytest -q`) | **233 passed, 0 failed, 0 errors, 0 skipped** |
+| `server` (`cd server && ../.venv/bin/python -m pytest -q`) | **241 passed, 0 failed, 0 errors, 0 skipped** |
 | `warden` (`cd warden && ../.venv/bin/python -m pytest -q`) | **174 passed, 0 failed, 0 errors, 0 skipped** |
 | `sdk` (`cd sdk && ../.venv/bin/python -m pytest -q`) | **14 passed, 0 failed, 0 errors, 0 skipped** |
 
-Counts match the expected totals stated in the task brief exactly (233 / 174 / 14). Note: this pytest install (9.1.1) does not print the usual trailing `"N passed in X.XXs"` summary line in this environment (dots + warnings section print, then nothing — reproduced identically across all three suites, and even on `--collect-only`); all three runs exited 0 with dot-counts matching the expected totals, and pass/fail/error/skip counts were additionally confirmed via `--junitxml` for each suite as authoritative evidence (`errors="0" failures="0" skipped="0" tests="233|174|14"`). This is a cosmetic reporter quirk of the local pytest build, not a gate failure.
+The server total rose from the 233 at Task-29 gate to **241** after the final whole-branch review (below): the post-review callback-allowlist SSRF fix and its regression tests added 8 server tests. Warden (174) and sdk (14) are unchanged. Both smokes were re-run green after the SSRF code fix. Note: this pytest install (9.1.1) does not print the usual trailing `"N passed in X.XXs"` summary line in this environment (dots + warnings section print, then nothing — reproduced identically across all three suites, and even on `--collect-only`); all three runs exited 0 with dot-counts matching the expected totals, and pass/fail/error/skip counts were additionally confirmed via `--junitxml` for each suite as authoritative evidence (`errors="0" failures="0" skipped="0" tests="233|174|14"`). This is a cosmetic reporter quirk of the local pytest build, not a gate failure.
 
 `bash scripts/smoke.sh` — exit 0. Tail:
 ```
@@ -100,6 +100,21 @@ docs gate OK
 
 All five Step-1 gates plus the docs gate are green. Branch pushed on this evidence.
 
+## Final whole-branch review & post-review fixes
+
+After all 29 tasks completed, a broad whole-branch review ran over the full 61-commit range (base `11fa3b0`) — the review each per-task gate cannot do: cross-task seams, systemic patterns, and accumulated debt. Verdict: **ready to merge, with one fix** (applied below). No Critical defect and no threat-model violation: a compromised agent token can do exactly what design §3 permits (propose constrained actions; spam, rate-limited/deduped) and nothing more — it cannot decide, consume, read foreign requests, forge a verdict, or replay one. The trust chain (verify signature → re-canonicalize → hash-match → atomic single-use consume → execute), secret single-read, migration coherence (0→6), and full RLock coverage were all independently confirmed, and the adversarial smoke legs (tampered-verdict, wrong-key, expiry) are real.
+
+**Fixed before push (post-review):**
+
+- **Callback-allowlist SSRF hardening** (`server/arbiter/notify/__init__.py`). The matcher ran `fnmatch` over the whole URL string, so a host-*wildcard* rule like `https://*.hooks.example.com/*` was bypassable (`https://evil.com/.hooks.example.com/x` matched, because `*` crossed the `/`). Host-*literal* rules — the documented default — were never affected. The matcher now compares parsed URL components: scheme + authority (host[:port]) as a literal (a leading `*.` matches subdomains only, and can't contain `/` because the host comes from `urlparse().hostname`), with the glob confined to the path. Fail-closed on malformed input (e.g. a non-numeric port). Re-reviewed adversarially against 25 bypass vectors (authority-crossing, suffix-append, userinfo, scheme, case, `//`-in-path, newline injection, IPv6) — all correctly rejected; both smokes re-run green. Port semantics are now documented (an entry without a port matches any port on the trusted host; default ports are not normalized, so pin the port only when you mean it).
+- **Two doc-honesty notes** (no code change): the notification outbox is at-least-*once* across a crash (a push/webhook may be re-sent if the process dies between dispatch and row-delete; channels aren't idempotent) — now stated in the outbox docstring + CHANGELOG; and `http`-adapter `string` params feeding a `url`/`body_template` segment *should* carry `pattern`+`max_len` (the loader doesn't require it; the action-hash binding still means the human approves the exact resolved target) — now noted in the registry-rules docs.
+
+**Deferred to fast-follow (0.4.1 / issues — the review judged each non-blocking; none is a security bypass):**
+
+- Add a `CREATE INDEX` on `tokens.token_hash` (the hot auth-path lookup currently full-scans — negligible at self-hosted scale).
+- Move the per-identity create rate-limiter check *ahead* of policy evaluation, so an agent can't spam policy-denied `action_type`s unthrottled (floods the audit log; creates no request rows).
+- Accepted-as-documented debt (unchanged from the per-task ledger): process-local (not cross-process) DB lock scope; duplicate-collapse relies on the app-level check for unbound cooperative-tier creates (warden creates are protected by the idempotency-key unique index); http/audit-export response buffering. All acceptable for the single-process self-hosted deployment profile the design targets.
+
 ## Operator notes for the morning
 
 - **v0.3.0 was never git-tagged on origin.** Origin tags are `v0.2.0` and `v0.2.1` only (`git ls-remote --tags origin`) — the 0.3.0 server release referenced in earlier changelogs never got a corresponding `v0.3.0` tag, so the tag-triggered release CI never ran for it. This run does **not** create or push any tags (per the "no tags, no publishing" constraint). **Recommendation:** decide, as part of the 0.4.0 release, whether to back-tag `v0.3.0` retroactively for changelog continuity or simply fold that gap into the 0.4.0 release notes and move on — either is fine, but it's an explicit decision, not an oversight to silently repeat.
@@ -108,3 +123,4 @@ All five Step-1 gates plus the docs gate are green. Branch pushed on this eviden
   1. **Knossos staging deploy** — run the `knossos-staging-gates` skill's clone-and-validate procedure with a new **G8-HMA** gate added to the existing G1–G7 suite, per `docs/reference-sandboxed-agent.md` Appendix A (the Knossos/OpenShell/NemoClaw mapping). Promote to golden only after all gates (including G8-HMA) are green on the staging clone.
   2. **iOS 0.6.0**: build the receipt/executed-state UI against the new `/v1/audit/export` and per-request verdict/receipt data this run added server-side.
   3. **Release decision for 0.4.0**: once this PR merges, cut the `holdmyagent` 0.4.0 / `hold-sdk` 0.3.0 / `hold-warden` 0.1.0 releases (tags + publishing) together, folding in the v0.3.0-tag decision above.
+- **Pre-tag blocker — `release.yml` has no `pypi-warden` job.** The tag-triggered `.github/workflows/release.yml` publishes `pypi-server`, `pypi-sdk`, `github-release`, and `docker`, but there is **no** job for the new `hold-warden` package — yet the README and docs tell users to `pip install hold-warden`. Cutting a `v0.4.0` tag as-is would publish server + sdk and silently omit warden, so `pip install hold-warden` would 404 on PyPI. This run does not touch release CI (per "no publishing" scope), so it is intentionally left for the operator: **before tagging 0.4.0, add a `pypi-warden` job** (mirror `pypi-sdk`: `python -m build warden`, its own PyPI environment) and include the warden dists in the `github-release` job. Surfaced by the final whole-branch review; not a PR-merge blocker, but a hard blocker for the 0.4.0 *release*.
