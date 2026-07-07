@@ -47,6 +47,8 @@ callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example.com/*"]
                             # — bare hostnames match nothing (fail-closed). For URL patterns, scheme
                             # and host are literal (a leading "*." on the host matches subdomains
                             # only); "*" in the path is path-only and never crosses the host boundary.
+                            # Ports: omit to match any port; a pinned port is exact and NOT
+                            # default-normalized (":443" rejects a URL with no explicit port).
 
 [notify.apns]               # optional — bring your own Apple Developer key
 key_path = ""

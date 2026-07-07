@@ -105,7 +105,12 @@ host matches subdomains only (e.g. `*.hooks.example.com` matches
 `a.hooks.example.com` but not `hooks.example.com` itself or
 `hooks.example.com.evil.com`). Only the path segment is glob-matched
 (`*`), and that glob can never cross the host boundary, since the
-candidate host comes from the parsed URL and can never contain a `/`. A
+candidate host comes from the parsed URL and can never contain a `/`.
+Two port footguns worth knowing: (a) an entry with **no port** matches the
+trusted host on **any** port; (b) default ports are **not** normalized, so
+`https://host:443/*` will *reject* a legitimate `https://host/x` (whose
+parsed port is `None`). Pin a port explicitly only when you actually mean
+to restrict to it; otherwise omit it. A
 CIDR entry matches only when the URL's host is a **literal IP address** —
 the server never DNS-resolves hostnames (and never trusts URL userinfo,
 e.g. `user@host`, as the host), so a CIDR entry cannot be satisfied (or
