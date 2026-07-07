@@ -96,3 +96,10 @@ def test_policy_approval_ttl_parsed(tmp_path):
     p.write_text("[policy]\napproval_ttl_seconds = 120\n")
     cfg = Config.load(str(p))
     assert cfg.policy.approval_ttl_seconds == 120
+
+
+def test_policy_ttl_clamps_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text("[policy]\nttl_min_seconds = 60\nttl_max_seconds = 3600\n")
+    cfg = Config.load(str(p))
+    assert cfg.policy.ttl_min_seconds == 60 and cfg.policy.ttl_max_seconds == 3600

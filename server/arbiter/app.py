@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -125,13 +126,35 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         # for config tokens) stay unstamped (requested_by NULL) for
         # back-compat reads; DB tokens are stamped with their name.
         requested_by = None if identity.legacy else identity.name
+        # ttl clamp: out-of-range values are clamped, never rejected
+        body.ttl_seconds = max(cfg.policy.ttl_min_seconds,
+                               min(cfg.policy.ttl_max_seconds, body.ttl_seconds))
+        # idempotency replay: same identity + key -> the original row (200, no new request)
+        if body.idempotency_key:
+            existing = db.get_request_by_idem(requested_by, body.idempotency_key)
+            if existing:
+                return existing
         if (body.canonical_action is None) != (body.action_hash is None):
             raise HTTPException(422, "canonical_action and action_hash must be supplied together")
         if body.canonical_action is not None:
             computed = hashlib.sha256(body.canonical_action.encode()).hexdigest()
             if computed != body.action_hash:
                 raise HTTPException(422, "action_hash does not match canonical_action")
-        req = db.create_request(body, requested_by=requested_by)
+        # duplicate-collapse (spec key action_hash|title): an identical action
+        # already pending -> that row. Hash-bound creates match on action_hash;
+        # unbound creates (action_hash NULL) match on title.
+        dup = db.find_duplicate_pending(requested_by, body.action_hash, body.title)
+        if dup:
+            return dup
+        try:
+            req = db.create_request(body, requested_by=requested_by)
+        except sqlite3.IntegrityError:
+            # concurrent identical create lost the unique(requested_by, idempotency_key) race
+            existing = db.get_request_by_idem(requested_by, body.idempotency_key) \
+                if body.idempotency_key else None
+            if existing:
+                return existing
+            raise
         _spawn(dispatcher.request_created(req))
         await hub.publish("request.created", "request", req)
         return req
@@ -187,7 +210,10 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
             decided_by = identity.name
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated:
-            raise HTTPException(409, f"not pending (status={r['status']})")
+            cur = db.get_request(rid)
+            # a pending row that refused the guarded UPDATE is expired-by-clock
+            shown = "expired" if cur["status"] == "pending" else cur["status"]
+            raise HTTPException(409, f"not pending (status={shown})")
         jws = sign_verdict(kid, signing_key, request_id=updated["id"],
                            action_hash=updated["action_hash"],
                            decision=updated["status"],
