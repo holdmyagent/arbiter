@@ -60,13 +60,14 @@ Mint a per-identity API token. The token is printed **once** (format
 | `--action-types a,b` | Scope: the token may only create these `action_type`s. |
 | `--max-severity S` | Scope: cap on the (effective) severity it may create. |
 | `--expires-days N` | Token expiry; omit for non-expiring. |
+| `--config PATH` | Which `config.toml` to load — the token store is the server database at its `db_path`, so all three `token` subcommands run on the arbiter host, not over HTTP. |
 
-### `hma token list`
+### `hma token list [--config PATH]`
 
 Table of token names, roles, created/expires/last-used timestamps, and
 revocation state. Never prints hashes or token values.
 
-### `hma token revoke NAME`
+### `hma token revoke NAME [--config PATH]`
 
 Immediately revokes the named token (sets `revoked_at`; auth refuses it from
 then on).

@@ -32,7 +32,7 @@ Two credential systems are accepted:
 |---|---|
 | `agent` | Create requests; read **own** requests (`requested_by` == token name, 404 otherwise); read own verdicts. |
 | `warden` | Everything `agent` can, plus: send `canonical_action`/`action_hash` at create, and `POST .../consume` an approval (single-use, **any** warden identity — not scoped to the request's creator). |
-| `app` | List all requests, decide, register/list devices, read notify policy, `/v1/stream`, audit export. Held by the paired iOS app. |
+| `app` | List all requests, decide, register/list devices, read notify policy, `/v1/stream` (legacy static `app_token` only — DB tokens don't open the stream; see [Live events](#live-events)), audit export. Held by the paired iOS app. |
 | admin session | Dashboard (view-only) + `GET /v1/audit/export`. Cookie minted at `/dashboard/login`. |
 
 Rate limits: repeated **auth failures** are throttled per client IP (429).
@@ -191,10 +191,17 @@ is **not** scoped to the warden that created it (unlike the scoped reads on
 Streams the full audit table as `text/plain` JSON Lines — one event object
 per line: `{"id", "request_id", "event", "at", "detail"}`. Events include
 `created`, `approved`, `denied`, `expired`, `consumed`, `verdict_issued`,
-`policy_denied`, `rate_limited`, `notify_failed`, `token_rotated`,
-`notify_policy_changed`. Same data as `hma audit export`. Auth failures on
-this route are throttled by the same per-IP limiter as every other route
-(429 on repeated bad bearer tokens or missing session).
+`policy_denied`, `rate_limited`, `notify_failed`, `token_created`,
+`token_revoked`, `token_rotated`, `notify_policy_changed`. Same data as
+`hma audit export`. Auth failures on this route are throttled by the same
+per-IP limiter as every other route (429 on repeated bad bearer tokens or
+missing session).
+
+**Status-code exception:** because this route accepts a bearer token *or* a
+session cookie, every auth failure — including a completely absent
+`Authorization` header — returns
+`403 {"detail": "app token or admin session required"}`. This is the one
+`/v1` route that never returns 401; key any re-auth logic here off 403.
 
 ## Devices and notifications
 
@@ -235,7 +242,7 @@ session cookie) until DB-token support lands here.
 | Code | Meaning here |
 |---|---|
 | 200 | Success (create also returns 200 — including idempotent replay and duplicate-collapse). |
-| 401 | Missing or malformed `Authorization` header. |
+| 401 | Missing or malformed `Authorization` header — except `GET /v1/audit/export`, which returns 403 for every auth failure (see its section). |
 | 403 | Invalid/revoked/expired token, wrong role, or policy deny (`policy: <reason>`, incl. token scope violations). |
 | 404 | Not found — including another identity's request (scoped reads) and "no verdict yet". |
 | 409 | Decision/consume conflict: not pending, already decided, already consumed, lost a race. |
