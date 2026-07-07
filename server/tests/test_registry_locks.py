@@ -3,6 +3,7 @@ import threading
 import pytest
 from arbiter.config import Config
 from arbiter.control import ControlPlane
+from arbiter.db import Database
 from arbiter.registry import TenantRegistry
 
 
@@ -32,7 +33,7 @@ async def test_open_does_not_hold_db_rlock_of_another_cell(tmp_path):
         def hog():
             with a.db._lock:
                 held.set()
-                release.wait(2.0)
+                release.wait(5.0)  # strictly longer than acquire's 2.0s wait_for below
 
         t = threading.Thread(target=hog); t.start()
         assert held.wait(1.0)
@@ -56,6 +57,48 @@ async def test_map_lock_is_timeout_bounded(tmp_path):
             await reg.acquire("a", ea)
     finally:
         reg._map_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_never_runs_under_map_lock(tmp_path, monkeypatch):
+    # checkpoint_and_close is a blocking DB call; the registry must run it AFTER
+    # releasing the outer map lock, never across it (else one tenant's checkpoint
+    # would stall every other tenant's acquire/release). Driven from a single task
+    # with no other concurrency, so a True reading of _map_lock.locked() at probe
+    # time can only mean the eviction path itself held the lock across the
+    # checkpoint call -- not a coincidental concurrent acquirer. Covers both
+    # eviction paths: acquire()'s over-cap eviction and the explicit evict_idle()
+    # maintenance sweep.
+    calls = []
+    orig = Database.checkpoint_and_close
+
+    def probe(self):
+        calls.append(reg._map_lock.locked())
+        return orig(self)
+
+    monkeypatch.setattr(Database, "checkpoint_and_close", probe)
+
+    # Path 1: acquire()-triggered eviction (opening b over cap evicts idle a).
+    control, reg = _reg(tmp_path, max_hot_cells=1)
+    ea = control.create_tenant("a", tmp_path / "a")
+    a = await reg.acquire("a", ea)
+    reg.release(a)  # idle: refcount 0, eligible for eviction
+
+    eb = control.create_tenant("b", tmp_path / "b")
+    b = await reg.acquire("b", eb)  # over cap -> evicts a -> checkpoint_and_close(a)
+    reg.release(b)
+
+    assert len(calls) >= 1
+    assert all(held is False for held in calls)
+
+    # Path 2: explicit evict_idle() maintenance sweep.
+    calls.clear()
+    reg.max_hot_cells = 0
+    evicted = await reg.evict_idle()  # evicts idle b -> checkpoint_and_close(b)
+
+    assert evicted >= 1
+    assert len(calls) >= 1
+    assert all(held is False for held in calls)
 
 
 @pytest.mark.asyncio
