@@ -66,3 +66,26 @@ async def test_evict_idle_sweep_returns_count(tmp_path):
     reg.max_hot_cells = 1
     assert await reg.evict_idle() == 1
     assert len([k for k, v in reg._map.items()]) == 1
+
+
+@pytest.mark.asyncio
+async def test_logs_warning_when_over_cap_all_cells_pinned(tmp_path, caplog):
+    control, reg = _reg(tmp_path, max_hot_cells=1)
+    ea = control.create_tenant("a", tmp_path / "a")
+    pinned = await reg.acquire("a", ea)
+    try:
+        with caplog.at_level("WARNING", logger="arbiter.registry"):
+            eb = control.create_tenant("b", tmp_path / "b")
+            cb = await reg.acquire("b", eb)
+            try:
+                assert "a" in reg._map and "b" in reg._map
+            finally:
+                reg.release(cb)
+        # Verify warning was logged with expected content
+        assert any(
+            record.levelname == "WARNING"
+            and "over cap" in record.message
+            for record in caplog.records
+        )
+    finally:
+        reg.release(pinned)
