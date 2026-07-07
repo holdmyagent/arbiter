@@ -1,11 +1,36 @@
+"""control.db — the router-only control plane for the multi-tenant arbiter.
+
+Stores ONLY (full-64-hex token_hash -> tenant_id) routes plus the tenant registry
+(tenant_id, dir, disabled_at, epoch). Never roles/scopes/requests/devices. Every
+row's integrity is protected by an HMAC over (token_hash, tenant_id, epoch) keyed
+by a 0600 key file beside control.db, so a tampered or rolled-back registry fails
+closed at resolve rather than silently re-pointing a cell (spec §4, §18).
+"""
+import hashlib
+import hmac
+import os
 import re
+import secrets
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
-# tenant_id charset is strictly [a-z0-9-] (§4/§14): never string-interpolated into
-# SQL or path joins, always parameterized. Validate at the mint boundary.
-_TENANT_ID_RE = re.compile(r"^[a-z0-9-]+$")
+CONTROL_SCHEMA_VERSION = 1
+MAC_KEY_FILENAME = "control_mac.key"
+CONTROL_DB_FILENAME = "control.db"
+
+_TENANT_RE = re.compile(r"^[a-z0-9-]+$")
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _validate_tenant_id(tenant_id: str) -> None:
+    # Strict [a-z0-9-]; never string-interpolated into SQL or path joins (spec §4).
+    if not tenant_id or not _TENANT_RE.match(tenant_id):
+        raise ValueError(f"invalid tenant_id {tenant_id!r} (must match [a-z0-9-]+)")
 
 
 def assert_dir_isolated(candidate, existing) -> None:
@@ -25,72 +50,125 @@ def assert_dir_isolated(candidate, existing) -> None:
         if c == o or c.is_relative_to(o) or o.is_relative_to(c):
             raise ValueError(f"tenant dir overlaps an existing/open cell dir: {c} vs {o}")
 
-# control.db is a ROUTER ONLY (§4). This module owns the tenants(tenant_id, dir,
-# epoch, disabled_at) slice + a monotonic epoch counter. The routing group ADDS
-# the token_route table, the (token_hash, tenant_id, epoch) MAC, resolve(),
-# is_disabled(), disable_tenant(), tombstone_tenant(), add_route/remove_route on
-# THIS SAME class. Do not remove the extension seam.
-_CONTROL_SCHEMA = """
-CREATE TABLE IF NOT EXISTS tenants(
-  tenant_id TEXT PRIMARY KEY,
-  dir TEXT NOT NULL UNIQUE,
-  epoch INTEGER NOT NULL,
-  disabled_at TEXT);
-CREATE TABLE IF NOT EXISTS control_meta(
-  key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-INSERT OR IGNORE INTO control_meta(key, value) VALUES ('next_epoch', 1);
-"""
+
+def _load_or_create_mac_key(control_dir: Path) -> bytes:
+    """32-byte HMAC key, minted 0600 via O_EXCL on first run; loser of a concurrent
+    first-run race reads the winner's bytes (same discipline as signing.py)."""
+    p = control_dir / MAC_KEY_FILENAME
+    if p.is_file():
+        return p.read_bytes()
+    key = secrets.token_bytes(32)
+    try:
+        fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return p.read_bytes()
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
+    return key
+
+
+def _control_migrate_0_to_1(conn: sqlite3.Connection) -> None:
+    # epoch is an AUTOINCREMENT PK: globally monotonic and NEVER reused, so a
+    # tombstoned tenant's epoch can never be recycled (spec §5, invariant 13).
+    # A partial unique index enforces "at most one LIVE row per tenant_id" while
+    # tombstoned rows are retained forever to keep the epoch counter monotonic.
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS tenants(
+      epoch INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      dir TEXT NOT NULL,
+      disabled_at TEXT,
+      tombstoned_at TEXT);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_live
+      ON tenants(tenant_id) WHERE tombstoned_at IS NULL;
+    CREATE TABLE IF NOT EXISTS token_route(
+      token_hash TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      mac TEXT NOT NULL);
+    """)
+
+
+_CONTROL_MIGRATIONS = [_control_migrate_0_to_1]
 
 
 class ControlPlane:
-    def __init__(self, path: str):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+    def __init__(self, db_path: str, mac_key: bytes, tenants_root: Path):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        # Same shared-connection discipline as Database (db.py): one connection,
-        # one RLock, every method takes it (reads included) because resolve() runs
-        # from FastAPI's threadpool concurrently with rare admin writes.
         self._lock = threading.RLock()
+        self._mac_key = mac_key
+        self._root = Path(tenants_root)
         with self._lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA busy_timeout=5000")
-            self.conn.executescript(_CONTROL_SCHEMA)
+            v = self.conn.execute("PRAGMA user_version").fetchone()[0]
+            for i in range(v, CONTROL_SCHEMA_VERSION):
+                _CONTROL_MIGRATIONS[i](self.conn)
+            if v < CONTROL_SCHEMA_VERSION:
+                self.conn.execute(f"PRAGMA user_version={CONTROL_SCHEMA_VERSION}")
             self.conn.commit()
 
-    def create_tenant(self, tenant_id: str, dir) -> int:
-        """Register a tenant with a fresh, monotonic, never-reused epoch. Returns
-        the epoch. Dir is stored realpath-canonical + absolute; UNIQUE enforces
-        no two tenants share a dir (full non-overlap/symlink checks are the
-        provisioning group's, re-validated at cell open in open_cell)."""
-        if not _TENANT_ID_RE.match(tenant_id):
-            raise ValueError(f"invalid tenant_id (charset [a-z0-9-]): {tenant_id!r}")
-        d = str(Path(dir).expanduser().resolve())
+    @classmethod
+    def open(cls, control_dir, tenants_root) -> "ControlPlane":
+        control_dir = Path(control_dir)
+        control_dir.mkdir(parents=True, exist_ok=True)
+        mac_key = _load_or_create_mac_key(control_dir)
+        return cls(str(control_dir / CONTROL_DB_FILENAME), mac_key, Path(tenants_root))
+
+    def _mac(self, token_hash: str, tenant_id: str, epoch: int) -> str:
+        # \x00 separators: unambiguous framing so ("ab","c") and ("a","bc") differ.
+        msg = b"\x00".join(
+            (token_hash.encode(), tenant_id.encode(), str(epoch).encode()))
+        return hmac.new(self._mac_key, msg, hashlib.sha256).hexdigest()
+
+    def _canonical_under_root(self, dir: str) -> str:
+        cand = Path(dir).resolve()
+        root = self._root.resolve()
+        if not cand.is_absolute():
+            raise ValueError(f"tenant dir must be absolute: {dir!r}")
+        if root not in cand.parents:
+            raise ValueError(f"tenant dir {cand} is not strictly under root {root}")
+        return str(cand)
+
+    def create_tenant(self, tenant_id: str, dir: str) -> int:
+        _validate_tenant_id(tenant_id)
+        canonical = self._canonical_under_root(dir)
         with self._lock:
-            epoch = self.conn.execute(
-                "SELECT value FROM control_meta WHERE key='next_epoch'").fetchone()["value"]
-            self.conn.execute(
-                "UPDATE control_meta SET value=? WHERE key='next_epoch'", (epoch + 1,))
-            self.conn.execute(
-                "INSERT INTO tenants(tenant_id, dir, epoch, disabled_at) VALUES (?,?,?,NULL)",
-                (tenant_id, d, epoch))
+            # §15.7 dir isolation AT MINT: reject a dir that equals, nests under, or is
+            # symlink/`..`-resolvable into any existing LIVE (non-tombstoned) tenant dir —
+            # two cells sharing a dir would load one signing key = silent cross-tenant
+            # forgery. The UNIQUE index only covers tenant_id, so the dir overlap must be
+            # enforced here. Same guard the registry re-applies at open (open_cell).
+            existing = [r["dir"] for r in self.conn.execute(
+                "SELECT dir FROM tenants WHERE tombstoned_at IS NULL").fetchall()]
+            assert_dir_isolated(canonical, existing)   # raises ValueError on overlap
+            try:
+                cur = self.conn.execute(
+                    "INSERT INTO tenants(tenant_id, dir, disabled_at, tombstoned_at)"
+                    " VALUES (?,?,NULL,NULL)", (tenant_id, canonical))
+            except sqlite3.IntegrityError:
+                raise ValueError(f"tenant {tenant_id!r} already exists (live)")
             self.conn.commit()
-            return epoch
+            return cur.lastrowid
+
+    def epoch_of(self, tenant_id: str) -> int | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT epoch FROM tenants WHERE tenant_id=? AND tombstoned_at IS NULL",
+                (tenant_id,)).fetchone()
+            return r["epoch"] if r else None
 
     def tenant_dir(self, tenant_id: str) -> Path:
         with self._lock:
             r = self.conn.execute(
-                "SELECT dir FROM tenants WHERE tenant_id=?", (tenant_id,)).fetchone()
+                "SELECT dir FROM tenants WHERE tenant_id=? AND tombstoned_at IS NULL",
+                (tenant_id,)).fetchone()
         if r is None:
-            raise KeyError(tenant_id)
+            raise KeyError(f"no live tenant {tenant_id!r}")
         return Path(r["dir"])
-
-    def tenant_epoch(self, tenant_id: str) -> int | None:
-        with self._lock:
-            r = self.conn.execute(
-                "SELECT epoch FROM tenants WHERE tenant_id=?", (tenant_id,)).fetchone()
-        return r["epoch"] if r else None
 
     def list_tenants(self) -> list[dict]:
         with self._lock:
             return [dict(r) for r in self.conn.execute(
-                "SELECT tenant_id, dir, epoch, disabled_at FROM tenants ORDER BY tenant_id"
-            ).fetchall()]
+                "SELECT epoch, tenant_id, dir, disabled_at, tombstoned_at FROM tenants"
+                " WHERE tombstoned_at IS NULL ORDER BY epoch").fetchall()]

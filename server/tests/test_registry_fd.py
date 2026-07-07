@@ -13,13 +13,13 @@ class _DummySender:
 
 def _reg(tmp_path, **kw):
     cfg = Config.load(str(tmp_path / "absent.toml"))
-    control = ControlPlane(":memory:")
+    control = ControlPlane.open(tmp_path / "control", tmp_path)
     return control, TenantRegistry(control, cfg=cfg, sender=_DummySender(), **kw)
 
 
 def test_startup_rejects_impossible_fd_budget(tmp_path):
     cfg = Config.load(str(tmp_path / "absent.toml"))
-    control = ControlPlane(":memory:")
+    control = ControlPlane.open(tmp_path / "control", tmp_path)
     soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     with pytest.raises(ValueError):
         # max_hot_cells*3 + headroom always dwarfs the ambient RLIMIT_NOFILE,
