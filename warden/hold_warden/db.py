@@ -122,3 +122,22 @@ class WardenDB:
                 "DELETE FROM proposals WHERE created_at < ?", (cutoff,))
             self._conn.commit()
         return cur.rowcount
+
+    def take_secret_result(self, proposal_id: str) -> dict | None:
+        """Single-read secret release: returns the result exactly once, then NULLs
+        it. SELECT + guarded UPDATE run under the connection lock, so two racing
+        callers see exactly one winner; the rowcount check is belt-and-braces."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT result FROM proposals WHERE id=? AND result IS NOT NULL",
+                (proposal_id,)).fetchone()
+            if row is None:
+                return None
+            cur = self._conn.execute(
+                "UPDATE proposals SET result=NULL, updated_at=?"
+                " WHERE id=? AND result IS NOT NULL",
+                (_now(), proposal_id))
+            self._conn.commit()
+            if cur.rowcount != 1:
+                return None
+            return json.loads(row["result"])
