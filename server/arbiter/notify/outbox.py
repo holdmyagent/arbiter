@@ -1,13 +1,22 @@
-"""Restart-safe notification outbox (0.4.0 stretch — deliberately dumb).
+"""Notification outbox (0.4.0 stretch — deliberately dumb).
 
-Spec constraints: ONE table, a 1/5/25s retry ladder, max 3 attempts per row,
-stale-drop past the request's TTL, and NO dead-letter queue. A row exists
-only while a delivery pass is outstanding: it is enqueued before dispatch
-and deleted once the pass completes, so a crash or restart mid-flight
-leaves the row for the startup drain to re-run. Channel-level failures
-inside the Dispatcher are still swallowed and audited there
-(``notify_failed``) — the outbox guards against the process dying, not
-against a receiver being down.
+Restart-safe for *enqueued* notifications: rows already in the outbox
+survive a crash and are re-drained at startup. The enqueue is NOT
+co-committed with the triggering state change (create/decide/expire commit
+first; ``outbox_add`` commits separately in a spawned task), so a crash in
+the instant between the request state change committing and the outbox row
+committing can still lose that one notification — accepted v1 scope, no
+transactional outbox.
+
+Spec constraints: ONE table, max 3 attempts per row with retry gaps of 1s
+then 5s between them (ladder constants 1/5/25s; the third rung is
+unreachable at max 3 attempts), stale-drop past the request's TTL, and NO
+dead-letter queue. A row exists only while a delivery pass is outstanding:
+it is enqueued before dispatch and deleted once the pass completes, so a
+crash or restart mid-flight leaves the row for the startup drain to re-run.
+Channel-level failures inside the Dispatcher are still swallowed and
+audited there (``notify_failed``) — the outbox guards against the process
+dying, not against a receiver being down.
 """
 import asyncio
 import logging
