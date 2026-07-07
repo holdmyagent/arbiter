@@ -22,28 +22,40 @@ def _raw_public_bytes(key: Ed25519PrivateKey) -> bytes:
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
 
 
+def _load_key(pem_path: Path) -> Ed25519PrivateKey:
+    key = serialization.load_pem_private_key(pem_path.read_bytes(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError(f"{pem_path} is not an Ed25519 private key")
+    return key
+
+
 def load_or_create_keypair(config_dir: Path) -> tuple[str, Ed25519PrivateKey]:
     """Load (or mint on first run) the verdict signing key.
 
     Returns (kid, key) where kid = first 8 hex chars of sha256(raw public bytes).
-    The PEM is written 0600 via O_EXCL so a concurrent first-run can't clobber it.
+    The PEM is written 0600 via O_EXCL so a concurrent first-run can't clobber it;
+    the loser of that race recovers by loading the winner's key.
     """
     config_dir = Path(config_dir).expanduser()
     config_dir.mkdir(parents=True, exist_ok=True)
     pem_path = config_dir / KEY_FILENAME
     if pem_path.is_file():
-        key = serialization.load_pem_private_key(pem_path.read_bytes(), password=None)
-        if not isinstance(key, Ed25519PrivateKey):
-            raise ValueError(f"{pem_path} is not an Ed25519 private key")
+        key = _load_key(pem_path)
     else:
         key = Ed25519PrivateKey.generate()
         pem = key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption())
-        fd = os.open(pem_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(pem)
+        try:
+            fd = os.open(pem_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # Lost a concurrent first-run race: another process minted the key
+            # between our is_file() check and the O_EXCL create. Use theirs.
+            key = _load_key(pem_path)
+        else:
+            with os.fdopen(fd, "wb") as f:
+                f.write(pem)
     kid = hashlib.sha256(_raw_public_bytes(key)).hexdigest()[:8]
     return kid, key
 
