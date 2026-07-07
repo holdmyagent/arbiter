@@ -12,6 +12,14 @@ import time
 from dataclasses import dataclass
 
 _SCRUBBED_PATH = "/usr/bin:/bin:/usr/local/bin"
+_TAIL_CHARS = 4096
+_TRUNC_MARKER = "…[truncated] "
+
+
+def _tail(text: str) -> str:
+    if len(text) <= _TAIL_CHARS:
+        return text
+    return _TRUNC_MARKER + text[-_TAIL_CHARS:]
 
 
 @dataclass
@@ -29,5 +37,5 @@ def run_command(argv: list[str], timeout_s: int,
     proc = subprocess.run(argv, shell=False, env=env, capture_output=True,
                           text=True, errors="replace", timeout=timeout_s)
     duration_ms = int((time.monotonic() - start) * 1000)
-    return CommandResult(exit_code=proc.returncode, stdout_tail=proc.stdout,
-                         stderr_tail=proc.stderr, duration_ms=duration_ms)
+    return CommandResult(exit_code=proc.returncode, stdout_tail=_tail(proc.stdout),
+                         stderr_tail=_tail(proc.stderr), duration_ms=duration_ms)
