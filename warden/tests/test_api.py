@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -129,6 +130,46 @@ def test_health_probe_is_cached_for_60s(app_env, monkeypatch):
     clock["now"] = 1100.0                       # >60s since the probe: re-probed
     asgi_call(app, "GET", "/health")
     assert probes["n"] == 2
+
+
+def test_health_probe_does_not_block_event_loop(app_env, monkeypatch):
+    """A slow arbiter probe must not stall the loop: while /health waits on a
+    0.3s probe (run in a thread), a concurrent request completes first."""
+    app, _ = app_env
+    done: list[str] = []
+
+    def slow_probe(url):
+        time.sleep(0.3)
+        return True
+
+    monkeypatch.setattr(api_module, "_arbiter_reachable", slow_probe)
+
+    async def drive(method, path, label):
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": method, "scheme": "http", "path": path,
+            "raw_path": path.encode(), "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 40000), "server": ("127.0.0.1", 8646),
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            pass
+
+        await app(scope, receive, send)
+        done.append(label)
+
+    async def _run():
+        health = asyncio.create_task(drive("GET", "/health", "health"))
+        await asyncio.sleep(0)          # let /health start (and hit the probe)
+        await drive("GET", "/v1/nope", "other")   # unauthenticated fast 401
+        await health
+
+    asyncio.run(_run())
+    assert done == ["other", "health"]
 
 
 def test_missing_token_401(app_env):

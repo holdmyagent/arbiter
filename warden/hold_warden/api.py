@@ -98,7 +98,7 @@ class WardenAPI:
     # ---------------------------------------------------------- routing
     async def _dispatch(self, method: str, path: str, scope, body: bytes):
         if method == "GET" and path == "/health":
-            return self._health()
+            return await self._health()
         agent = self._authenticate(scope)
         if agent is None:
             return 401, {"detail": "invalid or missing bearer token"}
@@ -219,11 +219,14 @@ class WardenAPI:
             await asyncio.sleep(EXECUTE_POLL_INTERVAL_S)
 
     # ----------------------------------------------------------- health
-    def _health(self):
+    async def _health(self):
         now = _now_monotonic()
         if (self._health_checked_at is None
                 or now - self._health_checked_at > HEALTH_PROBE_TTL_S):
-            self._health_ok = _arbiter_reachable(self.cfg.arbiter_url)
+            # The probe is a blocking httpx.get (up to 5s); run it in a thread
+            # so a stale cache never stalls concurrent long-polls on the loop.
+            self._health_ok = await asyncio.to_thread(
+                _arbiter_reachable, self.cfg.arbiter_url)
             self._health_checked_at = now
         return (200, {"ok": True}) if self._health_ok else (503, {"ok": False})
 
