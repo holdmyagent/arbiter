@@ -13,7 +13,7 @@ class _DummySender:
 
 def _reg(tmp_path, **kw):
     cfg = Config.load(str(tmp_path / "absent.toml"))
-    control = ControlPlane(":memory:")
+    control = ControlPlane.open(tmp_path / "control", tmp_path)
     reg = TenantRegistry(control, cfg=cfg, sender=_DummySender(), **kw)
     return control, reg
 
