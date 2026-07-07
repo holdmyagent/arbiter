@@ -134,3 +134,58 @@ def test_garbage_token_rejected():
 def test_malformed_pinned_key_rejected():
     with pytest.raises(VerdictError):
         VerdictVerifier("missing-colon-and-not-base64")
+
+
+def test_wrong_request_id_rejected():
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-OTHER", action_hash="h1")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_wrong_action_hash_rejected():
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h-OTHER")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_bound_verdict_rejected_when_unbound_expected():
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h1")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", None)
+
+
+def test_unbound_verdict_rejected_when_hash_expected():
+    # A verdict signing action_hash: null must never authorize a hash-bound action.
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-1", action_hash=None)
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_stale_verdict_rejected():
+    # No sleeping: staleness is driven by signing an already-old decided_at.
+    key, kid, pinned = _keypair()
+    old = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h1",
+                  decided_at=old, approval_ttl_seconds=600)
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_old_but_within_ttl_accepted():
+    key, kid, pinned = _keypair()
+    old = (datetime.now(timezone.utc) - timedelta(seconds=500)).isoformat()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h1",
+                  decided_at=old, approval_ttl_seconds=600)
+    v = VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+    assert v.decided_at == old
+
+
+def test_unparseable_decided_at_rejected():
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h1", decided_at="yesterday-ish")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
