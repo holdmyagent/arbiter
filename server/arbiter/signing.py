@@ -8,6 +8,7 @@ import base64
 import hashlib
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import jwt
@@ -85,3 +86,26 @@ def public_jwks(kid: str, key: Ed25519PrivateKey) -> dict:
     """Public key set for GET /v1/keys (RFC 7517 OKP entry, unpadded base64url x)."""
     x = base64.urlsafe_b64encode(_raw_public_bytes(key)).rstrip(b"=").decode()
     return {"keys": [{"kty": "OKP", "crv": "Ed25519", "kid": kid, "x": x}]}
+
+
+@dataclass
+class Signer:
+    """A cell's per-tenant Ed25519 signer. kid is tenant-namespaced
+    (f"{tenant_id}:{hash8}", §7) so an accidental key coincidence across tenants
+    still yields distinct kids. The crypto group's sign_verdict(signer, ...)
+    consumes this."""
+    tenant_id: str
+    kid: str
+    signing_key: Ed25519PrivateKey
+
+    def public_jwks(self) -> dict:
+        return public_jwks(self.kid, self.signing_key)
+
+
+def load_or_create_signer(tenant_id: str, cell_dir: Path) -> Signer:
+    """Load (or mint on first open) this cell's verdict signing key from its own
+    dir, returning a Signer whose kid is namespaced under the tenant. Reuses the
+    shipped O_EXCL race-safe keypair loader; the 8-hex content hash becomes the
+    suffix of a "{tenant_id}:{hash8}" kid."""
+    hash8_kid, key = load_or_create_keypair(Path(cell_dir))
+    return Signer(tenant_id=tenant_id, kid=f"{tenant_id}:{hash8_kid}", signing_key=key)
