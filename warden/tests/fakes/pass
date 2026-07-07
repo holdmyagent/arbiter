@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake pass (password-store) for tests: `pass show NAME`.
+if [ "$1" != "show" ] || [ -z "$2" ]; then
+  echo "fake-pass: usage: pass show NAME" >&2
+  exit 2
+fi
+case "$2" in
+  homelab/api-bearer) echo "fake-pass-secret-api-bearer" ;;
+  *) echo "fake-pass: $2 is not in the password store." >&2; exit 1 ;;
+esac
