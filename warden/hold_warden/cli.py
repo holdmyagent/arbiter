@@ -210,5 +210,47 @@ def doctor(config_path: Path) -> None:
     sys.exit(1 if failures else 0)
 
 
+def _tick_loop(orch: Orchestrator, stop: threading.Event) -> None:
+    while not stop.wait(1.0):
+        try:
+            orch.tick()
+        except Exception:  # noqa: BLE001 - the daemon must survive any tick error
+            log.exception("tick loop error")
+
+
+@main.command()
+@click.option("--config", "config_path", type=click.Path(path_type=Path),
+              default=DEFAULT_CONFIG, show_default=True)
+def serve(config_path: Path) -> None:
+    """Run the warden: agent-facing API + 1s arbiter poll loop."""
+    cfg = _load_config(config_path)
+    data_dir = _data_dir()
+    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    db = WardenDB(data_dir / "warden.sqlite3")
+    purged = db.purge_older_than(cfg.retention_days)
+    if purged:
+        click.echo(f"retention: purged {purged} proposals older than "
+                   f"{cfg.retention_days} days")
+    try:
+        warden_token = resolve(cfg.arbiter_token_ref)
+    except SecretResolutionError as exc:
+        raise click.ClickException(
+            f"cannot resolve warden.arbiter_token: {exc} - run `hma-warden doctor`")
+    arbiter = ArbiterClient(cfg.arbiter_url, warden_token)
+    verifier = VerdictVerifier(cfg.arbiter_pubkey)
+    orch = Orchestrator(cfg, db, arbiter, verifier)
+    app = create_asgi_app(orch, cfg)   # resolves [agents.*] token refs; fails loud
+    stop = threading.Event()
+    ticker = threading.Thread(target=_tick_loop, args=(orch, stop),
+                              name="warden-tick", daemon=True)
+    ticker.start()
+    click.echo(f"warden '{cfg.warden_name}' listening on {cfg.bind}:{cfg.port}")
+    try:
+        uvicorn.run(app, host=cfg.bind, port=cfg.port, log_level="info")
+    finally:
+        stop.set()
+        ticker.join(timeout=5.0)
+
+
 if __name__ == "__main__":
     main()

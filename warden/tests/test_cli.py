@@ -216,3 +216,45 @@ def test_doctor_fails_when_arbiter_unreachable(stub_arbiter, tmp_path, monkeypat
     stub_arbiter.close()
     result = CliRunner().invoke(main, ["doctor", "--config", str(cfg_path)])
     assert result.exit_code == 1
+
+
+# ----------------------------------------------------------------- serve
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_serve_starts_binds_and_shuts_down(stub_arbiter, tmp_path):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    port = _free_port()
+    cfg_path.write_text(cfg_path.read_text().replace(
+        "port = 8646", f"port = {port}"))
+    env = {**os.environ,
+           "HMA_WARDEN_TOKEN": "warden-token-value",
+           "HOLD_WARDEN_DATA_DIR": str(tmp_path / "data")}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "hold_warden.cli", "serve",
+         "--config", str(cfg_path)],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + 20
+        while True:
+            if proc.poll() is not None:
+                raise AssertionError(f"serve exited early:\n{proc.stdout.read()}")
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break   # bound and accepting
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise AssertionError("serve never bound its port")
+                time.sleep(0.05)
+        assert (tmp_path / "data" / "warden.sqlite3").exists()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
