@@ -1,0 +1,37 @@
+{
+  "name": "param-ordering invariance: same params in different key order canonicalize identically",
+  "input": {
+    "action": "restart_service",
+    "adapter": "command",
+    "params": {
+      "reason": "high cpu",
+      "unit": "nginx"
+    },
+    "resolved": {
+      "argv": [
+        "systemctl",
+        "restart",
+        "nginx"
+      ]
+    },
+    "warden": "knossos-warden"
+  },
+  "input_reordered": {
+    "action": "restart_service",
+    "adapter": "command",
+    "params": {
+      "unit": "nginx",
+      "reason": "high cpu"
+    },
+    "resolved": {
+      "argv": [
+        "systemctl",
+        "restart",
+        "nginx"
+      ]
+    },
+    "warden": "knossos-warden"
+  },
+  "canonical": "{\"action\":\"restart_service\",\"adapter\":\"command\",\"params\":{\"reason\":\"high cpu\",\"unit\":\"nginx\"},\"resolved\":{\"argv\":[\"systemctl\",\"restart\",\"nginx\"]},\"v\":1,\"warden\":\"knossos-warden\"}",
+  "hash": "df558c5c7dd39ad680bcb877cef17676921d526bf9026939a774a61244cd1931"
+}
