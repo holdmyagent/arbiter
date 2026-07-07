@@ -92,3 +92,33 @@ class WardenDB:
                 "SELECT * FROM proposals WHERE agent=? AND idempotency_key=?",
                 (agent, idempotency_key)).fetchone()
         return self._to_dict(row) if row else None
+
+    def pending(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM proposals WHERE status IN ('pending','executing')"
+                " ORDER BY created_at").fetchall()
+        return [self._to_dict(r) for r in rows]
+
+    def set_status(self, proposal_id: str, status: str, *, result: dict | None = None,
+                   receipt: dict | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE proposals SET status=?, updated_at=?,"
+                " result=COALESCE(?, result), receipt=COALESCE(?, receipt) WHERE id=?",
+                (status, _now(),
+                 json.dumps(result) if result is not None else None,
+                 json.dumps(receipt) if receipt is not None else None,
+                 proposal_id),
+            )
+            self._conn.commit()
+
+    def purge_older_than(self, days: int) -> int:
+        """Startup retention (spec §4.5): serve calls this once at boot with
+        cfg.retention_days; there is no background pruning task."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM proposals WHERE created_at < ?", (cutoff,))
+            self._conn.commit()
+        return cur.rowcount
