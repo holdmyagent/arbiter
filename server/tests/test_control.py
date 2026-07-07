@@ -50,8 +50,9 @@ def test_create_tenant_returns_monotonic_epochs(tmp_path):
 
 def test_create_tenant_rejects_bad_charset(tmp_path):
     cp = _open(tmp_path)
-    with pytest.raises(ValueError):
-        cp.create_tenant("Acme_Corp", str(tmp_path / "tenants" / "x"))
+    for bad_id in ("Acme_Corp", "", "café", "a.b", "a/b", "a b"):
+        with pytest.raises(ValueError):
+            cp.create_tenant(bad_id, str(tmp_path / "tenants" / bad_id))
 
 
 def test_create_tenant_rejects_dir_outside_root(tmp_path):
@@ -90,6 +91,12 @@ def test_create_tenant_rejects_overlapping_dir(tmp_path):
 def test_epoch_of_unknown_is_none(tmp_path):
     cp = _open(tmp_path)
     assert cp.epoch_of("nope") is None
+
+
+def test_tenant_dir_missing_raises_keyerror(tmp_path):
+    cp = _open(tmp_path)
+    with pytest.raises(KeyError):
+        cp.tenant_dir("nope")
 
 
 def test_assert_dir_isolated_exact_duplicate(tmp_path):
