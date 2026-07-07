@@ -367,3 +367,79 @@ def test_tick_executing_row_from_crash_fails_closed(orch, fake_command):
     assert row["status"] == "failed"
     assert "outcome unknown" in row["result"]["error"]
     assert fake_command == []
+
+
+# ------------------------------------------------------- http + secret
+
+def test_tick_http_adapter_resolves_headers_and_body(orch, monkeypatch):
+    from hold_warden.adapters import HttpResult
+    monkeypatch.setenv("TEST_API_BEARER", "bearer-value")
+    calls: list[dict] = []
+
+    def fake_http(method, url, headers, body, timeout_s):
+        calls.append(dict(method=method, url=url, headers=headers,
+                          body=body, timeout_s=timeout_s))
+        return HttpResult(status=200, body_sha256="cafe" * 16, body_head="ok")
+
+    monkeypatch.setattr(service, "run_http", fake_http)
+    out = orch.propose("hermes", "post_status", {"text": "hello world"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    assert calls == [{
+        "method": "POST", "url": "https://api.example.test/v1/status",
+        "headers": {"Authorization": "bearer-value"},
+        "body": '{"text": "hello world"}',
+        "timeout_s": service.EXEC_TIMEOUT_S}]
+    assert row["result"] == {"http_status": 200, "body_sha256": "cafe" * 16,
+                             "body_head": "ok"}
+
+
+def test_render_body_refuses_hash_mismatch(orch):
+    spec = orch.cfg.actions["post_status"]
+    with pytest.raises(RuntimeError):
+        orch._render_body(spec, {"text": "hello"}, {"body_sha256": "0" * 64})
+
+
+def test_tick_secret_adapter_stores_value_single_read(orch, monkeypatch):
+    monkeypatch.setenv("TEST_DEPLOY_KEY", "s3cr3t-value")
+    out = orch.propose("hermes", "release_key", {}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    assert row["result"] == {"secret": "s3cr3t-value"}
+    assert "s3cr3t-value" not in str(row["receipt"])
+    assert "s3cr3t-value" not in row["canonical"]
+    assert orch.db.take_secret_result(out["id"]) == {"secret": "s3cr3t-value"}
+    assert orch.db.take_secret_result(out["id"]) is None
+
+
+def test_tick_secret_resolution_failure_fails_closed(orch, monkeypatch):
+    from hold_warden.secrets import SecretResolutionError
+
+    def boom(ref, timeout_s=10):
+        raise SecretResolutionError("resolver exited 2")
+
+    monkeypatch.setattr(service, "resolve", boom)
+    out = orch.propose("hermes", "release_key", {}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert "secret resolution failed" in row["result"]["error"]
+
+
+def test_tick_adapter_error_fails_with_attempt_receipt(orch, monkeypatch):
+    def boom(argv, timeout_s, extra_env=None):
+        raise TimeoutError("command timed out")
+
+    monkeypatch.setattr(service, "run_command", boom)
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert "adapter error" in row["result"]["error"]
+    assert row["receipt"]["executed_at"] is not None

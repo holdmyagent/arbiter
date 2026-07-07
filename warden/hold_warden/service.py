@@ -260,9 +260,68 @@ class Orchestrator:
                  resolved: dict, receipt: dict) -> None:
         receipt = dict(receipt)
         receipt["executed_at"] = _utcnow().isoformat()
-        res = run_command(resolved["argv"], timeout_s=EXEC_TIMEOUT_S)
-        result = {"exit_code": res.exit_code,
-                  "stdout_tail": res.stdout_tail,
-                  "stderr_tail": res.stderr_tail,
-                  "duration_ms": res.duration_ms}
+        try:
+            if spec.adapter == "command":
+                res = run_command(resolved["argv"], timeout_s=EXEC_TIMEOUT_S)
+                result = {"exit_code": res.exit_code,
+                          "stdout_tail": res.stdout_tail,
+                          "stderr_tail": res.stderr_tail,
+                          "duration_ms": res.duration_ms}
+            elif spec.adapter == "http":
+                headers = self._resolve_headers(spec.headers or {})
+                body = self._render_body(spec, params, resolved)
+                res = run_http(resolved["method"], resolved["url"], headers,
+                               body, timeout_s=EXEC_TIMEOUT_S)
+                result = {"http_status": res.status,
+                          "body_sha256": res.body_sha256,
+                          "body_head": res.body_head}
+            elif spec.adapter == "secret":
+                result = {"secret": self._resolve_action_secret(spec)}
+            else:
+                self.db.set_status(pid, "failed", receipt=receipt, result={
+                    "error": f"unknown adapter: {spec.adapter}"})
+                return
+        except SecretResolutionError as exc:
+            self.db.set_status(pid, "failed", receipt=receipt, result={
+                "error": f"secret resolution failed: {exc}"})
+            return
+        except Exception as exc:  # noqa: BLE001 - adapter timeout/spawn/etc.
+            self.db.set_status(pid, "failed", receipt=receipt, result={
+                "error": f"adapter error: {exc}"})
+            return
         self.db.set_status(pid, "executed", result=result, receipt=receipt)
+
+    def _resolve_headers(self, headers: dict[str, str]) -> dict[str, str]:
+        """Header values are literals or 'secret:<name>' refs into [secrets]."""
+        out: dict[str, str] = {}
+        for name, value in headers.items():
+            if value.startswith("secret:"):
+                secret_name = value.split(":", 1)[1]
+                if secret_name not in self.cfg.secrets:
+                    raise SecretResolutionError(f"unknown secret name: {secret_name}")
+                out[name] = resolve(self.cfg.secrets[secret_name])
+            else:
+                out[name] = value
+        return out
+
+    def _render_body(self, spec: ActionSpec, params: dict,
+                     resolved: dict) -> str | None:
+        """Re-render the body with literal whole-segment substitution (the same
+        rule resolve_template's body_sha256 is defined over) and refuse to send
+        anything whose hash differs from the approved body_sha256."""
+        if spec.body_template is None:
+            return None
+        body = spec.body_template
+        for key, value in params.items():
+            body = body.replace("{" + key + "}", value)
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if digest != resolved.get("body_sha256"):
+            raise RuntimeError("rendered body does not match approved body_sha256")
+        return body
+
+    def _resolve_action_secret(self, spec: ActionSpec) -> str:
+        ref_name = spec.secret or ""
+        name = ref_name.split(":", 1)[1] if ref_name.startswith("secret:") else ref_name
+        if name not in self.cfg.secrets:
+            raise SecretResolutionError(f"unknown secret name: {name}")
+        return resolve(self.cfg.secrets[name])
