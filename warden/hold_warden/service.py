@@ -136,3 +136,61 @@ class Orchestrator:
         deadline = self._deadline(row)
         out["expires_at"] = deadline.isoformat() if deadline else None
         return out
+
+    # ---------------------------------------------------------------- tick
+    def tick(self) -> None:
+        """One poll pass over pending/executing proposals."""
+        for row in self.db.pending():
+            self._advance(row)
+
+    def _advance(self, row: dict) -> None:
+        pid = row["id"]
+        rid = row["request_id"]
+        req = self.arbiter.get_request(rid)
+        if req["status"] == "pending":
+            return  # keep polling; the arbiter's sweeper owns expiry
+
+        jws = self.arbiter.get_verdict(rid)
+        verdict = self.verifier.verify(jws, rid, row["action_hash"])
+        receipt = {
+            "request_id": rid,
+            "action_hash": row["action_hash"],
+            "decision": verdict.decision,
+            "decided_at": verdict.decided_at,
+            "verdict_jws": jws,
+            "executed_at": None,
+        }
+        if verdict.decision == "denied":
+            self.db.set_status(pid, "denied", receipt=receipt)
+            return
+        if verdict.decision == "expired":
+            self.db.set_status(pid, "expired", receipt=receipt)
+            return
+
+        # Approved: re-canonicalize from the live registry and refuse on drift.
+        spec = self.cfg.actions[row["action"]]
+        params = _row_params(row)
+        resolved = spec.resolve_template(params)
+        canonical, action_hash = canonicalize(
+            row["action"], spec.adapter, params, resolved, self.cfg.warden_name)
+        if canonical != row["canonical"] or action_hash != row["action_hash"]:
+            self.db.set_status(pid, "failed", result={
+                "error": "action drifted since approval (canonical/hash mismatch)"})
+            return
+
+        # Single-use consume: the point of no return.
+        self.arbiter.consume(rid)
+        self.db.set_status(pid, "executing")
+        self._execute(pid, spec, params, resolved, receipt)
+
+    # ------------------------------------------------------------- execute
+    def _execute(self, pid: str, spec: ActionSpec, params: dict,
+                 resolved: dict, receipt: dict) -> None:
+        receipt = dict(receipt)
+        receipt["executed_at"] = _utcnow().isoformat()
+        res = run_command(resolved["argv"], timeout_s=EXEC_TIMEOUT_S)
+        result = {"exit_code": res.exit_code,
+                  "stdout_tail": res.stdout_tail,
+                  "stderr_tail": res.stderr_tail,
+                  "duration_ms": res.duration_ms}
+        self.db.set_status(pid, "executed", result=result, receipt=receipt)

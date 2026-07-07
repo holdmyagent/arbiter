@@ -195,3 +195,91 @@ def test_propose_arbiter_auth_error_logs_critical_and_raises(orch, caplog):
             orch.propose("hermes", "greet", {"word": "hello"}, None)
     assert any("warden token" in r.getMessage() for r in caplog.records)
     assert orch.db.pending() == []
+
+
+# ------------------------------------------------------------------- tick
+
+def approve(orch, out, decision="approved"):
+    """Point the fakes at a decided request + matching verdict for proposal `out`."""
+    orch.arbiter.request_status = decision
+    orch.verifier.verdict = Verdict(
+        request_id=out["request_id"], action_hash=out["action_hash"],
+        decision=decision, decided_at="2026-07-06T00:01:00+00:00",
+        approval_ttl_seconds=600)
+
+
+@pytest.fixture()
+def fake_command(monkeypatch):
+    from hold_warden.adapters import CommandResult
+    calls: list[dict] = []
+
+    def _fake(argv, timeout_s, extra_env=None):
+        calls.append({"argv": list(argv), "timeout_s": timeout_s})
+        return CommandResult(exit_code=0, stdout_tail="hello\n",
+                             stderr_tail="", duration_ms=5)
+
+    monkeypatch.setattr(service, "run_command", _fake)
+    return calls
+
+
+def test_tick_pending_request_stays_pending(orch):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    orch.tick()
+    assert orch.db.get(out["id"])["status"] == "pending"
+    assert orch.verifier.calls == []
+
+
+def test_tick_approved_verifies_consumes_and_executes(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    assert orch.verifier.calls == [
+        ("header.payload.signature", out["request_id"], out["action_hash"])]
+    assert orch.arbiter.consumed == [out["request_id"]]
+    assert fake_command == [{"argv": ["echo", "hello"],
+                             "timeout_s": service.EXEC_TIMEOUT_S}]
+    result = row["result"]
+    assert result["exit_code"] == 0 and result["stdout_tail"] == "hello\n"
+    receipt = row["receipt"]
+    assert set(receipt) == {"request_id", "action_hash", "decision", "decided_at",
+                            "verdict_jws", "executed_at"}
+    assert receipt["decision"] == "approved"
+    assert receipt["verdict_jws"] == "header.payload.signature"
+    assert receipt["executed_at"] is not None
+
+
+def test_tick_denied_records_receipt_and_never_executes(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out, decision="denied")
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "denied"
+    assert row["receipt"]["decision"] == "denied"
+    assert row["receipt"]["executed_at"] is None
+    assert fake_command == []
+    assert orch.arbiter.consumed == []
+
+
+def test_tick_expired_verdict_records_expired(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out, decision="expired")
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "expired"
+    assert row["receipt"]["decision"] == "expired"
+    assert fake_command == [] and orch.arbiter.consumed == []
+
+
+def test_tick_registry_drift_fails_before_consume(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    # Operator edits the action between approval and execution:
+    orch.cfg.actions["greet"].argv = ["echo", "tampered", "{word}"]
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert "drift" in row["result"]["error"]
+    assert orch.arbiter.consumed == []
+    assert fake_command == []
