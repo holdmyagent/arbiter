@@ -113,3 +113,11 @@ def test_policy_full_section_parsed(tmp_path):
     assert cfg.policy.rate_limit_per_minute == 5
     assert cfg.policy.deny_action_types == ["db.drop"]
     assert cfg.policy.severity_floors == {"deploy": "high"}   # invalid values dropped
+
+
+def test_callback_allowlist_parsed_and_defaults_empty(tmp_path):
+    assert Config.load(str(tmp_path / "absent.toml")).callback_allowlist == []
+    p = tmp_path / "config.toml"
+    p.write_text('[notify]\ncallback_allowlist = ["10.0.0.0/8", "https://hooks.example/*"]\n')
+    cfg = Config.load(str(p))
+    assert cfg.callback_allowlist == ["10.0.0.0/8", "https://hooks.example/*"]

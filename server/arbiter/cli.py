@@ -17,6 +17,10 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps({"ts": self.formatTime(rec), "level": rec.levelname,
                            "logger": rec.name, "msg": rec.getMessage()})
 
+def _base_url(url_option: str | None, cfg: Config) -> str:
+    """--url flag beats HMA_URL env beats the localhost default."""
+    return url_option or os.environ.get("HMA_URL") or f"http://127.0.0.1:{cfg.server.port}"
+
 CONFIG_TEMPLATE = """# Hold My Agent — Arbiter server configuration
 [server]
 host = "127.0.0.1"          # use "0.0.0.0" (or `hma serve --lan`) so phones can reach it
@@ -36,6 +40,9 @@ approval_ttl_seconds = 600  # how long an approval stays consumable
 rate_limit_per_minute = 30  # per-identity create rate limit
 deny_action_types = []      # e.g. ["db.drop"]
 # [policy.severity_floors]  # e.g. deploy = "high"
+
+[notify]                    # restrict per-request callback_url destinations
+callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example/*"]; [] = allow all (legacy)
 
 [notify.apns]               # optional — bring your own Apple Developer key
 key_path = ""
@@ -142,10 +149,12 @@ def _gather_status(client: httpx.Client, app_token: str) -> dict:
 
 @main.command()
 @click.option("--config", "config_path", default=None)
-def status(config_path):
+@click.option("--url", "url_option", default=None,
+              help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
+def status(config_path, url_option):
     """Show server health, devices, and pending requests."""
     cfg = Config.load(config_path)
-    base = f"http://127.0.0.1:{cfg.server.port}"
+    base = _base_url(url_option, cfg)
     try:
         with httpx.Client(base_url=base, timeout=5) as c:
             st = _gather_status(c, cfg.auth.app_token)
@@ -189,14 +198,16 @@ def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
 @click.option("--target", default=None)
 @click.option("--ttl", type=int, default=300)
 @click.option("--description", default="")
+@click.option("--url", "url_option", default=None,
+              help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
 @click.option("--config", "config_path", default=None)
-def ask(title, severity, target, ttl, description, config_path):
+def ask(title, severity, target, ttl, description, url_option, config_path):
     """Create an approval request and block until it is decided.
 
     Exit codes: 0 approved · 1 denied/expired · 2 error (fail-closed: treat nonzero as no).
     """
     cfg = Config.load(config_path)
-    base = f"http://127.0.0.1:{cfg.server.port}"
+    base = _base_url(url_option, cfg)
     with httpx.Client(base_url=base, timeout=10) as client:
         code, decision = _ask(client, cfg.auth.agent_token, title=title,
                               severity=severity, target=target, ttl=ttl, description=description)

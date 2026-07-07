@@ -7,12 +7,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import Identity, require_role, SlidingWindowLimiter
 from .models import RequestCreate, Decision, DeviceRegister
-from .notify import Dispatcher
+from .notify import Dispatcher, callback_allowed
 from .policy import evaluate_create
 from .signing import load_or_create_keypair, public_jwks, sign_verdict
 from .stream import Hub
@@ -114,7 +114,11 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @app.get("/health")
     def health():
-        return {"ok": True}
+        try:
+            db.conn.execute("SELECT 1")
+        except Exception:
+            return JSONResponse(status_code=503, content={"ok": False, "db": False})
+        return {"ok": True, "db": True}
 
     @app.get("/v1/keys")
     def keys():
@@ -137,6 +141,9 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         if create_limiter.blocked(identity.name):
             raise HTTPException(429, "rate limited")
         create_limiter.record_failure(identity.name)  # count this create in the window
+        if body.callback_url and not callback_allowed(cfg.callback_allowlist,
+                                                      body.callback_url):
+            raise HTTPException(422, "callback_url not in allowlist")
         # ttl clamp: out-of-range values are clamped, never rejected
         body.ttl_seconds = max(cfg.policy.ttl_min_seconds,
                                min(cfg.policy.ttl_max_seconds, body.ttl_seconds))

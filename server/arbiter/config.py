@@ -70,6 +70,7 @@ class Config:
     policy: PolicyCfg = field(default_factory=PolicyCfg)
     notify_severities: dict[str, bool] = field(
         default_factory=lambda: {s: True for s in SEVERITIES})
+    callback_allowlist: list[str] = field(default_factory=list)
     loaded_path: str = ""
 
     @staticmethod
@@ -87,6 +88,8 @@ class Config:
             s = doc.get("server", {})
             a = doc.get("auth", {})
             n = doc.get("notify", {})
+            if "callback_allowlist" in n:
+                cfg.callback_allowlist = [str(x) for x in n["callback_allowlist"]]
             for k in ("host", "port", "db_path"):
                 if k in s:
                     setattr(cfg.server, k, s[k])
