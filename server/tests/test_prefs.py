@@ -7,7 +7,7 @@ from arbiter.models import RequestCreate
 
 
 def test_schema_v3_and_migration(tmp_path, db):
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION >= 5  # bumped by migrations 4+5 (tokens table, request enforcement cols)
     cols = {r[1] for r in db.conn.execute("PRAGMA table_info(devices)")}
     assert "severities" in cols and "badge" in cols
 

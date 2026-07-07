@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
 import os
 import secrets as pysecrets
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -15,6 +17,10 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps({"ts": self.formatTime(rec), "level": rec.levelname,
                            "logger": rec.name, "msg": rec.getMessage()})
 
+def _base_url(url_option: str | None, cfg: Config) -> str:
+    """--url flag beats HMA_URL env beats the localhost default."""
+    return url_option or os.environ.get("HMA_URL") or f"http://127.0.0.1:{cfg.server.port}"
+
 CONFIG_TEMPLATE = """# Hold My Agent — Arbiter server configuration
 [server]
 host = "127.0.0.1"          # use "0.0.0.0" (or `hma serve --lan`) so phones can reach it
@@ -26,6 +32,23 @@ agent_token = "{agent}"
 app_token = "{app}"
 admin_password = "{admin}"
 session_secret = "{session}"
+
+[policy]                    # create-time policy (0.4.0)
+ttl_min_seconds = 30
+ttl_max_seconds = 86400
+approval_ttl_seconds = 600  # how long an approval stays consumable
+rate_limit_per_minute = 30  # per-identity create rate limit
+deny_action_types = []      # e.g. ["db.drop"]
+# [policy.severity_floors]  # e.g. deploy = "high"
+
+[notify]                    # restrict per-request callback_url destinations
+callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example.com/*"]; [] = allow all (legacy)
+                            # entries must be scheme://host[:port]/path URL patterns or CIDR strings
+                            # — bare hostnames match nothing (fail-closed). For URL patterns, scheme
+                            # and host are literal (a leading "*." on the host matches subdomains
+                            # only); "*" in the path is path-only and never crosses the host boundary.
+                            # Ports: omit to match any port; a pinned port is exact and NOT
+                            # default-normalized (":443" rejects a URL with no explicit port).
 
 [notify.apns]               # optional — bring your own Apple Developer key
 key_path = ""
@@ -130,12 +153,27 @@ def _gather_status(client: httpx.Client, app_token: str) -> dict:
     p.raise_for_status()
     return {"ok": r.json().get("ok", False), "devices": d.json(), "pending": p.json()}
 
+def _audit_export(client: httpx.Client, app_token: str, fmt: str,
+                  out_path: str | None) -> int:
+    r = client.get("/v1/audit/export",
+                   headers={"Authorization": f"Bearer {app_token}"},
+                   params={"format": fmt})
+    r.raise_for_status()
+    text = r.text
+    if out_path:
+        Path(out_path).write_text(text)
+    else:
+        click.echo(text, nl=False)
+    return sum(1 for line in text.splitlines() if line.strip())
+
 @main.command()
 @click.option("--config", "config_path", default=None)
-def status(config_path):
+@click.option("--url", "url_option", default=None,
+              help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
+def status(config_path, url_option):
     """Show server health, devices, and pending requests."""
     cfg = Config.load(config_path)
-    base = f"http://127.0.0.1:{cfg.server.port}"
+    base = _base_url(url_option, cfg)
     try:
         with httpx.Client(base_url=base, timeout=5) as c:
             st = _gather_status(c, cfg.auth.app_token)
@@ -179,19 +217,123 @@ def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
 @click.option("--target", default=None)
 @click.option("--ttl", type=int, default=300)
 @click.option("--description", default="")
+@click.option("--url", "url_option", default=None,
+              help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
 @click.option("--config", "config_path", default=None)
-def ask(title, severity, target, ttl, description, config_path):
+def ask(title, severity, target, ttl, description, url_option, config_path):
     """Create an approval request and block until it is decided.
 
     Exit codes: 0 approved · 1 denied/expired · 2 error (fail-closed: treat nonzero as no).
     """
     cfg = Config.load(config_path)
-    base = f"http://127.0.0.1:{cfg.server.port}"
+    base = _base_url(url_option, cfg)
     with httpx.Client(base_url=base, timeout=10) as client:
         code, decision = _ask(client, cfg.auth.agent_token, title=title,
                               severity=severity, target=target, ttl=ttl, description=description)
     click.echo(json.dumps(decision, indent=2))
     sys.exit(code)
+
+# ── per-identity tokens (stored hashed; see `tokens` table, migration 4) ────
+
+_RESERVED_TOKEN_NAMES = {"agent", "app"}  # fixed identity names of the legacy config tokens
+
+def _hash_token(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+@main.group()
+def token():
+    """Manage per-identity API tokens (secrets shown once, stored as sha256)."""
+
+@token.command("create")
+@click.argument("name")
+@click.option("--role", type=click.Choice(["agent", "warden", "app"]), required=True,
+              help="agent: create+read own · warden: create/read-own/consume · app: decide/list.")
+@click.option("--action-types", default=None,
+              help="Comma-separated action_type allowlist scope (e.g. deploy,restart).")
+@click.option("--max-severity", type=click.Choice(["low", "medium", "high", "critical"]),
+              default=None, help="Severity cap scope.")
+@click.option("--expires-days", type=int, default=None, help="Expire the token after N days.")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def token_create(name, role, action_types, max_severity, expires_days, config_path):
+    """Mint a token for NAME. The secret is printed ONCE and never stored."""
+    from datetime import datetime, timedelta, timezone
+    from .db import Database
+    if name in _RESERVED_TOKEN_NAMES:
+        raise click.ClickException(
+            f"'{name}' is reserved for the legacy config-token identity")
+    cfg = Config.load(config_path)
+    db = Database(cfg.db_path_expanded())
+    scopes = None
+    if action_types or max_severity:
+        scopes = {}
+        if action_types:
+            scopes["action_types"] = [a.strip() for a in action_types.split(",") if a.strip()]
+        if max_severity:
+            scopes["max_severity"] = max_severity
+    expires_at = None
+    if expires_days is not None:
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
+    value = f"hma_{role}_{pysecrets.token_hex(24)}"
+    try:
+        db.create_token(name, role, _hash_token(value), scopes, expires_at)
+    except sqlite3.IntegrityError:
+        raise click.ClickException(f"token name '{name}' already exists")
+    db.add_audit("-", "token_created",
+                 {"name": name, "role": role, "scopes": scopes, "expires_at": expires_at})
+    click.echo(f"token: {value}")
+    click.echo("Shown once — only its sha256 hash is stored.")
+
+@token.command("list")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def token_list(config_path):
+    """List tokens (never shows secrets or hashes)."""
+    from .db import Database
+    cfg = Config.load(config_path)
+    db = Database(cfg.db_path_expanded())
+    rows = db.list_tokens()
+    if not rows:
+        click.echo("no tokens")
+        return
+    for t in rows:
+        state = "revoked" if t["revoked_at"] else "active"
+        click.echo(f"{t['name']}  role={t['role']}  {state}  created={t['created_at']}  "
+                   f"expires={t['expires_at'] or '-'}  last_used={t['last_used_at'] or '-'}")
+
+@token.command("revoke")
+@click.argument("name")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def token_revoke(name, config_path):
+    """Revoke the token named NAME (takes effect on its next request)."""
+    from .db import Database
+    cfg = Config.load(config_path)
+    db = Database(cfg.db_path_expanded())
+    if db.revoke_token(name) is None:
+        raise click.ClickException(f"no token named '{name}'")
+    db.add_audit("-", "token_revoked", {"name": name})
+    click.echo(f"revoked {name}")
+
+@main.group()
+def audit():
+    """Audit-log utilities."""
+
+
+@audit.command("export")
+@click.option("--format", "fmt", type=click.Choice(["jsonl"]), default="jsonl")
+@click.option("--out", "out_path", default=None, help="Write to a file instead of stdout.")
+@click.option("--url", "url_option", default=None,
+              help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
+@click.option("--config", "config_path", default=None)
+def audit_export(fmt, out_path, url_option, config_path):
+    """Export the append-only audit log as JSONL (app token auth)."""
+    cfg = Config.load(config_path)
+    base = _base_url(url_option, cfg)
+    try:
+        with httpx.Client(base_url=base, timeout=30) as client:
+            n = _audit_export(client, cfg.auth.app_token, fmt, out_path)
+    except httpx.HTTPError as exc:
+        raise click.ClickException(f"export failed against {base}: {exc}")
+    if out_path:
+        click.echo(f"wrote {n} audit events to {out_path}")
 
 if __name__ == "__main__":
     main()

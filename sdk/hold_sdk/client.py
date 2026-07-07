@@ -1,20 +1,32 @@
 import time
+import warnings
 import httpx
 
 class ArbiterClient:
-    def __init__(self, base_url, agent_token, app_token=None, verify=True):
+    def __init__(self, base_url, agent_token, verify=True):
+        if verify is False:
+            warnings.warn(
+                "TLS verification disabled — vulnerable to MITM; "
+                "add your CA to the trust store instead", stacklevel=2)
         self.base_url = base_url.rstrip("/")
         self.agent_token = agent_token
         self._http = httpx.Client(base_url=self.base_url, verify=verify, timeout=10)
 
     def request_approval(self, title, description="", action_type="generic",
                          payload=None, severity="medium", ttl=300, target=None,
-                         poll_interval=2, timeout=None) -> str:
+                         poll_interval=2, timeout=None,
+                         idempotency_key=None, callback_url=None) -> str:
+        body = {"title": title, "description": description, "action_type": action_type,
+                "payload": payload or {}, "severity": severity, "ttl_seconds": ttl,
+                "target": target}
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        if callback_url is not None:
+            body["callback_url"] = callback_url
         try:
             r = self._http.post("/v1/requests",
                 headers={"Authorization": f"Bearer {self.agent_token}"},
-                json={"title": title, "description": description, "action_type": action_type,
-                      "payload": payload or {}, "severity": severity, "ttl_seconds": ttl, "target": target})
+                json=body)
             r.raise_for_status()
             rid = r.json()["id"]
         except Exception:

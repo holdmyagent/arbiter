@@ -24,6 +24,8 @@ def request_approval(
     token=None,
     poll_interval=2,
     timeout=None,
+    idempotency_key=None,
+    callback_url=None,
 ) -> str: ...
 ```
 
@@ -43,6 +45,8 @@ timeout is hit. Returns one of `"approved"`, `"denied"`, `"expired"`.
 | `token` | `None` | The server's `agent_token` (from `config.toml` / `hma init`'s printed output) — **not** `app_token`; request creation is agent-authenticated. Falls back to `HMA_AGENT_TOKEN`. |
 | `poll_interval` | `2` | Seconds between status polls while waiting. |
 | `timeout` | `None` | Local wait deadline in seconds. Defaults to `ttl_seconds + 5`, i.e. slightly longer than the server's own expiry, so the server (not a client-side race) decides when a request expires. |
+| `idempotency_key` | `None` | Optional client-chosen key (max 128 chars). On arbiter >= 0.4.0, retrying a create with the same key returns the original request instead of creating a duplicate prompt. Omitted from the request body when `None`. |
+| `callback_url` | `None` | Optional URL the server POSTs the decision/expiry event to (HMAC-signed when the global webhook secret is set). Checked against the server's `[notify] callback_allowlist` on arbiter >= 0.4.0. Omitted when `None`. |
 
 ### The fail-closed contract
 
@@ -89,6 +93,8 @@ def request_approval(
     target=None,
     poll_interval=2,
     timeout=None,
+    idempotency_key=None,
+    callback_url=None,
 ) -> str: ...
 ```
 
@@ -100,6 +106,12 @@ server URL and agent token are passed explicitly to the constructor
 (`base_url`, `agent_token`). Construct the client once and call
 `request_approval` on it repeatedly rather than reconstructing a client
 per call.
+
+The constructor is `ArbiterClient(base_url, agent_token, verify=True)`. As of
+0.3.0 the dead `app_token` parameter is gone (it was never used), and passing
+`verify=False` emits a loud `UserWarning` — if your server uses a private CA,
+add that CA to your trust store (or use Tailscale serve / a reverse proxy with
+a real certificate) instead of disabling TLS verification.
 
 ## Configuration
 
