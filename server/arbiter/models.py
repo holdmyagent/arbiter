@@ -19,6 +19,8 @@ class RequestCreate(BaseModel):
     ttl_seconds: int = 300
     target: str | None = None
     callback_url: str | None = None
+    canonical_action: str | None = None
+    action_hash: str | None = None
 
 class ApprovalRequest(BaseModel):
     id: str
@@ -35,6 +37,7 @@ class ApprovalRequest(BaseModel):
     decided_by: str | None = None
     target: str | None = None
     callback_url: str | None = None
+    action_hash: str | None = None
     requested_by: str | None = None
 
 class Decision(BaseModel):
