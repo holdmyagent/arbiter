@@ -17,6 +17,12 @@ crash or restart mid-flight leaves the row for the startup drain to re-run.
 Channel-level failures inside the Dispatcher are still swallowed and
 audited there (``notify_failed``) — the outbox guards against the process
 dying, not against a receiver being down.
+
+Because the row is deleted AFTER a successful dispatch, a crash between
+dispatch-success and that delete leaves the row for the startup drain, which
+re-delivers it — so overall delivery is at-least-once across a crash: a
+push/webhook may be sent twice, and channels (APNs, ntfy, webhook, callback)
+are not idempotent.
 """
 import asyncio
 import logging
