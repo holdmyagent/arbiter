@@ -1,4 +1,7 @@
-from dataclasses import dataclass
+import asyncio
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .control import assert_dir_isolated   # §15.7 shared mint/open non-overlap guard (leaf module)
@@ -61,3 +64,131 @@ def open_cell(tenant_id: str, dir, epoch: int, cfg, sender=None, other_open_dirs
     return Cell(tenant_id=tenant_id, epoch=epoch, dir=resolved, db=db, signer=signer,
                 hub=hub, dispatcher=dispatcher, create_limiter=create_limiter,
                 login_limiter=login_limiter)
+
+
+class EpochChanged(Exception):
+    """The hot cell's epoch != the resolved epoch and a live holder blocks reopen
+    (a delete+recreate/dir-rebind raced a live resolution). Fail closed (§5)."""
+
+
+class CapacityExceeded(Exception):
+    """Opening this cell would breach the runtime FD budget. Shed THIS open rather
+    than fail another tenant's cell (§5/§15.13). (Enforced in Task A8.)"""
+
+
+@dataclass(eq=False)
+class _Entry:
+    cell: "Cell"
+    refcount: int
+    last_used: float
+
+
+class TenantRegistry:
+    """Bounded-LRU registry of open cells (cap max_hot_cells). Process-global; the
+    ONLY thing about tenancy that is process-global — the cells it hands out are
+    not. Cross-group contract: acquire(tenant_id, epoch)->Cell (single-flight,
+    caller MUST release), release(cell) (exactly once), hold() (async ctx mgr)."""
+
+    def __init__(self, control, max_hot_cells: int = 64, stream_cap: int = 5, *,
+                 cfg, sender=None, headroom: int = 150, lock_timeout: float = 5.0,
+                 clock=time.monotonic):
+        self._control = control
+        self.max_hot_cells = max_hot_cells
+        self.stream_cap = stream_cap
+        self._cfg = cfg
+        self._sender = sender
+        self._headroom = headroom
+        self._lock_timeout = lock_timeout
+        self._clock = clock
+        # slot value is either an asyncio.Future (open in flight) or an _Entry.
+        self._map: dict[str, object] = {}
+        self._stream_slots: dict[str, int] = {}
+        self._map_lock = asyncio.Lock()
+        # FD budget startup check is added in Task A8 (reads RLIMIT_NOFILE here).
+
+    @asynccontextmanager
+    async def _locked(self):
+        # Timeout-bounded so a stuck holder degrades one tenant, never deadlocks
+        # the whole process (§5/§15.13). This is the OUTER lock; a cell's DB RLock
+        # is INNER and is never held across this acquire.
+        await asyncio.wait_for(self._map_lock.acquire(), self._lock_timeout)
+        try:
+            yield
+        finally:
+            self._map_lock.release()
+
+    async def acquire(self, tenant_id: str, epoch: int) -> "Cell":
+        while True:
+            async with self._locked():
+                slot = self._map.get(tenant_id)
+                if isinstance(slot, _Entry):
+                    if slot.cell.epoch != epoch:
+                        if slot.refcount == 0:
+                            # stale-but-idle: drop it, reopen fresh below
+                            self._map.pop(tenant_id, None)
+                            slot = None
+                        else:
+                            raise EpochChanged(tenant_id)
+                    else:
+                        slot.refcount += 1
+                        slot.last_used = self._clock()
+                        return slot.cell
+                if isinstance(slot, asyncio.Future):
+                    fut = slot
+                    # await OUTSIDE the map lock, then retry to ++refcount
+                else:
+                    # become the single-flight opener: install the sentinel BEFORE
+                    # any await, capture the dir under the same consistent lock.
+                    fut = asyncio.get_running_loop().create_future()
+                    self._map[tenant_id] = fut
+                    dirpath = self._control.tenant_dir(tenant_id)
+                    # Snapshot every OTHER live cell's dir under the same lock so the
+                    # open-side §15.7 non-overlap check sees a consistent roster.
+                    other_open_dirs = [e.cell.dir for e in self._map.values()
+                                       if isinstance(e, _Entry)]
+                    break  # leave the lock, run the open
+            # Reached only when the async-with block above did NOT break: we are
+            # an awaiter of someone else's in-flight open, not the opener.
+            try:
+                await asyncio.wait_for(asyncio.shield(fut), self._lock_timeout)
+            except Exception:
+                pass
+            continue
+        # Reached only via the `break` above (the single-flight opener), with the
+        # map lock already released. dirpath/other_open_dirs/fut were captured
+        # under the lock just before the break.
+        try:
+            cell = await asyncio.to_thread(
+                open_cell, tenant_id, dirpath, epoch, self._cfg, self._sender,
+                other_open_dirs)
+        except BaseException as exc:
+            async with self._locked():
+                if self._map.get(tenant_id) is fut:
+                    self._map.pop(tenant_id, None)
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        async with self._locked():
+            entry = _Entry(cell=cell, refcount=1, last_used=self._clock())
+            self._map[tenant_id] = entry
+            if not fut.done():
+                fut.set_result(cell)
+        return cell
+
+    def release(self, cell: "Cell") -> None:
+        # Synchronous + no await => atomic on the event loop, safe to call from a
+        # finally even during shutdown. Binds by object; exactly-once.
+        entry = self._map.get(cell.tenant_id)
+        if not isinstance(entry, _Entry) or entry.cell is not cell:
+            raise RuntimeError(f"release of unknown/mismatched cell for {cell.tenant_id}")
+        if entry.refcount <= 0:
+            raise RuntimeError(f"refcount underflow for {cell.tenant_id}")
+        entry.refcount -= 1
+
+    @asynccontextmanager
+    async def hold(self, tenant_id: str, epoch: int):
+        cell = await self.acquire(tenant_id, epoch)
+        try:
+            yield cell
+        finally:
+            self.release(cell)
