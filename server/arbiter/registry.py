@@ -173,7 +173,37 @@ class TenantRegistry:
             self._map[tenant_id] = entry
             if not fut.done():
                 fut.set_result(cell)
+            victims = self._collect_evictions_locked()
+        for v in victims:
+            await asyncio.to_thread(v.db.checkpoint_and_close)
         return cell
+
+    def _collect_evictions_locked(self) -> list["Cell"]:
+        """Pop LRU idle (refcount==0) entries until at/under cap. Returns the
+        cells whose connections the caller must close AFTER releasing the map lock
+        (never checkpoint under the outer lock). If every over-cap cell is pinned,
+        return [] and stay temporarily over-cap (an ops signal, logged)."""
+        victims: list["Cell"] = []
+        while True:
+            entries = [(k, v) for k, v in self._map.items() if isinstance(v, _Entry)]
+            if len(entries) <= self.max_hot_cells:
+                break
+            idle = [(k, v) for k, v in entries if v.refcount == 0]
+            if not idle:
+                break  # all pinned: go over-cap rather than block a live holder
+            k, v = min(idle, key=lambda kv: kv[1].last_used)
+            self._map.pop(k, None)
+            victims.append(v.cell)
+        return victims
+
+    async def evict_idle(self) -> int:
+        """Maintenance sweep: evict LRU idle cells down to cap. Safe to call
+        periodically. Returns the number evicted."""
+        async with self._locked():
+            victims = self._collect_evictions_locked()
+        for cell in victims:
+            await asyncio.to_thread(cell.db.checkpoint_and_close)
+        return len(victims)
 
     def release(self, cell: "Cell") -> None:
         # Synchronous + no await => atomic on the event loop, safe to call from a
