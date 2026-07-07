@@ -71,3 +71,50 @@ def test_idempotency_key_unique_per_agent(db):
     _mk(db, agent="other-agent", idem="k1")   # same key, different agent: fine
     _mk(db, idem=None)                        # NULL keys never collide (partial index)
     _mk(db, idem=None)
+
+
+def test_pending_returns_pending_and_executing_only(db):
+    p1 = _mk(db)
+    p2 = _mk(db)
+    p3 = _mk(db)
+    p4 = _mk(db)
+    db.set_status(p2["id"], "executing")
+    db.set_status(p3["id"], "executed")
+    db.set_status(p4["id"], "denied")
+    ids = {row["id"] for row in db.pending()}
+    assert ids == {p1["id"], p2["id"]}
+
+
+def test_set_status_stores_result_and_receipt(db):
+    p = _mk(db)
+    result = {"exit_code": 0, "stdout_tail": "ok\n", "stderr_tail": "", "duration_ms": 12}
+    receipt = {"request_id": "req-1", "action_hash": "ab" * 32, "decision": "approved",
+               "decided_at": "2026-07-06T00:00:00+00:00", "verdict_jws": "e.y.j",
+               "executed_at": "2026-07-06T00:00:01+00:00"}
+    db.set_status(p["id"], "executed", result=result, receipt=receipt)
+    row = db.get(p["id"])
+    assert row["status"] == "executed"
+    assert row["result"] == result
+    assert row["receipt"] == receipt
+
+
+def test_set_status_without_result_keeps_existing(db):
+    p = _mk(db)
+    db.set_status(p["id"], "executed", result={"secret": "hunter2"})
+    db.set_status(p["id"], "failed")  # status-only update must not clobber result/receipt
+    row = db.get(p["id"])
+    assert row["status"] == "failed"
+    assert row["result"] == {"secret": "hunter2"}
+
+
+def test_purge_older_than_deletes_only_old_rows(db):
+    # No sleeping: backdate created_at directly in SQL to simulate age.
+    old = _mk(db)
+    fresh = _mk(db)
+    stale_ts = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+    db._conn.execute("UPDATE proposals SET created_at=? WHERE id=?", (stale_ts, old["id"]))
+    db._conn.commit()
+    assert db.purge_older_than(7) == 1
+    assert db.get(old["id"]) is None
+    assert db.get(fresh["id"]) is not None
+    assert db.purge_older_than(7) == 0
