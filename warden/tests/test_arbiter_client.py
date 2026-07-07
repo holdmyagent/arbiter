@@ -104,3 +104,55 @@ def test_consume_returns_none_on_200(stub):
         200, {"consumed_at": "2026-07-06T00:00:00+00:00"})
     assert ArbiterClient(stub, "t").consume("rid-1") is None
     assert _Stub.seen[-1]["path"] == "/v1/requests/rid-1/consume"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_errors_raise_arbiter_auth_error(stub, status):
+    _Stub.routes[("GET", "/v1/requests/rid-1")] = (status, {"detail": "bad token"})
+    with pytest.raises(ArbiterAuthError):
+        ArbiterClient(stub, "t").get_request("rid-1")
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_5xx_raises_arbiter_unavailable(stub, status):
+    _Stub.routes[("POST", "/v1/requests")] = (status, {"detail": "boom"})
+    with pytest.raises(ArbiterUnavailable):
+        ArbiterClient(stub, "t").create_request(**CREATE_KWARGS)
+
+
+def test_connection_refused_raises_arbiter_unavailable():
+    client = ArbiterClient("http://127.0.0.1:1", "t")  # nothing listens on port 1
+    with pytest.raises(ArbiterUnavailable):
+        client.get_request("rid-1")
+
+
+def test_consume_409_raises_conflict(stub):
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (409, {"detail": "already consumed"})
+    with pytest.raises(ArbiterConflict):
+        ArbiterClient(stub, "t").consume("rid-1")
+
+
+def test_consume_410_raises_stale(stub):
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (410, {"detail": "approval stale"})
+    with pytest.raises(ArbiterStale):
+        ArbiterClient(stub, "t").consume("rid-1")
+
+
+def test_get_verdict_404_no_verdict_yet_is_retryable(stub):
+    # 404 = "no verdict yet" while pending -> ArbiterUnavailable, which the
+    # orchestrator treats as keep-polling-until-expires_at (spec fail-closed table).
+    _Stub.routes[("GET", "/v1/requests/rid-1/verdict")] = (404, {"detail": "no verdict yet"})
+    with pytest.raises(ArbiterUnavailable):
+        ArbiterClient(stub, "t").get_verdict("rid-1")
+
+
+def test_create_422_raises_unavailable_with_status_in_message(stub):
+    _Stub.routes[("POST", "/v1/requests")] = (422, {"detail": "canonical hash mismatch"})
+    with pytest.raises(ArbiterUnavailable, match="422"):
+        ArbiterClient(stub, "t").create_request(**CREATE_KWARGS)
+
+
+def test_verdict_response_missing_key_raises_unavailable(stub):
+    _Stub.routes[("GET", "/v1/requests/rid-1/verdict")] = (200, {"kid": "abcd1234"})
+    with pytest.raises(ArbiterUnavailable):
+        ArbiterClient(stub, "t").get_verdict("rid-1")
