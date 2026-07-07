@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -68,7 +68,18 @@ def _migrate_4_to_5(conn):
       ON requests(requested_by, idempotency_key)
       WHERE idempotency_key IS NOT NULL""")
 
-MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5]
+def _migrate_5_to_6(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS outbox(
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      request_expires_at TEXT NOT NULL)""")
+
+MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
+              _migrate_5_to_6]
 
 class Database:
     def __init__(self, path: str):
@@ -127,6 +138,43 @@ class Database:
                 (str(uuid.uuid4()), request_id, event, _iso(_utcnow()), json.dumps(detail or {})),
             )
             self.conn.commit()
+
+    def outbox_add(self, request_id: str, event: str, payload: dict,
+                   request_expires_at: str) -> str:
+        oid = str(uuid.uuid4())
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO outbox(id,request_id,event,payload,attempts,created_at,"
+                "request_expires_at) VALUES (?,?,?,?,0,?,?)",
+                (oid, request_id, event, json.dumps(payload), _iso(_utcnow()),
+                 request_expires_at))
+            self.conn.commit()
+            return oid
+
+    def outbox_delete(self, outbox_id: str) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM outbox WHERE id=?", (outbox_id,))
+            self.conn.commit()
+
+    def outbox_bump_attempts(self, outbox_id: str) -> int:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE outbox SET attempts=attempts+1 WHERE id=?", (outbox_id,))
+            self.conn.commit()
+            row = self.conn.execute(
+                "SELECT attempts FROM outbox WHERE id=?", (outbox_id,)).fetchone()
+            return row["attempts"] if row else 0
+
+    def outbox_pending(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM outbox ORDER BY created_at").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["payload"] = json.loads(d["payload"])
+                out.append(d)
+            return out
 
     def create_request(self, c, requested_by: str | None = None) -> dict:
         now = _utcnow()

@@ -58,7 +58,7 @@ def test_migration_5_adds_enforcement_columns_and_index(tmp_path):
     p = str(tmp_path / "m5.sqlite3")
     _make_v1(p)
     db = Database(p)
-    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 5
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 5
     cols = {r[1] for r in db.conn.execute("PRAGMA table_info(requests)")}
     assert {"canonical_action", "action_hash", "verdict_jws", "verdict_kid",
             "consumed_at", "idempotency_key", "requested_by"} <= cols

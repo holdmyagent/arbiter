@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, resolve_identity
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher, callback_allowed
+from .notify.outbox import Outbox
 from .policy import evaluate_create
 from .signing import load_or_create_keypair, public_jwks, sign_verdict
 from .stream import Hub
@@ -25,6 +26,7 @@ log = logging.getLogger("arbiter.app")
 def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
     hub = hub or Hub()
     dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
+    outbox = Outbox(db, dispatcher)
     notify_tasks: set = set()
 
     config_dir = Path(cfg.loaded_path).expanduser().parent if cfg.loaded_path \
@@ -58,11 +60,12 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @asynccontextmanager
     async def lifespan(app):
+        await outbox.drain_startup()
         async def sweep():
             while True:
                 try:
                     for req in _expire_pass():
-                        _spawn(dispatcher.request_decided(req))
+                        _spawn(outbox.publish("request.expired", req))
                         await hub.publish("request.expired", "request", req)
                 except Exception as exc:
                     log.warning("sweep iteration failed: %s", exc)
@@ -207,7 +210,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
             if existing:
                 return existing
             raise
-        _spawn(dispatcher.request_created(req))
+        _spawn(outbox.publish("request.created", req))
         await hub.publish("request.created", "request", req)
         return req
 
@@ -275,7 +278,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         db.add_audit(updated["id"], "verdict_issued",
                      {"decision": updated["status"], "kid": kid})
         updated = db.get_request(rid)
-        _spawn(dispatcher.request_decided(updated))
+        _spawn(outbox.publish("request.decided", updated))
         await hub.publish("request.decided", "request", updated)
         return updated
 
