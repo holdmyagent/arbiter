@@ -1,0 +1,41 @@
+[project]
+name = "hold-warden"
+version = "0.1.0"
+description = "Warden: verified enforcement daemon for Hold My Agent — executes only signed, single-use approvals"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "cryptography>=42",
+  "pyjwt[crypto]>=2.9",
+  "uvicorn>=0.32",
+  "click>=8.1",
+  "tomlkit>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "ruff>=0.6"]
+
+[project.scripts]
+hma-warden = "hold_warden.cli:main"
+
+[project.urls]
+Homepage = "https://holdmyagent.com"
+Repository = "https://github.com/holdmyagent/arbiter"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hold_warden*"]
