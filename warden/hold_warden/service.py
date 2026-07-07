@@ -139,19 +139,52 @@ class Orchestrator:
 
     # ---------------------------------------------------------------- tick
     def tick(self) -> None:
-        """One poll pass over pending/executing proposals."""
+        """One poll pass over pending/executing proposals. Never raises."""
         for row in self.db.pending():
-            self._advance(row)
+            try:
+                self._advance(row)
+            except Exception:  # noqa: BLE001 - the daemon must survive any row
+                log.exception("tick: unexpected error on proposal %s", row["id"])
+                self.db.set_status(row["id"], "failed", result={
+                    "error": "internal warden error; see warden logs"})
 
     def _advance(self, row: dict) -> None:
         pid = row["id"]
+        if row["status"] == "executing":
+            # Crash recovery: the approval was consumed but the adapter outcome
+            # is unknown. Never guess that an action ran - fail closed.
+            self.db.set_status(pid, "failed", result={
+                "error": "warden restarted during execution; outcome unknown"})
+            return
+
         rid = row["request_id"]
-        req = self.arbiter.get_request(rid)
+        try:
+            req = self.arbiter.get_request(rid)
+        except ArbiterUnavailable:
+            self._expire_if_overdue(row)
+            return
+        except ArbiterAuthError as exc:
+            self._fail_auth(pid, "poll", exc)
+            return
         if req["status"] == "pending":
             return  # keep polling; the arbiter's sweeper owns expiry
 
-        jws = self.arbiter.get_verdict(rid)
-        verdict = self.verifier.verify(jws, rid, row["action_hash"])
+        try:
+            jws = self.arbiter.get_verdict(rid)
+        except ArbiterUnavailable:
+            self._expire_if_overdue(row)
+            return
+        except ArbiterAuthError as exc:
+            self._fail_auth(pid, "verdict fetch", exc)
+            return
+
+        try:
+            verdict = self.verifier.verify(jws, rid, row["action_hash"])
+        except VerdictError as exc:
+            self.db.set_status(pid, "failed", result={
+                "error": f"verdict verification failed: {exc}"})
+            return
+
         receipt = {
             "request_id": rid,
             "action_hash": row["action_hash"],
@@ -166,9 +199,17 @@ class Orchestrator:
         if verdict.decision == "expired":
             self.db.set_status(pid, "expired", receipt=receipt)
             return
+        if verdict.decision != "approved":
+            self.db.set_status(pid, "failed", result={
+                "error": f"unrecognized verdict decision: {verdict.decision}"})
+            return
 
         # Approved: re-canonicalize from the live registry and refuse on drift.
-        spec = self.cfg.actions[row["action"]]
+        spec = self.cfg.actions.get(row["action"])
+        if spec is None:
+            self.db.set_status(pid, "failed", result={
+                "error": "action no longer in the warden registry"})
+            return
         params = _row_params(row)
         resolved = spec.resolve_template(params)
         canonical, action_hash = canonicalize(
@@ -179,9 +220,40 @@ class Orchestrator:
             return
 
         # Single-use consume: the point of no return.
-        self.arbiter.consume(rid)
+        try:
+            self.arbiter.consume(rid)
+        except ArbiterConflict:
+            self.db.set_status(pid, "failed", receipt=receipt, result={
+                "error": "approval already consumed (replay refused)"})
+            return
+        except ArbiterStale:
+            self.db.set_status(pid, "expired", receipt=receipt, result={
+                "error": "approval exceeded its freshness window"})
+            return
+        except ArbiterUnavailable:
+            return  # stay pending; retry consume next tick
+        except ArbiterAuthError as exc:
+            self._fail_auth(pid, "consume", exc)
+            return
+
         self.db.set_status(pid, "executing")
         self._execute(pid, spec, params, resolved, receipt)
+
+    def _fail_auth(self, pid: str, stage: str, exc: Exception) -> None:
+        log.critical("arbiter rejected the warden token at %s for proposal %s "
+                     "(rotate/fix the token, then restart): %s", stage, pid, exc)
+        self.db.set_status(pid, "failed", result={
+            "error": f"arbiter auth failure at {stage}: {exc}"})
+
+    def _expire_if_overdue(self, row: dict) -> None:
+        deadline = self._deadline(row)
+        if deadline is None:
+            self.db.set_status(row["id"], "failed", result={
+                "error": "action no longer in the warden registry"})
+            return
+        if _utcnow() > deadline:
+            self.db.set_status(row["id"], "expired", result={
+                "error": "arbiter unreachable past the request deadline"})
 
     # ------------------------------------------------------------- execute
     def _execute(self, pid: str, spec: ActionSpec, params: dict,
