@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ from .notify import Dispatcher
 from .auth import SlidingWindowLimiter
 from .signing import Signer, load_or_create_signer
 from .stream import Hub
+
+logger = logging.getLogger("arbiter.registry")
 
 
 @dataclass(eq=False)
@@ -190,6 +193,7 @@ class TenantRegistry:
                 break
             idle = [(k, v) for k, v in entries if v.refcount == 0]
             if not idle:
+                logger.warning("tenant registry over cap=%d with all %d cells pinned; raise max_hot_cells", self.max_hot_cells, len(entries))
                 break  # all pinned: go over-cap rather than block a live holder
             k, v = min(idle, key=lambda kv: kv[1].last_used)
             self._map.pop(k, None)
