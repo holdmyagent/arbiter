@@ -106,6 +106,8 @@ class WardenAPI:
             return self._propose(agent, body)
         if method == "GET" and path.startswith("/v1/proposals/"):
             return self._get_proposal(agent, path[len("/v1/proposals/"):])
+        if method == "POST" and path == "/v1/execute":
+            return await self._execute(agent, body)
         return 404, {"detail": "not found"}
 
     def _authenticate(self, scope) -> str | None:
@@ -188,6 +190,33 @@ class WardenAPI:
         if receipt is not None:
             out["receipt"] = receipt
         return out
+
+    # ------------------------------------------------------------ execute
+    async def _execute(self, agent: str, body: bytes):
+        """Blocking convenience wrapper: propose, then long-poll the proposal
+        until terminal or timeout (default 240s), then 202 so the caller can
+        switch to GET /v1/proposals/{id} polling."""
+        data = self._parse(body)
+        if data is None:
+            return 422, {"detail": "body must be a JSON object"}
+        timeout_s = data.pop("timeout_s", EXECUTE_DEFAULT_TIMEOUT_S)
+        if (not isinstance(timeout_s, (int, float))
+                or isinstance(timeout_s, bool) or timeout_s < 0):
+            return 422, {"detail": "'timeout_s' must be a non-negative number"}
+        status, payload = self._propose_impl(agent, data)
+        if status != 201:
+            return status, payload
+        pid = payload["proposal_id"]
+        deadline = _now_monotonic() + float(timeout_s)
+        while True:
+            row = self.orch.db.get(pid)
+            if row is not None and row["status"] in TERMINAL_STATUSES:
+                view = self._proposal_view(row)
+                view["proposal_id"] = pid
+                return 200, view
+            if _now_monotonic() >= deadline:
+                return 202, {"proposal_id": pid}
+            await asyncio.sleep(EXECUTE_POLL_INTERVAL_S)
 
     # ----------------------------------------------------------- health
     def _health(self):

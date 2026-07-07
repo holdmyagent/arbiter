@@ -269,3 +269,47 @@ def test_get_proposal_secret_result_single_read(app_env):
     status, payload = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
                                 token="hermes-token")
     assert status == 200 and "result" not in payload
+
+
+# -------------------------------------------------------------- execute
+
+def test_execute_returns_200_when_terminal(app_env):
+    app, orch = app_env
+    row = _create_row(orch.db)
+    orch.db.set_status(row["id"], "executed",
+                       result={"exit_code": 0, "stdout_tail": "ok",
+                               "stderr_tail": "", "duration_ms": 3})
+    orch.propose_result = {"id": row["id"], "request_id": "req-1",
+                           "status": "pending", "expires_at": None}
+    status, payload = asgi_call(app, "POST", "/v1/execute", token="hermes-token",
+                                body={"action": "echo", "params": {}})
+    assert status == 200
+    assert payload["proposal_id"] == row["id"]
+    assert payload["status"] == "executed"
+    assert payload["result"]["exit_code"] == 0
+
+
+def test_execute_falls_back_to_202_on_timeout(app_env):
+    app, orch = app_env
+    row = _create_row(orch.db)   # stays pending
+    orch.propose_result = {"id": row["id"], "request_id": "req-1",
+                           "status": "pending", "expires_at": None}
+    status, payload = asgi_call(app, "POST", "/v1/execute", token="hermes-token",
+                                body={"action": "echo", "params": {},
+                                      "timeout_s": 0})
+    assert status == 202 and payload == {"proposal_id": row["id"]}
+
+
+def test_execute_propagates_propose_errors(app_env):
+    app, orch = app_env
+    orch.propose_error = UnknownActionError("unknown action: nope")
+    status, _ = asgi_call(app, "POST", "/v1/execute", token="hermes-token",
+                          body={"action": "nope", "params": {}})
+    assert status == 404
+
+
+def test_execute_invalid_timeout_422(app_env):
+    app, _ = app_env
+    status, _ = asgi_call(app, "POST", "/v1/execute", token="hermes-token",
+                          body={"action": "echo", "params": {}, "timeout_s": -1})
+    assert status == 422
