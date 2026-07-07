@@ -104,6 +104,8 @@ class WardenAPI:
             return 401, {"detail": "invalid or missing bearer token"}
         if method == "POST" and path == "/v1/propose":
             return self._propose(agent, body)
+        if method == "GET" and path.startswith("/v1/proposals/"):
+            return self._get_proposal(agent, path[len("/v1/proposals/"):])
         return 404, {"detail": "not found"}
 
     def _authenticate(self, scope) -> str | None:
@@ -161,6 +163,31 @@ class WardenAPI:
             return 502, {"detail": "arbiter unreachable"}
         return 201, {"proposal_id": row["id"], "request_id": row["request_id"],
                      "status": row["status"], "expires_at": row.get("expires_at")}
+
+    # ------------------------------------------------------ get proposal
+    def _get_proposal(self, agent: str, proposal_id: str):
+        row = self.orch.db.get(proposal_id)
+        if row is None or row["agent"] != agent:
+            # 404 for foreign proposals too: no existence leak across agents.
+            return 404, {"detail": "not found"}
+        return 200, self._proposal_view(row)
+
+    def _proposal_view(self, row: dict) -> dict:
+        out = {"status": row["status"]}
+        result = row.get("result")
+        if isinstance(result, str):
+            result = json.loads(result)
+        if isinstance(result, dict) and "secret" in result:
+            # secret adapter: single retrieval - returns the value, then NULLs it
+            result = self.orch.db.take_secret_result(row["id"])
+        if result is not None:
+            out["result"] = result
+        receipt = row.get("receipt")
+        if isinstance(receipt, str):
+            receipt = json.loads(receipt)
+        if receipt is not None:
+            out["receipt"] = receipt
+        return out
 
     # ----------------------------------------------------------- health
     def _health(self):
