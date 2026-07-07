@@ -103,3 +103,13 @@ def test_policy_ttl_clamps_parsed(tmp_path):
     p.write_text("[policy]\nttl_min_seconds = 60\nttl_max_seconds = 3600\n")
     cfg = Config.load(str(p))
     assert cfg.policy.ttl_min_seconds == 60 and cfg.policy.ttl_max_seconds == 3600
+
+
+def test_policy_full_section_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('[policy]\nrate_limit_per_minute = 5\ndeny_action_types = ["db.drop"]\n'
+                 '[policy.severity_floors]\ndeploy = "high"\nbogus = "not-a-severity"\n')
+    cfg = Config.load(str(p))
+    assert cfg.policy.rate_limit_per_minute == 5
+    assert cfg.policy.deny_action_types == ["db.drop"]
+    assert cfg.policy.severity_floors == {"deploy": "high"}   # invalid values dropped

@@ -175,6 +175,15 @@ class Database:
                     " AND status='pending'", (requested_by, *args)).fetchone()
             return self._row_to_request(r) if r else None
 
+    def get_token_scopes(self, name: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT scopes FROM tokens WHERE name=? AND revoked_at IS NULL",
+                (name,)).fetchone()
+            if not r or r["scopes"] is None:
+                return None
+            return json.loads(r["scopes"])
+
     def list_requests(self, status: str | None = None) -> list[dict]:
         with self._lock:
             if status:

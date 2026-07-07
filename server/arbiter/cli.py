@@ -29,6 +29,14 @@ app_token = "{app}"
 admin_password = "{admin}"
 session_secret = "{session}"
 
+[policy]                    # create-time policy (0.4.0)
+ttl_min_seconds = 30
+ttl_max_seconds = 86400
+approval_ttl_seconds = 600  # how long an approval stays consumable
+rate_limit_per_minute = 30  # per-identity create rate limit
+deny_action_types = []      # e.g. ["db.drop"]
+# [policy.severity_floors]  # e.g. deploy = "high"
+
 [notify.apns]               # optional — bring your own Apple Developer key
 key_path = ""
 key_id = ""
