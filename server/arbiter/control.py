@@ -204,6 +204,24 @@ class ControlPlane:
             return None                            # tampered/rolled-back -> fail closed
         return (r["tid"], r["epoch"])
 
+    def disable_tenant(self, tenant_id: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE tenants SET disabled_at=? "
+                "WHERE tenant_id=? AND tombstoned_at IS NULL AND disabled_at IS NULL",
+                (_utcnow_iso(), tenant_id))
+            self.conn.commit()
+
+    def tombstone_tenant(self, tenant_id: str) -> None:
+        # Retain the row (epoch/dir never recycled); free the tenant_id for a new
+        # live create by setting tombstoned_at so the partial unique index releases.
+        with self._lock:
+            self.conn.execute(
+                "UPDATE tenants SET tombstoned_at=? "
+                "WHERE tenant_id=? AND tombstoned_at IS NULL",
+                (_utcnow_iso(), tenant_id))
+            self.conn.commit()
+
     def is_disabled(self, tenant_id: str) -> bool:
         with self._lock:
             r = self.conn.execute(
