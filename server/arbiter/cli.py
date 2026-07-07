@@ -43,6 +43,7 @@ deny_action_types = []      # e.g. ["db.drop"]
 
 [notify]                    # restrict per-request callback_url destinations
 callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example/*"]; [] = allow all (legacy)
+                            # entries must be scheme://... URL patterns or CIDR strings — bare hostnames match nothing (fail-closed)
 
 [notify.apns]               # optional — bring your own Apple Developer key
 key_path = ""

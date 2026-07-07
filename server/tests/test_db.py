@@ -54,3 +54,24 @@ def test_list_audit_non_request_event_has_none_severity(db):
     row = next(a for a in rows if a["event"] == "token_rotated")
     assert row["severity"] is None and row["req_title"] is None
     assert row["decided_device"] is None
+
+def test_ping_takes_the_lock_and_raises_when_closed(db):
+    # /health calls db.ping(); like every Database method it must go through
+    # self._lock (shared-connection RLock discipline, see db.py:77-90 comment).
+    import pytest
+    import sqlite3
+    entered = []
+    real = db._lock
+    class SpyLock:
+        def __enter__(self):
+            entered.append(True)
+            return real.__enter__()
+        def __exit__(self, *a):
+            return real.__exit__(*a)
+    db._lock = SpyLock()
+    db.ping()
+    assert entered == [True]
+    db._lock = real
+    db.conn.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        db.ping()

@@ -111,6 +111,15 @@ class Database:
         d["severities"] = json.loads(d["severities"]) if d["severities"] is not None else None
         return d
 
+    def ping(self) -> None:
+        """Cheap liveness check for /health — raises if the connection is dead.
+
+        Takes self._lock like every other method: /health runs sync (threadpool)
+        and would otherwise race concurrent reads/writes on the shared connection.
+        """
+        with self._lock:
+            self.conn.execute("SELECT 1")
+
     def add_audit(self, request_id: str, event: str, detail: dict | None = None):
         with self._lock:
             self.conn.execute(
