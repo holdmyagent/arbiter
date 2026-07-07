@@ -121,3 +121,42 @@ def test_assert_dir_isolated_disjoint_sibling_ok(tmp_path):
     a = tmp_path / "acme"
     b = tmp_path / "bob"
     assert_dir_isolated(b, [a])  # no raise
+
+
+def test_resolve_roundtrip_and_full_hash_only(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    h = "b" * 64
+    cp.add_route(h, "acme")
+    assert cp.resolve(h) == ("acme", 1)
+    # A truncated hash is a different PK — it never routes.
+    assert cp.resolve(h[:8]) is None
+    assert cp.resolve("c" * 64) is None            # unknown route
+
+
+def test_resolve_rejects_tampered_route(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    cp.create_tenant("victim", str(tmp_path / "tenants" / "victim"))
+    h = "d" * 64
+    cp.add_route(h, "acme")
+    # Attacker repoints the route to another tenant WITHOUT the MAC key.
+    cp.conn.execute("UPDATE token_route SET tenant_id='victim' WHERE token_hash=?", (h,))
+    cp.conn.commit()
+    assert cp.resolve(h) is None                   # MAC over (hash,victim,epoch) fails
+
+
+def test_remove_route(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    h = "e" * 64
+    cp.add_route(h, "acme")
+    cp.remove_route(h)
+    assert cp.resolve(h) is None
+
+
+def test_is_disabled(tmp_path):
+    cp = _open(tmp_path)
+    cp.create_tenant("acme", str(tmp_path / "tenants" / "acme"))
+    assert cp.is_disabled("acme") is False
+    assert cp.is_disabled("ghost") is True         # absent -> fail closed

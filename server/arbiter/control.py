@@ -172,3 +172,43 @@ class ControlPlane:
             return [dict(r) for r in self.conn.execute(
                 "SELECT epoch, tenant_id, dir, disabled_at, tombstoned_at FROM tenants"
                 " WHERE tombstoned_at IS NULL ORDER BY epoch").fetchall()]
+
+    def add_route(self, token_hash: str, tenant_id: str) -> None:
+        with self._lock:
+            epoch = self.epoch_of(tenant_id)
+            if epoch is None:
+                raise ValueError(f"no live tenant {tenant_id!r} to route to")
+            mac = self._mac(token_hash, tenant_id, epoch)
+            self.conn.execute(
+                "INSERT INTO token_route(token_hash, tenant_id, mac) VALUES (?,?,?)",
+                (token_hash, tenant_id, mac))
+            self.conn.commit()
+
+    def remove_route(self, token_hash: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM token_route WHERE token_hash=?", (token_hash,))
+            self.conn.commit()
+
+    def resolve(self, token_hash: str) -> tuple[str, int] | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT tr.tenant_id AS tid, t.epoch AS epoch, tr.mac AS mac"
+                " FROM token_route tr"
+                " JOIN tenants t ON t.tenant_id = tr.tenant_id AND t.tombstoned_at IS NULL"
+                " WHERE tr.token_hash = ?", (token_hash,)).fetchone()
+        if r is None:
+            return None
+        expected = self._mac(token_hash, r["tid"], r["epoch"])
+        if not hmac.compare_digest(expected, r["mac"]):
+            return None                            # tampered/rolled-back -> fail closed
+        return (r["tid"], r["epoch"])
+
+    def is_disabled(self, tenant_id: str) -> bool:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT disabled_at FROM tenants"
+                " WHERE tenant_id=? AND tombstoned_at IS NULL", (tenant_id,)).fetchone()
+        if r is None:
+            return True                            # absent live row -> fail closed
+        return r["disabled_at"] is not None
