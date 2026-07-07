@@ -10,10 +10,10 @@
 
 ## Global Constraints
 
-- Monorepo `/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter` (path contains spaces — always quote). Work on branch `feat/warden-enforcement`, created from `design/warden-enforcement`. Never push to main. No tags, no PyPI/brew/ghcr publishing, no iOS changes, no live homelab changes.
+- Monorepo `<repo-root>` (path contains spaces — always quote). Work on branch `feat/warden-enforcement`, created from `design/warden-enforcement`. Never push to main. No tags, no PyPI/brew/ghcr publishing, no iOS changes, no live homelab changes.
 - Versions: holdmyagent 0.4.0, hold-sdk 0.3.0, hold-warden 0.1.0. All /v1 API changes additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working; the request `status` enum is UNCHANGED (pending|approved|denied|expired) — consumption is a `consumed_at` column, never a new status.
 - Dev env (one-time, Task 1): `python3 -m venv .venv && .venv/bin/pip install -e ./server -e ./sdk -e ./warden pytest`. Test commands: `cd server && ../.venv/bin/python -m pytest`, `cd warden && ../.venv/bin/python -m pytest`, `cd sdk && ../.venv/bin/python -m pytest`.
-- TDD per task: failing test → run → minimal implementation → run green → commit. Conventional commits ending with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- TDD per task: failing test → run → minimal implementation → run green → commit. Conventional commits ending with .
 - The existing 122+ server tests and the sdk tests must be green after every task. `scripts/smoke.sh` must stay green.
 - Secrets hygiene: resolved secret values never appear in logs, receipts, canonical documents, arbiter payloads, or doctor output (`ok (non-empty)` / `FAILED (exit N)` only).
 - Severity rank order everywhere: low < medium < high < critical.
@@ -33,7 +33,7 @@
 ## Group A — Warden foundation (Tasks 1–4)
 
 Repo root (all paths below are relative to it; it contains spaces — always quote):
-`/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter`
+`<repo-root>`
 
 Dependency order inside this group: Task 1 first (creates the package and `config.py`);
 Tasks 2 and 3 are independent of each other; Task 4 modifies the `config.py` created in Task 1.
@@ -67,7 +67,7 @@ Work happens on branch `feat/warden-enforcement`. The root `.gitignore` already 
 - [ ] **Step 1: Create the working branch**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   git checkout feat/warden-enforcement 2>/dev/null || \
   git checkout -b feat/warden-enforcement design/warden-enforcement
 ```
@@ -149,7 +149,7 @@ __version__ = "0.1.0"
   Create `warden/tests/__init__.py` as an empty file:
 
 ```bash
-touch "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden/tests/__init__.py"
+touch "<repo-root>/warden/tests/__init__.py"
 ```
 
 - [ ] **Step 3: Dev-install into the single root venv and verify the import**
@@ -158,7 +158,7 @@ touch "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbit
   usually already exists with server+sdk installed):
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   { [ -x .venv/bin/python ] || python3 -m venv .venv; } && \
   .venv/bin/pip install -e ./server -e ./sdk -e ./warden pytest
 ```
@@ -166,7 +166,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
   Expected: ends with `Successfully installed hold-warden-0.1.0` (among others). Verify:
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   .venv/bin/python -c "import hold_warden; print(hold_warden.__version__)"
 ```
 
@@ -299,7 +299,7 @@ def test_load_missing_file_raises_actionable_config_error(tmp_path: Path) -> Non
 - [ ] **Step 5: Run it — expect a red import failure**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_config.py
 ```
 
@@ -446,7 +446,7 @@ def _parse_action(path: Path, name: str, tbl: object) -> ActionSpec:
 - [ ] **Step 7: Run green**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_config.py
 ```
 
@@ -455,17 +455,16 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 8: Lint and commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m ruff check hold_warden tests
 ```
 
   Expected: `All checks passed!` (if `ruff` is missing from the venv, `../.venv/bin/pip install ruff` first). Then:
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   git add warden && \
-  git commit -m "feat(warden): scaffold hold-warden 0.1.0 package + WardenConfig.load" \
-    -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): scaffold hold-warden 0.1.0 package + WardenConfig.load"
 ```
 
 ---
@@ -772,7 +771,7 @@ def test_unicode_is_not_ascii_escaped() -> None:
 - [ ] **Step 3: Run it — expect a red import failure**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_canonical.py
 ```
 
@@ -818,7 +817,7 @@ def canonicalize(action: str, adapter: str, params: dict[str, str],
 - [ ] **Step 5: Run green**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_canonical.py
 ```
 
@@ -827,17 +826,16 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m ruff check hold_warden tests
 ```
 
   Expected: `All checks passed!` Then:
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   git add warden && \
-  git commit -m "feat(warden): canonicalize() with golden vectors" \
-    -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): canonicalize() with golden vectors"
 ```
 
 ---
@@ -953,7 +951,7 @@ esac
   Make them executable (git preserves the exec bit):
 
 ```bash
-chmod +x "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden/tests/fakes/"*
+chmod +x "<repo-root>/warden/tests/fakes/"*
 ```
 
 - [ ] **Step 2: Write the failing secrets test**
@@ -1090,7 +1088,7 @@ def test_doctor_empty_output_reports_empty(tmp_path: Path) -> None:
 - [ ] **Step 3: Run it — expect a red import failure**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_secrets.py
 ```
 
@@ -1204,7 +1202,7 @@ def _resolve_cmd(cmdline: str, timeout_s: int) -> str:
 - [ ] **Step 5: Run green**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_secrets.py
 ```
 
@@ -1213,14 +1211,14 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 6: Lint and commit (verify the exec bits made it into the index)**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m ruff check hold_warden tests
 ```
 
   Expected: `All checks passed!` Then:
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   git add warden && \
   git ls-files --stage warden/tests/fakes/
 ```
@@ -1229,9 +1227,8 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
   `chmod +x` from Step 1 and `git add warden` again). Then:
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
-  git commit -m "feat(warden): secret resolvers env:/file:/cmd: + doctor_check" \
-    -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && \
+  git commit -m "feat(warden): secret resolvers env:/file:/cmd: + doctor_check"
 ```
 
 ---
@@ -1508,7 +1505,7 @@ argv = ["systemctl", "restart", "{unit}"]
 - [ ] **Step 2: Run it — expect a red import failure**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_params.py
 ```
 
@@ -1785,14 +1782,14 @@ def _validate_action(path: Path, spec: ActionSpec, secrets: dict[str, str]) -> N
 - [ ] **Step 4: Run green — new tests plus the whole warden suite**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest tests/test_params.py
 ```
 
   Expected: `22 passed`. Then the full warden suite (Tasks 1–4 together):
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m pytest
 ```
 
@@ -1801,7 +1798,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 5: Verify the existing server suite is untouched**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && \
+cd "<repo-root>/server" && \
   ../.venv/bin/python -m pytest
 ```
 
@@ -1811,23 +1808,22 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && \
+cd "<repo-root>/warden" && \
   ../.venv/bin/python -m ruff check hold_warden tests
 ```
 
   Expected: `All checks passed!` Then:
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+cd "<repo-root>" && \
   git add warden && \
-  git commit -m "feat(warden): param validation + whole-element template resolution" \
-    -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): param validation + whole-element template resolution"
 ```
 
 ## Group B — Warden trust + execution (Tasks 5–8)
 
 <!-- Group B (warden trust + execution) — Tasks 5–8. All paths are relative to the monorepo
-root /Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter unless absolute.
+root <repo-root> unless absolute.
 All four tasks depend only on Task 1 (warden scaffold: warden/pyproject.toml declaring httpx,
 cryptography, pyjwt[crypto], uvicorn, click, tomlkit; hold_warden/__init__.py; the root venv
 installed with `-e ./warden`). Tasks 5, 6, 7, 8 are independent of each other and can run in
@@ -2023,7 +2019,7 @@ class VerdictVerifier:
 - [ ] **Step 5: Commit.**
   ```bash
   git add warden/hold_warden/verdict.py warden/tests/test_verdict.py
-  git commit -m "feat(warden): VerdictVerifier — EdDSA verify against the pinned kid:b64url arbiter key" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): VerdictVerifier — EdDSA verify against the pinned kid:b64url arbiter key"
   ```
 
 - [ ] **Step 6: Write the failing crypto-rejection tests.** Append to
@@ -2153,7 +2149,7 @@ class VerdictVerifier:
 - [ ] **Step 10: Commit.**
   ```bash
   git add warden/hold_warden/verdict.py warden/tests/test_verdict.py
-  git commit -m "feat(warden): VerdictVerifier fail-closes on signature, kid, algorithm, audience, and malformed tokens" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): VerdictVerifier fail-closes on signature, kid, algorithm, audience, and malformed tokens"
   ```
 
 - [ ] **Step 11: Write the failing binding + staleness tests.** Append to
@@ -2261,7 +2257,7 @@ def test_unparseable_decided_at_rejected():
 - [ ] **Step 15: Commit.**
   ```bash
   git add warden/hold_warden/verdict.py warden/tests/test_verdict.py
-  git commit -m "feat(warden): VerdictVerifier binds verdicts to request_id + action_hash and rejects stale approvals" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): VerdictVerifier binds verdicts to request_id + action_hash and rejects stale approvals"
   ```
 
 ---
@@ -2494,7 +2490,7 @@ class ArbiterClient:
 - [ ] **Step 5: Commit.**
   ```bash
   git add warden/hold_warden/arbiter.py warden/tests/test_arbiter_client.py
-  git commit -m "feat(warden): ArbiterClient — create/get/verdict/consume against /v1 (happy paths)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): ArbiterClient — create/get/verdict/consume against /v1 (happy paths)"
   ```
 
 - [ ] **Step 6: Write the failing error-mapping tests.** Append to
@@ -2676,7 +2672,7 @@ class ArbiterClient:
 - [ ] **Step 10: Commit.**
   ```bash
   git add warden/hold_warden/arbiter.py warden/tests/test_arbiter_client.py
-  git commit -m "feat(warden): ArbiterClient maps failures to ArbiterAuthError/Unavailable/Conflict/Stale (fail-closed)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): ArbiterClient maps failures to ArbiterAuthError/Unavailable/Conflict/Stale (fail-closed)"
   ```
 
 ---
@@ -2920,7 +2916,7 @@ class WardenDB:
 - [ ] **Step 5: Commit.**
   ```bash
   git add warden/hold_warden/db.py warden/tests/test_db.py
-  git commit -m "feat(warden): WardenDB — proposals schema, WAL, per-agent idempotency unique index" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): WardenDB — proposals schema, WAL, per-agent idempotency unique index"
   ```
 
 - [ ] **Step 6: Write the failing pending/set_status/purge tests.** Append to
@@ -3021,7 +3017,7 @@ def test_purge_older_than_deletes_only_old_rows(db):
 - [ ] **Step 10: Commit.**
   ```bash
   git add warden/hold_warden/db.py warden/tests/test_db.py
-  git commit -m "feat(warden): WardenDB pending/set_status/purge_older_than (startup retention contract)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): WardenDB pending/set_status/purge_older_than (startup retention contract)"
   ```
 
 - [ ] **Step 11: Write the failing single-read + concurrency tests.** Append to
@@ -3101,7 +3097,7 @@ def test_take_secret_result_two_threads_exactly_one_wins(db):
 - [ ] **Step 15: Commit.**
   ```bash
   git add warden/hold_warden/db.py warden/tests/test_db.py
-  git commit -m "feat(warden): WardenDB.take_secret_result — atomic single-read secret release" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): WardenDB.take_secret_result — atomic single-read secret release"
   ```
 
 ---
@@ -3252,7 +3248,7 @@ def run_command(argv: list[str], timeout_s: int,
 - [ ] **Step 5: Commit.**
   ```bash
   git add warden/hold_warden/adapters.py warden/tests/test_adapters.py
-  git commit -m "feat(warden): run_command adapter — shell=False, env scrubbed to PATH-only plus extras" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): run_command adapter — shell=False, env scrubbed to PATH-only plus extras"
   ```
 
 - [ ] **Step 6: Write the failing truncation + timeout tests.** Append to
@@ -3325,7 +3321,7 @@ def _tail(text: str) -> str:
 - [ ] **Step 10: Commit.**
   ```bash
   git add warden/hold_warden/adapters.py warden/tests/test_adapters.py
-  git commit -m "feat(warden): run_command 4KiB stdout/stderr tails with truncation marker; TimeoutExpired propagates" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): run_command 4KiB stdout/stderr tails with truncation marker; TimeoutExpired propagates"
   ```
 
 - [ ] **Step 11: Write the failing run_http tests against a local server.** In
@@ -3477,7 +3473,7 @@ def run_http(method: str, url: str, headers: dict[str, str], body: str | None,
 - [ ] **Step 15: Commit.**
   ```bash
   git add warden/hold_warden/adapters.py warden/tests/test_adapters.py
-  git commit -m "feat(warden): run_http adapter — redirects never followed, body_sha256 + 1KiB head receipt" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  git commit -m "feat(warden): run_http adapter — redirects never followed, body_sha256 + 1KiB head receipt"
   ```
 
 ## Group C — Warden orchestrator, ASGI API, CLI, and warden docs (Tasks 9–12)
@@ -3486,12 +3482,12 @@ def run_http(method: str, url: str, headers: dict[str, str], body: str | None,
 > `docs/specs/2026-07-06-warden-enforcement-design.md` (spec §4 for everything in this group).
 > The plan header's Global Constraints apply to every task below. All relative paths are
 > relative to the monorepo root
-> `/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter`.
+> `<repo-root>`.
 > Work happens on branch `feat/warden-enforcement`. The shared dev venv lives at the repo
 > root: `.venv` (created by Task 1 via
 > `python3 -m venv .venv && .venv/bin/pip install -e ./server -e ./sdk -e ./warden pytest`).
 > The warden test command used throughout this group is:
-> `cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest -q`
+> `cd "<repo-root>/warden" && ../.venv/bin/python -m pytest -q`
 >
 > **Prerequisites:** Tasks 1–8 are complete: `hold_warden/config.py` (`WardenConfig`,
 > `ActionSpec`, `ParamSpec`, `ConfigError`, `ParamValidationError`), `hold_warden/canonical.py`
@@ -3801,7 +3797,7 @@ def test_propose_arbiter_auth_error_logs_critical_and_raises(orch, caplog):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: collection error — `ModuleNotFoundError: No module named 'hold_warden.service'`.
 
@@ -3955,14 +3951,14 @@ class Orchestrator:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: 7 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): orchestrator propose() - validate, canonicalize, idempotent replay, fail-closed arbiter errors" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): orchestrator propose() - validate, canonicalize, idempotent replay, fail-closed arbiter errors"
 ```
 
 - [ ] **Step 6: Write the failing tests for the `tick()` happy path**
@@ -4062,7 +4058,7 @@ def test_tick_registry_drift_fails_before_consume(orch, fake_command):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: the 5 new tests fail with `AttributeError: 'Orchestrator' object has no attribute 'tick'`; the 7 propose tests still pass.
 
@@ -4135,14 +4131,14 @@ as `propose`):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: 12 passed.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): tick() approval path - verify verdict, re-canonicalize, consume, execute command" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): tick() approval path - verify verdict, re-canonicalize, consume, execute command"
 ```
 
 - [ ] **Step 11: Write the failing tests for the fail-closed table**
@@ -4238,7 +4234,7 @@ def test_tick_executing_row_from_crash_fails_closed(orch, fake_command):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: the 8 new tests fail — `VerdictError` / `ArbiterConflict` / `ArbiterStale` /
 `ArbiterUnavailable` / `ArbiterAuthError` propagate out of `tick()`, the unreachable test
@@ -4374,14 +4370,14 @@ in Step 8 with the following, and add the two new helper methods `_fail_auth` an
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: 20 passed.
 
 - [ ] **Step 15: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): fail-closed tick branches per spec 4.3 - stale/conflict/auth/unreachable/crash recovery" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): fail-closed tick branches per spec 4.3 - stale/conflict/auth/unreachable/crash recovery"
 ```
 
 - [ ] **Step 16: Write the failing tests for the http and secret adapters**
@@ -4469,7 +4465,7 @@ def test_tick_adapter_error_fails_with_attempt_receipt(orch, monkeypatch):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_service.py -q
 ```
 Expected: the 5 new tests fail — http/secret proposals land on
 `"internal warden error; see warden logs"` (the command-only `_execute` KeyErrors on
@@ -4558,20 +4554,20 @@ the following, and add the three helper methods below it:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all warden tests pass (25 in this file plus everything from Tasks 1–8).
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all existing server tests still pass (122+).
 
 - [ ] **Step 20: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): http + secret adapters in the execute path with body-hash guard" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/service.py warden/tests/test_service.py && git commit -m "feat(warden): http + secret adapters in the execute path with body-hash guard"
 ```
 
 ---
@@ -4785,7 +4781,7 @@ def test_unknown_route_404(app_env):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: collection error — `ModuleNotFoundError: No module named 'hold_warden.api'`.
 
@@ -4934,14 +4930,14 @@ def create_asgi_app(orch: Orchestrator, cfg: WardenConfig) -> WardenAPI:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: 6 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): hand-written ASGI app - cached health probe + constant-time bearer auth" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): hand-written ASGI app - cached health probe + constant-time bearer auth"
 ```
 
 - [ ] **Step 6: Write the failing tests for `POST /v1/propose`**
@@ -5008,7 +5004,7 @@ def test_propose_malformed_body_422(app_env):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: the 5 new tests fail — every `POST /v1/propose` currently returns 404
 `{"detail": "not found"}`.
@@ -5078,14 +5074,14 @@ and add these methods to `class WardenAPI` (below `_authenticate`):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: 11 passed.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): POST /v1/propose with 422/404/502 error mapping" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): POST /v1/propose with 422/404/502 error mapping"
 ```
 
 - [ ] **Step 11: Write the failing tests for `GET /v1/proposals/{id}`**
@@ -5161,7 +5157,7 @@ def test_get_proposal_secret_result_single_read(app_env):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: the 5 new tests fail with 404 `{"detail": "not found"}` responses (route not wired).
 
@@ -5214,14 +5210,14 @@ and add these methods to `class WardenAPI`:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: 16 passed.
 
 - [ ] **Step 14: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): GET /v1/proposals/{id} - agent isolation + secret single-read" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): GET /v1/proposals/{id} - agent isolation + secret single-read"
 ```
 
 - [ ] **Step 15: Write the failing tests for `POST /v1/execute`**
@@ -5277,7 +5273,7 @@ def test_execute_invalid_timeout_422(app_env):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_api.py -q
 ```
 Expected: the 4 new tests fail with 404 `{"detail": "not found"}` (route not wired).
 
@@ -5334,20 +5330,20 @@ and add this method to `class WardenAPI`:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all warden tests pass (20 in this file plus everything earlier).
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all existing server tests still pass (122+).
 
 - [ ] **Step 18: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): POST /v1/execute long-poll with 202 fallback" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/api.py warden/tests/test_api.py && git commit -m "feat(warden): POST /v1/execute long-poll with 202 fallback"
 ```
 
 ---
@@ -5540,7 +5536,7 @@ def test_init_fails_cleanly_when_arbiter_down(tmp_path):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
 ```
 Expected: collection error — `ModuleNotFoundError: No module named 'hold_warden.cli'`.
 
@@ -5693,14 +5689,14 @@ if __name__ == "__main__":
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
 ```
 Expected: 3 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/cli.py warden/tests/test_cli.py warden/pyproject.toml && git commit -m "feat(warden): hma-warden init - pin arbiter key, scaffold warden.toml 0600, mint agent token" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/cli.py warden/tests/test_cli.py warden/pyproject.toml && git commit -m "feat(warden): hma-warden init - pin arbiter key, scaffold warden.toml 0600, mint agent token"
 ```
 
 - [ ] **Step 6: Write the failing tests for `hash`**
@@ -5770,7 +5766,7 @@ def test_hash_unknown_action(stub_arbiter, tmp_path):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
 ```
 Expected: the 4 new tests fail — `Error: No such command 'hash'` (exit code 2).
 
@@ -5814,12 +5810,12 @@ def hash_cmd(action: str, config_path: Path, param_kv: tuple[str, ...]) -> None:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
 ```
 Expected: 7 passed.
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/cli.py warden/tests/test_cli.py && git commit -m "feat(warden): hma-warden hash - print canonical document + action hash" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/cli.py warden/tests/test_cli.py && git commit -m "feat(warden): hma-warden hash - print canonical document + action hash"
 ```
 
 - [ ] **Step 9: Write the failing tests for `doctor`**
@@ -5873,7 +5869,7 @@ def test_doctor_fails_when_arbiter_unreachable(stub_arbiter, tmp_path, monkeypat
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
 ```
 Expected: the 4 new tests fail — `Error: No such command 'doctor'` (exit code 2).
 
@@ -5937,12 +5933,12 @@ def doctor(config_path: Path) -> None:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py -q
 ```
 Expected: 11 passed.
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/cli.py warden/tests/test_cli.py && git commit -m "feat(warden): hma-warden doctor - resolver dry-runs + arbiter health/key checks, never prints values" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/cli.py warden/tests/test_cli.py && git commit -m "feat(warden): hma-warden doctor - resolver dry-runs + arbiter health/key checks, never prints values"
 ```
 
 - [ ] **Step 12: Write the failing starts-and-binds test for `serve`**
@@ -5996,7 +5992,7 @@ def test_serve_starts_binds_and_shuts_down(stub_arbiter, tmp_path):
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_cli.py::test_serve_starts_binds_and_shuts_down -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_cli.py::test_serve_starts_binds_and_shuts_down -q
 ```
 Expected: FAIL — `serve exited early` (click reports `No such command 'serve'`, exit code 2).
 
@@ -6049,20 +6045,20 @@ def serve(config_path: Path) -> None:
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all warden tests pass (12 in this file plus everything earlier).
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all existing server tests still pass (122+).
 
 - [ ] **Step 15: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add warden/hold_warden/cli.py warden/tests/test_cli.py && git commit -m "feat(warden): hma-warden serve - uvicorn + background tick thread + startup retention purge" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add warden/hold_warden/cli.py warden/tests/test_cli.py && git commit -m "feat(warden): hma-warden serve - uvicorn + background tick thread + startup retention purge"
 ```
 
 ---
@@ -6156,7 +6152,7 @@ def test_secret_managers_doc_covers_the_recipes():
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_docs.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_docs.py -q
 ```
 Expected: 2 failed — `FileNotFoundError: ... docs/warden.md`.
 
@@ -6467,7 +6463,7 @@ restarting.
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_docs.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_docs.py -q
 ```
 Expected: 1 passed (`test_warden_doc_covers_the_contract`), 1 failed
 (`test_secret_managers_doc_covers_the_recipes` — file missing).
@@ -6475,7 +6471,7 @@ Expected: 1 passed (`test_warden_doc_covers_the_contract`), 1 failed
 - [ ] **Step 5: Commit warden.md**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add docs/warden.md warden/tests/test_docs.py && git commit -m "docs: warden guide - install, pairing, registry, systemd --user, restart semantics, retention" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add docs/warden.md warden/tests/test_docs.py && git commit -m "docs: warden guide - install, pairing, registry, systemd --user, restart semantics, retention"
 ```
 
 - [ ] **Step 6: Write `docs/secret-managers.md`**
@@ -6626,7 +6622,7 @@ or a pasted bug report.
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest tests/test_docs.py -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest tests/test_docs.py -q
 ```
 Expected: 2 passed.
 
@@ -6634,26 +6630,26 @@ Expected: 2 passed.
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/warden" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all warden tests pass.
 
 Run:
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
 ```
 Expected: all existing server tests still pass (122+).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add docs/secret-managers.md warden/tests/test_docs.py && git commit -m "docs: secret-managers - env/file/cmd schemes + rbw/bw/op/pass/vault recipes, doctor guarantee" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+cd "<repo-root>" && git add docs/secret-managers.md warden/tests/test_docs.py && git commit -m "docs: secret-managers - env/file/cmd schemes + rbw/bw/op/pass/vault recipes, doctor guarantee"
 ```
 
 ## Group D — Arbiter identity + signing foundation (Tasks 13–16)
 
 All paths are relative to the monorepo root
-`/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter` unless absolute.
+`<repo-root>` unless absolute.
 All test commands assume the root venv from the plan header exists
 (`python3 -m venv .venv && .venv/bin/pip install -e ./server -e ./sdk -e ./warden pytest`).
 Work happens on branch `feat/warden-enforcement`.
@@ -6784,7 +6780,7 @@ def test_idem_index_is_partial_unique(db, make):
 - [ ] **Step 2: Run the migration tests — expect failure.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_migrations.py -q
 ```
 
@@ -6837,7 +6833,7 @@ MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4
 - [ ] **Step 4: Run the migration tests green.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_migrations.py -q
 ```
 
@@ -6901,7 +6897,7 @@ def test_touch_token_last_used(db):
 - [ ] **Step 6: Run the token tests — expect failure.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_tokens.py -q
 ```
 
@@ -6961,7 +6957,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 8: Run the token tests green.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_tokens.py tests/test_migrations.py -q
 ```
 
@@ -6970,7 +6966,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 9: Run the full server suite (must stay green — 122+ existing tests).**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest -q
 ```
 
@@ -6979,10 +6975,9 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 10: Commit.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" \
+cd "<repo-root>" \
   && git add server/arbiter/db.py server/tests/test_migrations.py server/tests/test_tokens.py \
-  && git commit -m "feat(server): tokens table, request enforcement columns, idempotency index (migrations 4+5)" \
-       -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  && git commit -m "feat(server): tokens table, request enforcement columns, idempotency index (migrations 4+5)"
 ```
 
 ---
@@ -7128,7 +7123,7 @@ def test_public_jwks_shape(tmp_path):
 - [ ] **Step 2: Run — expect collection failure.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_signing.py -q
 ```
 
@@ -7213,7 +7208,7 @@ def public_jwks(kid: str, key: Ed25519PrivateKey) -> dict:
 - [ ] **Step 4: Run green.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_signing.py -q
 ```
 
@@ -7222,7 +7217,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 5: Run the full server suite (must stay green).**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest -q
 ```
 
@@ -7231,10 +7226,9 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 6: Commit.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" \
+cd "<repo-root>" \
   && git add server/arbiter/signing.py server/tests/test_signing.py \
-  && git commit -m "feat(server): Ed25519 verdict signing module (kid, JWS, JWKS)" \
-       -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  && git commit -m "feat(server): Ed25519 verdict signing module (kid, JWS, JWKS)"
 ```
 
 ---
@@ -7365,7 +7359,7 @@ def test_unknown_token_resolves_to_none(db, cfg):
 - [ ] **Step 2: Run — expect import failure.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_identity.py -q
 ```
 
@@ -7458,7 +7452,7 @@ def require_role(*roles: str):
 - [ ] **Step 4: Run the unit tests green.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_identity.py -q
 ```
 
@@ -7565,7 +7559,7 @@ def test_revoked_db_token_gets_403_on_routes(client):
 - [ ] **Step 6: Run — expect route-test failures.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_identity.py -q
 ```
 
@@ -7730,7 +7724,7 @@ def require_agent_or_app(cfg, limiter):
 - [ ] **Step 8: Run the identity tests green.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_identity.py -q
 ```
 
@@ -7744,7 +7738,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
   `requested_by` NULL and stay visible under the legacy IS-NULL read rule).
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest -q
 ```
 
@@ -7753,11 +7747,10 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 10: Commit.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" \
+cd "<repo-root>" \
   && git add server/arbiter/auth.py server/arbiter/app.py server/arbiter/db.py \
        server/arbiter/models.py server/tests/test_identity.py \
-  && git commit -m "feat(server): per-identity token auth, requested_by stamping, scoped agent reads" \
-       -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  && git commit -m "feat(server): per-identity token auth, requested_by stamping, scoped agent reads"
 ```
 
 ---
@@ -7911,7 +7904,7 @@ def test_created_token_authenticates_and_revocation_bites(tmp_path, monkeypatch)
 - [ ] **Step 2: Run — expect "No such command".**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_cli_token.py -q
 ```
 
@@ -8021,7 +8014,7 @@ def token_revoke(name, config_path):
 - [ ] **Step 4: Run the CLI tests green.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest tests/test_cli_token.py -q
 ```
 
@@ -8030,7 +8023,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 5: Run the full server suite (must stay green).**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" \
+cd "<repo-root>/server" \
   && ../.venv/bin/python -m pytest -q
 ```
 
@@ -8039,10 +8032,9 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/
 - [ ] **Step 6: Commit.**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" \
+cd "<repo-root>" \
   && git add server/arbiter/cli.py server/tests/test_cli_token.py \
-  && git commit -m "feat(server): hma token create|list|revoke with hashed storage and audit events" \
-       -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  && git commit -m "feat(server): hma token create|list|revoke with hashed storage and audit events"
 ```
 
 ## Group E — Arbiter verdicts, consume, correctness, policy, ops (Tasks 17–22)
@@ -8259,7 +8251,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 2: Run the tests — expect failure**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_verdicts.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_verdicts.py tests/test_config.py -q
   ```
 
   Expected: `test_policy_defaults` fails with `AttributeError: 'Config' object has no attribute 'policy'`; in `test_verdicts.py` every test fails — `/v1/keys` returns 404 (route missing, `KeyError: 'keys'`), verdict routes return FastAPI's default 404 body (`"Not Found"`, not `"no verdict yet"`), and the hash-mismatch posts return 200 because pydantic silently drops the unknown `canonical_action`/`action_hash` fields.
@@ -8501,7 +8493,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 6: Run the task tests green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_verdicts.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_verdicts.py tests/test_config.py -q
   ```
 
   Expected: all pass.
@@ -8509,7 +8501,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 7: Run the full server suite green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
   ```
 
   Expected: all pass (existing 122+ tests plus Group D's and this task's).
@@ -8517,7 +8509,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 8: Commit**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add server/arbiter/config.py server/arbiter/models.py server/arbiter/db.py server/arbiter/app.py server/tests/test_verdicts.py server/tests/test_config.py && git commit -m "feat(server): sign Ed25519 verdicts on decide/expire; /v1/keys + /verdict; action-hash binding at create" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  cd "<repo-root>" && git add server/arbiter/config.py server/arbiter/models.py server/arbiter/db.py server/arbiter/app.py server/tests/test_verdicts.py server/tests/test_config.py && git commit -m "feat(server): sign Ed25519 verdicts on decide/expire; /v1/keys + /verdict; action-hash binding at create"
   ```
 
 
@@ -8694,7 +8686,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 2: Run the tests — expect failure**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_consume.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_consume.py tests/test_config.py -q
   ```
 
   Expected: every `test_consume.py` test fails — `POST /v1/requests/{rid}/consume` is an unknown route so FastAPI returns 404 where 200/409/403/410 are asserted, and `db.consume_request` raises `AttributeError`. `test_policy_approval_ttl_parsed` fails with `120 != 600` (no `[policy]` parsing yet).
@@ -8805,7 +8797,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 6: Run the task tests green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_consume.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_consume.py tests/test_config.py -q
   ```
 
   Expected: all pass.
@@ -8813,7 +8805,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 7: Run the full server suite green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
   ```
 
   Expected: all pass.
@@ -8821,7 +8813,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 8: Commit**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add server/arbiter/config.py server/arbiter/models.py server/arbiter/db.py server/arbiter/app.py server/tests/test_consume.py server/tests/test_config.py && git commit -m "feat(server): single-use consume with approval freshness; sweeper flips stale approvals" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  cd "<repo-root>" && git add server/arbiter/config.py server/arbiter/models.py server/arbiter/db.py server/arbiter/app.py server/tests/test_consume.py server/tests/test_config.py && git commit -m "feat(server): single-use consume with approval freshness; sweeper flips stale approvals"
   ```
 
 
@@ -8980,7 +8972,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 2: Run the tests — expect failure**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_correctness.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_correctness.py tests/test_config.py -q
   ```
 
   Expected: `test_db_decision_refuses_clock_expired` and `test_decide_expired_by_clock_409` fail (old `set_decision` approves anything pending); `test_ttl_clamped_*` fails (`1 != 30`); idempotency tests fail (pydantic drops the unknown `idempotency_key` field → two distinct ids; the 129-char key returns 200 not 422); both duplicate-collapse tests (hash-bound and unbound-on-title) fail with two rows created; `test_policy_ttl_clamps_parsed` fails (`60 != 30`). `test_concurrent_approve_deny_exactly_one_wins` is race-dependent against the old check-then-update code — it usually fails with 2 winners; the guarded UPDATE makes it deterministically pass.
@@ -9154,7 +9146,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 6: Run the task tests green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_correctness.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_correctness.py tests/test_config.py -q
   ```
 
   Expected: all pass.
@@ -9162,7 +9154,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 7: Run the full server suite green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
   ```
 
   Expected: all pass. (Note `tests/test_cli.py::test_ask_expired_is_exit_1` still passes: `_ask`'s
@@ -9171,7 +9163,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 8: Commit**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add server/arbiter/config.py server/arbiter/models.py server/arbiter/db.py server/arbiter/app.py server/tests/test_correctness.py server/tests/test_config.py && git commit -m "fix(server): guarded decision UPDATE, expired-by-clock refusal, ttl clamps, idempotency replay, duplicate-collapse" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  cd "<repo-root>" && git add server/arbiter/config.py server/arbiter/models.py server/arbiter/db.py server/arbiter/app.py server/tests/test_correctness.py server/tests/test_config.py && git commit -m "fix(server): guarded decision UPDATE, expired-by-clock refusal, ttl clamps, idempotency replay, duplicate-collapse"
   ```
 
 
@@ -9349,7 +9341,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 2: Run the tests — expect failure**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_policy.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_policy.py tests/test_config.py -q
   ```
 
   Expected: `tests/test_policy.py` fails at collection with `ModuleNotFoundError: No module named 'arbiter.policy'`; `test_policy_full_section_parsed` fails (`5 != 30` — keys unparsed).
@@ -9480,7 +9472,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 6: Run the task tests green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_policy.py tests/test_config.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_policy.py tests/test_config.py -q
   ```
 
   Expected: all pass.
@@ -9488,7 +9480,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 7: Run the full server suite green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
   ```
 
   Expected: all pass (defaults — rate limit 30/min, empty deny list, no floors — leave every existing test unaffected).
@@ -9496,7 +9488,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 8: Commit**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add server/arbiter/policy.py server/arbiter/config.py server/arbiter/db.py server/arbiter/app.py server/arbiter/cli.py server/tests/test_policy.py server/tests/test_config.py && git commit -m "feat(server): create-time policy engine — deny lists, severity floors, token scopes, per-identity rate limit" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  cd "<repo-root>" && git add server/arbiter/policy.py server/arbiter/config.py server/arbiter/db.py server/arbiter/app.py server/arbiter/cli.py server/tests/test_policy.py server/tests/test_config.py && git commit -m "feat(server): create-time policy engine — deny lists, severity floors, token scopes, per-identity rate limit"
   ```
 
 
@@ -9720,7 +9712,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 2: Run the tests — expect failure**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_ops.py tests/test_config.py tests/test_cli.py tests/test_api.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_ops.py tests/test_config.py tests/test_cli.py tests/test_api.py -q
   ```
 
   Expected: `tests/test_ops.py` fails at collection (`ImportError: cannot import name 'callback_allowed' from 'arbiter.notify'`); `test_callback_allowlist_parsed_and_defaults_empty` fails with `AttributeError: 'Config' object has no attribute 'callback_allowlist'`; the three new CLI tests fail (`ImportError: cannot import name '_base_url'` / `Error: no such option: --url`); `test_api.py::test_health_returns_ok` fails (`{"ok": True} != {"ok": True, "db": True}`).
@@ -9937,7 +9929,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 6: Run the task tests green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_ops.py tests/test_config.py tests/test_cli.py tests/test_api.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_ops.py tests/test_config.py tests/test_cli.py tests/test_api.py -q
   ```
 
   Expected: all pass.
@@ -9945,7 +9937,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 7: Run the full server suite green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
   ```
 
   Expected: all pass.
@@ -9953,7 +9945,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 8: Commit**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add server/arbiter/config.py server/arbiter/notify/__init__.py server/arbiter/notify/webhook.py server/arbiter/app.py server/arbiter/cli.py server/tests/test_ops.py server/tests/test_config.py server/tests/test_cli.py server/tests/test_api.py && git commit -m "feat(server): callback_url allowlist, no-redirect callbacks, real /health DB ping, hma --url/HMA_URL" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  cd "<repo-root>" && git add server/arbiter/config.py server/arbiter/notify/__init__.py server/arbiter/notify/webhook.py server/arbiter/app.py server/arbiter/cli.py server/tests/test_ops.py server/tests/test_config.py server/tests/test_cli.py server/tests/test_api.py && git commit -m "feat(server): callback_url allowlist, no-redirect callbacks, real /health DB ping, hma --url/HMA_URL"
   ```
 
 
@@ -10110,7 +10102,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 2: Run the tests — expect failure**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_audit_export.py tests/test_cli.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_audit_export.py tests/test_cli.py -q
   ```
 
   Expected: the event tests fail on missing `verdict_issued`/`consumed`/`policy_denied`/`rate_limited` rows; the export tests get 404 (route missing) where 200/403/422 are asserted; the CLI tests fail with `ImportError: cannot import name '_audit_export'` and `Error: no such command 'audit'`.
@@ -10249,7 +10241,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 6: Run the task tests green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest tests/test_audit_export.py tests/test_cli.py -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest tests/test_audit_export.py tests/test_cli.py -q
   ```
 
   Expected: all pass.
@@ -10257,7 +10249,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 7: Run the full server suite green**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest -q
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest -q
   ```
 
   Expected: all pass.
@@ -10265,7 +10257,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 - [ ] **Step 8: Commit**
 
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && git add server/arbiter/db.py server/arbiter/app.py server/arbiter/cli.py server/tests/test_audit_export.py server/tests/test_cli.py && git commit -m "feat(server): audit consumed/verdict_issued/policy_denied/rate_limited; /v1/audit/export jsonl; hma audit export" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  cd "<repo-root>" && git add server/arbiter/db.py server/arbiter/app.py server/arbiter/cli.py server/tests/test_audit_export.py server/tests/test_cli.py && git commit -m "feat(server): audit consumed/verdict_issued/policy_denied/rate_limited; /v1/audit/export jsonl; hma audit export"
   ```
 
 ## Group F — SDK, E2E, docs, release hygiene (Tasks 23–28)
@@ -10273,7 +10265,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
 <!-- Group F — SDK 0.3.0, E2E smoke + CI, docs (api/config/cli, enforcement, Claude Code hook,
      sandboxed-agent reference), SECURITY/README/CHANGELOG/version hygiene, stretch outbox.
      Tasks 23–28 per the PIN fixed numbering. Repo root:
-     /Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter -->
+     <repo-root> -->
 
 ### Task 23: hold-sdk 0.3.0 — idempotency_key/callback_url passthrough, app_token removal, verify=False warning
 
@@ -10293,7 +10285,7 @@ cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
   - When `verify is False`: `warnings.warn("TLS verification disabled — vulnerable to MITM; add your CA to the trust store instead", stacklevel=2)` (default `UserWarning`).
 
 Dev-env note (from the plan header): one venv at the repo root — if missing, run
-`cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && python3 -m venv .venv && .venv/bin/pip install -e ./server -e ./sdk -e ./warden pytest`.
+`cd "<repo-root>" && python3 -m venv .venv && .venv/bin/pip install -e ./server -e ./sdk -e ./warden pytest`.
 All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 1: Write the failing tests for the module-level function.**
@@ -10324,7 +10316,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 2: Run them — expect failure.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/sdk" && \
+  cd "<repo-root>/sdk" && \
     ../.venv/bin/python -m pytest tests/test_request_approval.py
   ```
   Expected: `test_idempotency_key_and_callback_url_sent` fails with
@@ -10375,15 +10367,14 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 4: Run green, commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/sdk" && \
+  cd "<repo-root>/sdk" && \
     ../.venv/bin/python -m pytest tests/test_request_approval.py
   ```
   Expected: all pass. Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add sdk/hold_sdk/__init__.py sdk/tests/test_request_approval.py && \
-    git commit -m "feat(sdk): request_approval passes idempotency_key and callback_url through" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "feat(sdk): request_approval passes idempotency_key and callback_url through"
   ```
 
 - [ ] **Step 5: Write the failing tests for ArbiterClient (app_token removal, verify warning, passthrough).**
@@ -10468,7 +10459,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 6: Run them — expect failure.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/sdk" && \
+  cd "<repo-root>/sdk" && \
     ../.venv/bin/python -m pytest tests/test_client.py
   ```
   Expected: `test_no_app_token_param` fails (`app_token` IS in the signature), `test_verify_false_warns`
@@ -10538,16 +10529,15 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 8: Run the whole SDK suite green, commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/sdk" && \
+  cd "<repo-root>/sdk" && \
     ../.venv/bin/python -m pytest
   ```
   Expected: all pass (both test files). Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add sdk/hold_sdk/client.py sdk/tests/test_client.py && \
     git commit -m "feat(sdk)!: drop dead app_token param; warn loudly on verify=False" \
-      -m "BREAKING CHANGE: ArbiterClient.__init__ no longer accepts app_token (it was never stored or used)." \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+      -m "BREAKING CHANGE: ArbiterClient.__init__ no longer accepts app_token (it was never stored or used)."
   ```
 
 - [ ] **Step 9: Create `sdk/CHANGELOG.md` and update `docs/sdk.md`.**
@@ -10658,16 +10648,15 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 10: Verify docs and changelog have no placeholders, run the suite once more, commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     ! grep -riE 'TBD|TODO|placeholder' sdk/CHANGELOG.md docs/sdk.md && \
     cd sdk && ../.venv/bin/python -m pytest
   ```
   Expected: grep finds nothing (inverted exit 0), all tests pass. Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add sdk/CHANGELOG.md docs/sdk.md && \
-    git commit -m "docs(sdk): 0.3.0 changelog; document new params and verify=False warning" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "docs(sdk): 0.3.0 changelog; document new params and verify=False warning"
   ```
 
   Note: the `sdk/pyproject.toml` version bump 0.2.1 -> 0.3.0 happens in Task 27 (release hygiene), not here.
@@ -10690,7 +10679,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 1: Red-first gate — run the not-yet-created script.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     bash scripts/smoke-warden.sh; echo "exit=$?"
   ```
   Expected: `bash: scripts/smoke-warden.sh: No such file or directory` and a non-zero exit
@@ -10978,7 +10967,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 3: Syntax-check the script.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     bash -n scripts/smoke-warden.sh && test -x scripts/smoke-warden.sh && echo SYNTAX-OK
   ```
   Expected: `SYNTAX-OK`. If `bash -n` reports an error, fix before proceeding.
@@ -10987,7 +10976,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
   Prerequisite: Tasks 1-22 complete and the root venv has all three packages installed
   (`.venv/bin/pip install -e ./server -e ./sdk -e ./warden` from the repo root if in doubt).
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     bash scripts/smoke-warden.sh
   ```
   Expected final line: `SMOKE-WARDEN OK` (exit 0), preceded by the six `ok:` lines (happy path,
@@ -10997,10 +10986,9 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 5: Commit the script.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add scripts/smoke-warden.sh && \
-    git commit -m "test(e2e): warden smoke — execute+receipt verify, consume replay 409, deny/expiry/wrong-key hold" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "test(e2e): warden smoke — execute+receipt verify, consume replay 409, deny/expiry/wrong-key hold"
   ```
 
 - [ ] **Step 6: Wire warden tests + the new smoke into CI.**
@@ -11049,16 +11037,15 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 7: Validate the workflow YAML parses, commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     .venv/bin/pip -q install pyyaml && \
     .venv/bin/python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); print('YAML-OK')"
   ```
   Expected: `YAML-OK`. Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add .github/workflows/ci.yml && \
-    git commit -m "ci: run warden pytest and smoke-warden.sh in the test matrix" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "ci: run warden pytest and smoke-warden.sh in the test matrix"
   ```
 ### Task 25: docs/api.md + docs/config.md + docs/cli.md (consolidated references)
 
@@ -11074,7 +11061,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 1: Run the failing gate.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     test -f docs/api.md -a -f docs/config.md -a -f docs/cli.md && echo PRESENT || echo MISSING
   ```
   Expected: `MISSING`.
@@ -11577,7 +11564,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 5: Run the content gate, then commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     for s in "/v1/requests" "/v1/keys" "/verdict" "/consume" "/v1/audit/export" \
              "/v1/devices" "/v1/notify/policy" "/v1/stream" "/health"; do \
       grep -q -- "$s" docs/api.md || { echo "MISSING $s in api.md"; exit 1; }; done && \
@@ -11592,10 +11579,9 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
   ```
   Expected: `DOCS-GATE-OK`. Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add docs/api.md docs/config.md docs/cli.md && \
-    git commit -m "docs: consolidated API, config.toml, and CLI references" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "docs: consolidated API, config.toml, and CLI references"
   ```
 ### Task 26: docs/enforcement-models.md + docs/claude-code-hook.md + docs/reference-sandboxed-agent.md
 
@@ -11611,7 +11597,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 1: Run the failing gate.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     test -f docs/enforcement-models.md -a -f docs/claude-code-hook.md \
          -a -f docs/reference-sandboxed-agent.md && echo PRESENT || echo MISSING
   ```
@@ -12074,7 +12060,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 5: Run the content gate, then commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     grep -q "HMA is the gate; the warden decides whether the agent walks through it or merely promises to." docs/enforcement-models.md && \
     grep -qc "does NOT protect against" docs/enforcement-models.md && \
     [ "$(grep -c 'does NOT protect against' docs/enforcement-models.md)" -eq 3 ] && \
@@ -12090,10 +12076,9 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
   ```
   Expected: `DOCS-GATE-OK` (one "does NOT protect against" heading per tier — exactly 3). Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add docs/enforcement-models.md docs/claude-code-hook.md docs/reference-sandboxed-agent.md && \
-    git commit -m "docs: enforcement tiers, Claude Code hook walkthrough, sandboxed-agent reference architecture" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "docs: enforcement tiers, Claude Code hook walkthrough, sandboxed-agent reference architecture"
   ```
 ### Task 27: SECURITY.md malicious-agent rewrite, README enforcement story, CHANGELOGs, version bumps
 
@@ -12112,7 +12097,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 1: Run the failing gate.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     { grep -q "malicious" SECURITY.md && \
       grep -q "HMA is the gate" README.md && \
       grep -q '\[0.4.0\]' CHANGELOG.md && \
@@ -12436,7 +12421,7 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
 
 - [ ] **Step 5: Run the gate green + full suites, commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     grep -q "HMA is the gate; the warden decides whether the agent walks through it or merely promises to." README.md && \
     grep -q "The malicious-agent analysis" SECURITY.md && \
     grep -q "What HMA does NOT protect against" SECURITY.md && \
@@ -12456,16 +12441,15 @@ All SDK test commands below are `cd sdk && ../.venv/bin/python -m pytest ...`.
   ```
   Expected: `GATE-OK`. Then confirm nothing broke:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && ../.venv/bin/python -m pytest && \
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/sdk" && ../.venv/bin/python -m pytest && \
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/warden" && ../.venv/bin/python -m pytest
+  cd "<repo-root>/server" && ../.venv/bin/python -m pytest && \
+  cd "<repo-root>/sdk" && ../.venv/bin/python -m pytest && \
+  cd "<repo-root>/warden" && ../.venv/bin/python -m pytest
   ```
   Expected: all three suites pass (the existing 122+ server tests included). Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add SECURITY.md README.md CHANGELOG.md warden/CHANGELOG.md server/pyproject.toml sdk/pyproject.toml && \
-    git commit -m "docs+release: malicious-agent threat model, warden story in README, 0.4.0/0.3.0/0.1.0 changelogs and version bumps" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "docs+release: malicious-agent threat model, warden story in README, 0.4.0/0.3.0/0.1.0 changelogs and version bumps"
   ```
   Morning housekeeping note to surface in the run report (do NOT act on it tonight): v0.3.0 was
   never tagged on origin, so the tag-triggered release CI (ghcr image, GitHub Release, sdk
@@ -12657,7 +12641,7 @@ and audited there (`notify_failed`), unchanged.
 
 - [ ] **Step 2: Run them — expect failure.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && \
+  cd "<repo-root>/server" && \
     ../.venv/bin/python -m pytest tests/test_outbox.py
   ```
   Expected: collection error — `ModuleNotFoundError: No module named 'arbiter.notify.outbox'`.
@@ -12849,7 +12833,7 @@ and audited there (`notify_failed`), unchanged.
 
 - [ ] **Step 6: Run green — new file and the whole server suite.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/server" && \
+  cd "<repo-root>/server" && \
     ../.venv/bin/python -m pytest tests/test_outbox.py && \
     ../.venv/bin/python -m pytest
   ```
@@ -12859,15 +12843,14 @@ and audited there (`notify_failed`), unchanged.
 
 - [ ] **Step 7: Re-run the smokes (both), then commit.**
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     bash scripts/smoke.sh && bash scripts/smoke-warden.sh
   ```
   Expected: `SMOKE OK …` and `SMOKE-WARDEN OK`. Then:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add server/arbiter/db.py server/arbiter/notify/outbox.py server/arbiter/app.py server/tests/test_outbox.py && \
-    git commit -m "feat(server): restart-safe notification outbox (migration 6, startup drain, 1/5/25s ladder, no DLQ)" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "feat(server): restart-safe notification outbox (migration 6, startup drain, 1/5/25s ladder, no DLQ)"
   ```
   Also add one line under the 0.4.0 CHANGELOG "Added" section (only if this stretch task
   actually ships):
@@ -12882,10 +12865,9 @@ and audited there (`notify_failed`), unchanged.
 
   amend or follow-up commit:
   ```bash
-  cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter" && \
+  cd "<repo-root>" && \
     git add CHANGELOG.md && \
-    git commit -m "docs(changelog): note the notification outbox stretch item" \
-      -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+    git commit -m "docs(changelog): note the notification outbox stretch item"
   ```
 
 ## Group G — Finalize (Task 29)
@@ -12903,7 +12885,7 @@ and audited there (`notify_failed`), unchanged.
 - [ ] **Step 1: Run every gate, in order, all green**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
+cd "<repo-root>"
 (cd server && ../.venv/bin/python -m pytest -q)
 (cd warden && ../.venv/bin/python -m pytest -q)
 (cd sdk && ../.venv/bin/python -m pytest -q)
@@ -12916,7 +12898,7 @@ Expected: all five commands exit 0. Any failure: STOP, fix within the owning tas
 - [ ] **Step 2: Placeholder and docs-link gate**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
+cd "<repo-root>"
 ! grep -rn "TBD\|TODO\|FIXME\|XXX" docs/*.md README.md SECURITY.md --include="*.md" | grep -v "docs/specs/"
 for f in api config cli warden secret-managers enforcement-models reference-sandboxed-agent claude-code-hook; do
   grep -q "docs/$f.md" README.md || { echo "README missing link: docs/$f.md"; exit 1; }
@@ -12933,17 +12915,15 @@ Create `docs/specs/2026-07-07-warden-run-report.md` with exactly these sections,
 - [ ] **Step 4: Commit the report**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
+cd "<repo-root>"
 git add docs/specs/2026-07-07-warden-run-report.md
-git commit -m "docs(specs): overnight warden run report
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git commit -m "docs(specs): overnight warden run report"
 ```
 
 - [ ] **Step 5: Push the branch and open the PR**
 
 ```bash
-cd "/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter"
+cd "<repo-root>"
 git push -u origin feat/warden-enforcement
 gh pr create --title "Warden: verified enforcement for HMA (0.4.0 train)" --body "$(cat <<'EOF'
 Implements docs/specs/2026-07-06-warden-enforcement-design.md end to end:
@@ -12953,8 +12933,6 @@ Implements docs/specs/2026-07-06-warden-enforcement-design.md end to end:
 - **hold-sdk 0.3.0**, E2E smokes (happy + adversarial), CI wiring, and the docs set (api/config/cli/warden/secret-managers/enforcement-models/reference-sandboxed-agent/claude-code-hook + SECURITY.md malicious-agent rewrite).
 
 Run report: docs/specs/2026-07-07-warden-run-report.md
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```

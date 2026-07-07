@@ -5,8 +5,8 @@ tests, documents, and publishes the Warden + arbiter trust upgrade as one review
 stopping only on genuine blockers.
 
 ## Read first (source of truth — do NOT re-scope)
-1. `/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/docs/specs/2026-07-06-warden-enforcement-design.md`
-2. `/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/docs/specs/2026-07-06-warden-enforcement-plan.md`
+1. `<repo-root>/docs/specs/2026-07-06-warden-enforcement-design.md`
+2. `<repo-root>/docs/specs/2026-07-06-warden-enforcement-plan.md`
    — 29 tasks (groups A–G) with complete code, exact commands, TDD steps, and pinned
    cross-task contracts. The plan's "Consciously accepted deviations" list is signed off —
    do not "fix" those.
@@ -15,7 +15,7 @@ stopping only on genuine blockers.
 
 ```
 Execute the Warden enforcement implementation plan exactly as specified by
-/Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter/docs/specs/2026-07-06-warden-enforcement-plan.md
+<repo-root>/docs/specs/2026-07-06-warden-enforcement-plan.md
 (read it and its linked design first — source of truth; do not re-scope, do not reopen the
 plan's "Consciously accepted deviations").
 
@@ -27,7 +27,7 @@ checkpoints. Ask only on genuine blockers (a gate that stays red after honest fi
 within the owning task's scope, a missing credential, a contradiction between spec and plan).
 
 HARD CONSTRAINTS:
-- Work ONLY in /Users/kclear/Apps/Claude/Code/Software Development/iOS/holdmyagent-arbiter
+- Work ONLY in <repo-root>
   (path has spaces — quote it), on branch feat/warden-enforcement created from
   design/warden-enforcement. NEVER push to main, never merge the PR, no tags, no PyPI/brew/
   ghcr publishing, no iOS changes, no homelab/VM/network changes, no ASC/App Store calls.
