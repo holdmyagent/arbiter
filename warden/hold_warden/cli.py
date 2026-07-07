@@ -157,5 +157,58 @@ def hash_cmd(action: str, config_path: Path, param_kv: tuple[str, ...]) -> None:
     click.echo(digest)
 
 
+@main.command()
+@click.option("--config", "config_path", type=click.Path(path_type=Path),
+              default=DEFAULT_CONFIG, show_default=True)
+def doctor(config_path: Path) -> None:
+    """Dry-run every secret resolver + check arbiter reachability and pinned key.
+
+    Never prints resolved values - only `ok (non-empty)` / `FAILED (exit N)`.
+    Exit code 0 when everything passes, 1 on any failure.
+    """
+    failures = 0
+    try:
+        cfg = WardenConfig.load(config_path)
+        click.echo(f"config: ok ({config_path})")
+    except ConfigError as exc:
+        click.echo(f"config: FAILED ({exc})")
+        sys.exit(1)
+
+    refs: dict[str, str] = {"warden.arbiter_token": cfg.arbiter_token_ref}
+    for name, ref in cfg.agents.items():
+        refs[f"agents.{name}"] = ref
+    for name, ref in cfg.secrets.items():
+        refs[f"secrets.{name}"] = ref
+    for label, ref in refs.items():
+        res = doctor_check(ref)
+        click.echo(f"{label} [{res.ref_scheme}]: "
+                   f"{'ok (non-empty)' if res.ok else res.detail}")
+        if not res.ok:
+            failures += 1
+
+    base = cfg.arbiter_url.rstrip("/")
+    try:
+        healthy = httpx.get(f"{base}/health", timeout=10.0).status_code == 200
+    except httpx.HTTPError:
+        healthy = False
+    click.echo(f"arbiter /health: {'ok' if healthy else 'FAILED (unreachable or not 200)'}")
+    if not healthy:
+        failures += 1
+
+    try:
+        resp = httpx.get(f"{base}/v1/keys", timeout=10.0)
+        keys = resp.json().get("keys", []) if resp.status_code == 200 else []
+    except (httpx.HTTPError, ValueError):
+        keys = []
+    kid, _, x = cfg.arbiter_pubkey.partition(":")
+    match = any(k.get("kid") == kid and k.get("x") == x for k in keys)
+    click.echo(f"arbiter /v1/keys matches pinned key: "
+               f"{'ok' if match else 'FAILED (key mismatch)'}")
+    if not match:
+        failures += 1
+
+    sys.exit(1 if failures else 0)
+
+
 if __name__ == "__main__":
     main()
