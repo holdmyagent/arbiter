@@ -138,9 +138,11 @@ class Database:
         only this connection's own inner RLock). After this returns the cell's
         connection is dead — the cell object must be unreachable from the map."""
         with self._lock:
-            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            self.conn.commit()
-            self.conn.close()
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.conn.commit()
+            finally:
+                self.conn.close()
 
     def add_audit(self, request_id: str, event: str, detail: dict | None = None):
         with self._lock:
