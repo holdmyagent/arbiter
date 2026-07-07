@@ -11,6 +11,7 @@ class ServerCfg:
     host: str = "127.0.0.1"
     port: int = 8000
     db_path: str = "~/.local/share/holdmyagent/arbiter.sqlite3"
+    trusted_proxies: list[str] = field(default_factory=list)
 
 @dataclass
 class AuthCfg:
@@ -93,6 +94,8 @@ class Config:
             for k in ("host", "port", "db_path"):
                 if k in s:
                     setattr(cfg.server, k, s[k])
+            if "trusted_proxies" in s:
+                cfg.server.trusted_proxies = [str(x) for x in s["trusted_proxies"]]
             for k in ("agent_token", "app_token", "admin_password", "session_secret"):
                 if k in a:
                     setattr(cfg.auth, k, a[k])
