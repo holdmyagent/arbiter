@@ -105,6 +105,9 @@ class Config:
             for k, v in n.get("severities", {}).items():
                 if k in cfg.notify_severities and isinstance(v, bool):
                     cfg.notify_severities[k] = v
+            pol = doc.get("policy", {})
+            if "approval_ttl_seconds" in pol:
+                cfg.policy.approval_ttl_seconds = int(pol["approval_ttl_seconds"])
         env = os.environ
         m = [("HMA_HOST", cfg.server, "host", str), ("HMA_PORT", cfg.server, "port", int),
              ("HMA_DB_PATH", cfg.server, "db_path", str),

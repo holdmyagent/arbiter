@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -73,6 +74,15 @@ class Database:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # consume_request runs in FastAPI's threadpool and is hit genuinely
+        # concurrently (see test_double_consume_concurrent_exactly_one_wins).
+        # A single shared sqlite3.Connection used from multiple OS threads
+        # without this lock corrupts reads under real concurrency even though
+        # sqlite3.threadsafety reports 3 — empirically ~20% of runs return a
+        # row with a NULL payload column right after a successful UPDATE.
+        # The guarded UPDATE's rowcount still decides the winner; this lock
+        # only serializes the check→update→commit→re-read sequence per call.
+        self._consume_lock = threading.Lock()
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         v = self.conn.execute("PRAGMA user_version").fetchone()[0]
@@ -158,6 +168,47 @@ class Database:
         for r in rows:
             self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
             self.add_audit(r["id"], "expired", {})
+        return [self.get_request(r["id"]) for r in rows]
+
+    def consume_request(self, rid: str, *, approval_ttl_seconds: int,
+                        now: datetime | None = None) -> tuple[int, dict | None]:
+        """Single-use consumption. Returns (http_code, row):
+        200 consumed now; 404 unknown; 409 not approved / already consumed;
+        410 approved-but-stale (decided_at + approval_ttl_seconds < now).
+        The guarded UPDATE is the atomic core — concurrent consumers race on
+        rowcount, exactly one wins. Wrapped in self._consume_lock: see its
+        docstring in __init__ for why (shared connection, real OS threads)."""
+        now = now or _utcnow()
+        with self._consume_lock:
+            if not self.get_request(rid):
+                return 404, None
+            cutoff = _iso(now - timedelta(seconds=approval_ttl_seconds))
+            cur = self.conn.execute(
+                "UPDATE requests SET consumed_at=? WHERE id=? AND status='approved'"
+                " AND consumed_at IS NULL AND decided_at >= ?",
+                (_iso(now), rid, cutoff))
+            self.conn.commit()
+            row = self.get_request(rid)
+            if cur.rowcount == 1:
+                return 200, row
+            if row["status"] == "approved" and row["consumed_at"] is None:
+                return 410, row     # only staleness can fail the guard on this state
+            return 409, row
+
+    def expire_stale_approvals(self, approval_ttl_seconds: int,
+                               now: datetime | None = None) -> list[dict]:
+        """Flip approved, unconsumed rows whose decided_at is older than the
+        approval window to 'expired' so the UI reflects reality. The original
+        decision verdict (verdict_jws/verdict_kid) is deliberately kept."""
+        now = now or _utcnow()
+        cutoff = _iso(now - timedelta(seconds=approval_ttl_seconds))
+        rows = self.conn.execute(
+            "SELECT id FROM requests WHERE status='approved' AND consumed_at IS NULL"
+            " AND decided_at < ?", (cutoff,)).fetchall()
+        for r in rows:
+            self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+            self.add_audit(r["id"], "expired", {"reason": "stale_approval"})
+        self.conn.commit()
         return [self.get_request(r["id"]) for r in rows]
 
     def register_device(self, apns_token: str, name: str, min_severity: str = "low",
