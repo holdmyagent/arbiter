@@ -130,8 +130,11 @@ token renewal, run Vault Agent and reference its sink file with `file:` instead.
 ## `doctor` never prints values
 
 `hma-warden doctor` dry-runs **every** reference in `warden.toml` — `arbiter_token`,
-every `[agents.*]` token, every `[secrets]` entry — but evaluates only the exit code and
-a non-empty-length check. Per resolver it reports exactly `ok (non-empty)` or
-`FAILED (exit N)`. The resolved value never touches stdout, stderr, or logs — so
-troubleshooting on a live host never dumps vault contents into a terminal, scrollback,
-or a pasted bug report.
+every `[agents.*]` token, every `[secrets]` entry — but keeps only whether resolution
+succeeded and produced a non-empty value. Per resolver it reports exactly
+`ok (non-empty)` or `FAILED (<reason>)`, where the reason is short and value-free:
+`FAILED (exit 1)` for a non-zero `cmd:` exit, `FAILED (unset or empty)` for a missing
+env var, `FAILED (unreadable)` for a file problem, `FAILED (malformed reference)` /
+`FAILED (timeout)` / `FAILED (not runnable)` for a broken `cmd:` ref. The resolved value
+never touches stdout, stderr, or logs — so troubleshooting on a live host never dumps
+vault contents into a terminal, scrollback, or a pasted bug report.

@@ -90,9 +90,10 @@ hma-warden doctor --config ~/.config/hold-warden/warden.toml
 ```
 
 `doctor` parses the config, dry-runs **every** secret resolver (printing only
-`ok (non-empty)` or `FAILED (exit N)` — never values), and checks that the arbiter is
-reachable and that `GET /v1/keys` still matches the pinned key. Exit code 0 means ready;
-1 means fix something first.
+`ok (non-empty)` or `FAILED (<reason>)` with a short value-free reason — e.g.
+`FAILED (exit 1)`, `FAILED (unset or empty)`, `FAILED (unreadable)` — never values), and
+checks that the arbiter is reachable and that `GET /v1/keys` still matches the pinned
+key. Exit code 0 means ready; 1 means fix something first.
 
 ## warden.toml — annotated example
 
@@ -150,9 +151,12 @@ Registry rules (enforced at config load and at propose time):
 - **Params are constrained-only**: `enum`, `string` (pattern + max_len), or `int`
   (min/max). No free-form shell. Unknown params, missing params, or a validation failure
   reject the proposal with `422`.
-- **Whole-segment interpolation only**: each `{param}` must occupy an entire argv element
-  or an entire bounded segment of `body_template`. Config load rejects embedded-in-flag
-  interpolation such as `"--unit={unit}"` — a param can never splice flags.
+- **Whole-element interpolation for commands**: each `{param}` in `argv` must occupy an
+  entire argv element. Config load rejects embedded-in-flag interpolation such as
+  `"--unit={unit}"` — a param can never splice flags. For `http` actions, config load
+  checks that every placeholder in `url`/`body_template` names a declared param, and the
+  rendered body is bound by sha256 into the approved canonical document — at execution
+  the warden refuses to send any body whose hash differs from what the human approved.
 - **Severity and TTL are warden-set**, never agent-set. The agent picks an action name
   and params; everything else comes from this file.
 - **Command environment is scrubbed**: `command` actions run without a shell and with a
@@ -228,12 +232,22 @@ curl -s http://127.0.0.1:8646/v1/proposals/<proposal_id> \
 | Verdict signature invalid / wrong key | `failed`, never executes |
 | Action drifted since approval (hash mismatch) | `failed`, never executes |
 | Approval already consumed (replay) | `failed`, never executes |
-| Approval older than its freshness window | `expired`, never executes |
+| Stale verdict caught at verification (`decided_at` + `approval_ttl_seconds` elapsed) | `failed`, never executes |
+| Arbiter refuses consume with `410` (approval past its freshness window) | `expired`, never executes |
 | Warden token revoked/rotated (401/403) | proposal `failed`; CRITICAL log line naming the cause; daemon stays up |
 | Adapter timeout or error | `failed`, receipt records the attempt |
 | Secret resolution failure | that proposal `failed`; the daemon keeps serving |
 
 ## Run it as a systemd --user unit
+
+The unit below assumes a dedicated venv — create it once:
+
+```bash
+python3 -m venv ~/.venvs/warden && ~/.venvs/warden/bin/pip install hold-warden
+```
+
+(or point `ExecStart` at the absolute path of `hma-warden` from wherever you installed
+it — `command -v hma-warden` after activating the right environment).
 
 ```ini
 # ~/.config/systemd/user/hold-warden.service
