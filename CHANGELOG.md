@@ -48,10 +48,15 @@ changes are additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working unchanged.
   prefixes) checked at create and at dispatch, redirects disabled; empty
   list keeps legacy behavior with a loud startup warning on first use.
 - **Notification outbox (stretch).** Dispatches are journaled in a single
-  `outbox` table and drained on startup, so a crash or restart no longer
-  silently drops undelivered notifications for pending requests. Retries
-  ladder 1/5/25s, max 3 attempts, stale rows past the request's TTL are
-  dropped; deliberately no dead-letter queue.
+  `outbox` table and drained on startup: rows already enqueued survive a
+  crash or restart and are re-delivered instead of silently dropped. The
+  enqueue is not co-committed with the request state change, so a crash in
+  the instant between the state change committing and the outbox row
+  committing can still lose that one notification (accepted v1 scope — no
+  transactional outbox). Max 3 attempts per row with retry gaps of 1s then
+  5s (ladder constants 1/5/25s; the third rung is unreachable at max 3
+  attempts); stale rows past the request's TTL are dropped; deliberately no
+  dead-letter queue.
 - **Ops promotions.** `/health` now does a real DB ping (200/503);
   `hma ask` / `hma status` accept `--url` / `HMA_URL` for remote arbiters.
 - **Docs.** New consolidated references (`docs/api.md`, `docs/config.md`,
