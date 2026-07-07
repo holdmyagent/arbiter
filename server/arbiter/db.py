@@ -102,17 +102,17 @@ class Database:
         )
         self.conn.commit()
 
-    def create_request(self, c) -> dict:
+    def create_request(self, c, requested_by: str | None = None) -> dict:
         now = _utcnow()
         rid = str(uuid.uuid4())
         expires = now + timedelta(seconds=c.ttl_seconds)
         self.conn.execute(
             "INSERT INTO requests(id,created_at,title,description,action_type,payload,"
-            "severity,status,ttl_seconds,expires_at,decided_at,decided_by,target,callback_url)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "severity,status,ttl_seconds,expires_at,decided_at,decided_by,target,callback_url,"
+            "requested_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rid, _iso(now), c.title, c.description, c.action_type,
              json.dumps(c.payload), c.severity, "pending", c.ttl_seconds,
-             _iso(expires), None, None, c.target, c.callback_url),
+             _iso(expires), None, None, c.target, c.callback_url, requested_by),
         )
         self.conn.commit()
         self.add_audit(rid, "created", {"severity": c.severity})
