@@ -31,3 +31,24 @@ def test_server_down_is_denied(monkeypatch):
     monkeypatch.setenv("HMA_SERVER_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("HMA_AGENT_TOKEN", "t")
     assert request_approval("x", timeout=1, poll_interval=0) == "denied"
+
+def test_idempotency_key_and_callback_url_sent(monkeypatch):
+    monkeypatch.setenv("HMA_SERVER_URL", "http://test")
+    monkeypatch.setenv("HMA_AGENT_TOKEN", "t")
+    sent = {}
+    out = request_approval("Deploy?", poll_interval=0,
+                           idempotency_key="idem-1",
+                           callback_url="http://cb.local/hook",
+                           _transport=_transport(capture=sent))
+    assert out == "approved"
+    assert sent["idempotency_key"] == "idem-1"
+    assert sent["callback_url"] == "http://cb.local/hook"
+
+def test_optional_fields_omitted_when_unset(monkeypatch):
+    """A 0.3.0 SDK against an older server: unknown keys are never sent unless set."""
+    monkeypatch.setenv("HMA_SERVER_URL", "http://test")
+    monkeypatch.setenv("HMA_AGENT_TOKEN", "t")
+    sent = {}
+    request_approval("Deploy?", poll_interval=0, _transport=_transport(capture=sent))
+    assert "idempotency_key" not in sent
+    assert "callback_url" not in sent
