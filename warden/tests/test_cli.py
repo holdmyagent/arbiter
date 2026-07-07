@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -116,6 +117,22 @@ def test_init_fails_cleanly_when_arbiter_down(tmp_path):
                                        "--config", str(tmp_path / "warden.toml")])
     assert result.exit_code != 0
     assert not (tmp_path / "warden.toml").exists()
+
+
+def test_init_secret_files_are_0600_under_permissive_umask(stub_arbiter, tmp_path):
+    """Both secret-bearing files must be CREATED with 0600 (atomic at open),
+    not chmod-ed after the fact - even under a permissive umask."""
+    old_umask = os.umask(0o022)
+    try:
+        cfg_path = tmp_path / "warden.toml"
+        result = CliRunner().invoke(main, ["init", "--arbiter-url", stub_arbiter.url,
+                                           "--config", str(cfg_path)])
+        assert result.exit_code == 0, result.output
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(cfg_path.stat().st_mode) == 0o600
+    token_path = tmp_path / "agent.default.token"
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
 
 
 # ------------------------------------------------------------------ hash
