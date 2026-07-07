@@ -2,7 +2,6 @@ import asyncio
 import logging
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app

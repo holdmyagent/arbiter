@@ -115,7 +115,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     @app.get("/health")
     def health():
         try:
-            db.conn.execute("SELECT 1")
+            db.ping()
         except Exception:
             return JSONResponse(status_code=503, content={"ok": False, "db": False})
         return {"ok": True, "db": True}
