@@ -139,7 +139,10 @@ never enter the canonical document, the arbiter payload, receipts, or logs.
 Schemes: `env:VAR`, `file:/path` (must be 0600 or warn), `cmd:<argv string>` (run, stdout
 stripped = secret; non-zero exit = resolution failure). Resolution is **lazy** — at execution
 time, so a locked vault fails that one action closed instead of crashing the daemon. `hma-warden
-doctor` dry-runs all resolvers. Documented, CI-tested recipes (fake CLIs in tests): Bitwarden /
+doctor` dry-runs all resolvers but **never prints resolved values** — it evaluates only the exit
+code and a non-empty-length check, reporting `ok (non-empty)` / `FAILED (exit N)` per resolver,
+so troubleshooting on a live host can't dump vault contents to a terminal or scrollback.
+Documented, CI-tested recipes (fake CLIs in tests): Bitwarden /
 Vaultwarden via `rbw get` (recommended: background agent handles unlock for daemons) and
 `bw get password` (requires `BW_SESSION`); 1Password `op read op://...`; `pass show`; `vault kv
 get -field=...`. Docs page: `docs/secret-managers.md`.
@@ -159,8 +162,11 @@ get -field=...`. Docs page: `docs/secret-managers.md`.
 Fail-closed table (contract, tested): arbiter unreachable at propose → 502, no side effects;
 unreachable at verdict poll → keep polling until request `expires_at`, then `expired`; signature
 invalid / key mismatch → `failed` + audit, never execute; hash mismatch → `failed`, never
-execute; consume 409 (already consumed) → `failed`, never execute; adapter timeout/error →
-`failed` with receipt recording the attempt; `secret` resolution failure → `failed`.
+execute; consume 409 (already consumed) → `failed`, never execute; arbiter 401/403 (warden token
+revoked or rotated) → proposal `failed`, CRITICAL local log line naming the cause, daemon stays
+up and keeps serving (no unhandled-exception crash; recovery = fix token + restart); adapter
+timeout/error → `failed` with receipt recording the attempt; `secret` resolution failure →
+`failed`.
 
 ### 4.4 Canonicalization (golden-vectored)
 
@@ -181,7 +187,9 @@ request; the arbiter stores it verbatim, hashes the received bytes server-side, 
 must agree (server rejects create on mismatch with the warden-supplied hash). At execute time the
 warden re-canonicalizes from its registry + stored params and refuses on any drift. Golden
 vectors: a `tests/vectors/*.json` fixture set pinning (input → canonical string → hash) for all
-three adapters, unicode params, param ordering, and nested body templates.
+three adapters, unicode params, param ordering, nested body templates, and the **empty-params
+case** (a zero-input action must serialize as `"params":{}` — never key-dropped — identically on
+warden and arbiter).
 
 ### 4.5 Execution adapters
 
@@ -194,7 +202,16 @@ three adapters, unicode params, param ordering, and nested body templates.
   (result is deleted after first read; receipt records release, never the value).
 
 Warden persistence: a small SQLite db (proposals, receipts) in the warden's data dir — restart-safe,
-and receipts survive independently of the arbiter's audit log.
+and receipts survive independently of the arbiter's audit log. Retention is deliberately dumb for
+v0.1.0: on startup, `DELETE` proposals/receipts older than `retention_days` (config, default 7) —
+no background pruning task; a propose-spamming agent cannot grow the DB unboundedly across
+restarts, and rate limits bound within-uptime growth.
+
+Config reload: **none in v0.1.0** — `warden.toml` changes require a daemon restart (no SIGHUP
+handler). In-flight blocking `POST /v1/execute` calls may be dropped when the socket closes on
+restart; the async propose/poll pair is restart-safe (proposals persist). Both behaviors are
+documented in `docs/warden.md`, with agents pointed at the async pair + idempotency keys for
+retry safety.
 
 ## 5. Arbiter 0.4.0 trust upgrade (`server/`)
 
