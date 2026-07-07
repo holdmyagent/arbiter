@@ -106,9 +106,15 @@ class Config:
                 if k in cfg.notify_severities and isinstance(v, bool):
                     cfg.notify_severities[k] = v
             pol = doc.get("policy", {})
-            for k in ("ttl_min_seconds", "ttl_max_seconds", "approval_ttl_seconds"):
+            for k in ("ttl_min_seconds", "ttl_max_seconds", "approval_ttl_seconds",
+                      "rate_limit_per_minute"):
                 if k in pol:
                     setattr(cfg.policy, k, int(pol[k]))
+            if "deny_action_types" in pol:
+                cfg.policy.deny_action_types = [str(x) for x in pol["deny_action_types"]]
+            for k, v in pol.get("severity_floors", {}).items():
+                if isinstance(v, str) and v in SEVERITIES:
+                    cfg.policy.severity_floors[str(k)] = v
         env = os.environ
         m = [("HMA_HOST", cfg.server, "host", str), ("HMA_PORT", cfg.server, "port", int),
              ("HMA_DB_PATH", cfg.server, "db_path", str),

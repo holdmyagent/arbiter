@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from .auth import Identity, require_role, SlidingWindowLimiter
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher
+from .policy import evaluate_create
 from .signing import load_or_create_keypair, public_jwks, sign_verdict
 from .stream import Hub
 from .web import build_router, session_valid
@@ -72,6 +73,8 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     app.state.notify_tasks = notify_tasks
     limiter = SlidingWindowLimiter(10, 60.0)
     app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
+    create_limiter = SlidingWindowLimiter(cfg.policy.rate_limit_per_minute, 60.0)
+    app.state.create_limiter = create_limiter
     app.state.expire_pass = _expire_pass
     app.state.verdict_kid = kid
     # require_role deps read these three off request.app.state:
@@ -126,6 +129,14 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         # for config tokens) stay unstamped (requested_by NULL) for
         # back-compat reads; DB tokens are stamped with their name.
         requested_by = None if identity.legacy else identity.name
+        scopes = db.get_token_scopes(identity.name) if requested_by else None
+        result = evaluate_create(cfg, identity, body, scopes=scopes)
+        if not result.allowed:
+            raise HTTPException(403, f"policy: {result.reason}")
+        body.severity = result.effective_severity   # stored severity = effective
+        if create_limiter.blocked(identity.name):
+            raise HTTPException(429, "rate limited")
+        create_limiter.record_failure(identity.name)  # count this create in the window
         # ttl clamp: out-of-range values are clamped, never rejected
         body.ttl_seconds = max(cfg.policy.ttl_min_seconds,
                                min(cfg.policy.ttl_max_seconds, body.ttl_seconds))
