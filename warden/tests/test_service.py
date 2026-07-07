@@ -283,3 +283,87 @@ def test_tick_registry_drift_fails_before_consume(orch, fake_command):
     assert "drift" in row["result"]["error"]
     assert orch.arbiter.consumed == []
     assert fake_command == []
+
+
+# ----------------------------------------------------- fail-closed table
+
+def test_tick_verdict_error_fails_and_never_executes(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.verifier.error = VerdictError("signature mismatch")
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert "verdict verification failed" in row["result"]["error"]
+    assert orch.arbiter.consumed == [] and fake_command == []
+
+
+def test_tick_consume_conflict_fails_and_never_executes(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.arbiter.consume_error = ArbiterConflict("409 already consumed")
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert "consumed" in row["result"]["error"]
+    assert fake_command == []
+
+
+def test_tick_consume_stale_expires(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.arbiter.consume_error = ArbiterStale("410 stale approval")
+    orch.tick()
+    assert orch.db.get(out["id"])["status"] == "expired"
+    assert fake_command == []
+
+
+def test_tick_consume_unavailable_stays_pending(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.arbiter.consume_error = ArbiterUnavailable("connect refused")
+    orch.tick()  # must not raise
+    assert orch.db.get(out["id"])["status"] == "pending"
+    assert fake_command == []
+
+
+def test_tick_auth_error_fails_logs_critical_daemon_lives(orch, caplog):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    orch.arbiter.request_error = ArbiterAuthError("403 revoked")
+    with caplog.at_level(logging.CRITICAL, logger="hold_warden.service"):
+        orch.tick()  # must not raise
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert any("warden token" in r.getMessage() for r in caplog.records)
+
+
+def test_tick_arbiter_unreachable_stays_pending_then_expires(orch, monkeypatch):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    orch.arbiter.request_error = ArbiterUnavailable("connect refused")
+    created = datetime.fromisoformat(str(orch.db.get(out["id"])["created_at"]))
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    monkeypatch.setattr(service, "_utcnow", lambda: created + timedelta(seconds=10))
+    orch.tick()
+    assert orch.db.get(out["id"])["status"] == "pending"
+    monkeypatch.setattr(service, "_utcnow", lambda: created + timedelta(seconds=301))
+    orch.tick()
+    assert orch.db.get(out["id"])["status"] == "expired"
+
+
+def test_tick_unknown_decision_fails(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out, decision="banana")
+    orch.tick()
+    assert orch.db.get(out["id"])["status"] == "failed"
+    assert fake_command == []
+
+
+def test_tick_executing_row_from_crash_fails_closed(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    orch.db.set_status(out["id"], "executing")
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "failed"
+    assert "outcome unknown" in row["result"]["error"]
+    assert fake_command == []
