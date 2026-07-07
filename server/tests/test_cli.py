@@ -96,3 +96,22 @@ def test_status_url_flag_used_in_error(monkeypatch, tmp_path):
 def test_config_template_has_callback_allowlist():
     from arbiter.cli import CONFIG_TEMPLATE
     assert "callback_allowlist" in CONFIG_TEMPLATE
+
+
+def test_cli_audit_export_writes_jsonl_file(client, cfg, tmp_path, app_headers, agent_headers):
+    import json as _json
+    from arbiter.cli import _audit_export
+    rid = client.post("/v1/requests", headers=agent_headers, json={"title": "t"}).json()["id"]
+    client.post(f"/v1/requests/{rid}/decision", headers=app_headers, json={"decision": "approve"})
+    out = tmp_path / "audit.jsonl"
+    n = _audit_export(client, cfg.auth.app_token, "jsonl", str(out))
+    lines = [_json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    assert n == len(lines) and n >= 3
+    assert {"created", "approved", "verdict_issued"} <= {line["event"] for line in lines}
+
+
+def test_cli_audit_export_unreachable_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("HMA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.delenv("HMA_URL", raising=False)
+    r = CliRunner().invoke(main, ["audit", "export", "--url", "http://127.0.0.1:1"])
+    assert r.exit_code != 0 and "export failed" in r.output

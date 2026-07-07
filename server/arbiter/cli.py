@@ -148,6 +148,19 @@ def _gather_status(client: httpx.Client, app_token: str) -> dict:
     p.raise_for_status()
     return {"ok": r.json().get("ok", False), "devices": d.json(), "pending": p.json()}
 
+def _audit_export(client: httpx.Client, app_token: str, fmt: str,
+                  out_path: str | None) -> int:
+    r = client.get("/v1/audit/export",
+                   headers={"Authorization": f"Bearer {app_token}"},
+                   params={"format": fmt})
+    r.raise_for_status()
+    text = r.text
+    if out_path:
+        Path(out_path).write_text(text)
+    else:
+        click.echo(text, nl=False)
+    return sum(1 for line in text.splitlines() if line.strip())
+
 @main.command()
 @click.option("--config", "config_path", default=None)
 @click.option("--url", "url_option", default=None,
@@ -293,6 +306,29 @@ def token_revoke(name, config_path):
         raise click.ClickException(f"no token named '{name}'")
     db.add_audit("-", "token_revoked", {"name": name})
     click.echo(f"revoked {name}")
+
+@main.group()
+def audit():
+    """Audit-log utilities."""
+
+
+@audit.command("export")
+@click.option("--format", "fmt", type=click.Choice(["jsonl"]), default="jsonl")
+@click.option("--out", "out_path", default=None, help="Write to a file instead of stdout.")
+@click.option("--url", "url_option", default=None,
+              help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
+@click.option("--config", "config_path", default=None)
+def audit_export(fmt, out_path, url_option, config_path):
+    """Export the append-only audit log as JSONL (app token auth)."""
+    cfg = Config.load(config_path)
+    base = _base_url(url_option, cfg)
+    try:
+        with httpx.Client(base_url=base, timeout=30) as client:
+            n = _audit_export(client, cfg.auth.app_token, fmt, out_path)
+    except httpx.HTTPError as exc:
+        raise click.ClickException(f"export failed against {base}: {exc}")
+    if out_path:
+        click.echo(f"wrote {n} audit events to {out_path}")
 
 if __name__ == "__main__":
     main()

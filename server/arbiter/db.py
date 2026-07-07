@@ -334,6 +334,17 @@ class Database:
                     base + " ORDER BY a.at DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
+    def iter_audit(self):
+        """Yield every audit row oldest-first, detail parsed to a dict."""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT id, request_id, event, at, detail FROM audit ORDER BY at, id")
+            rows = cur.fetchall()
+        for r in rows:
+            d = dict(r)
+            d["detail"] = json.loads(d["detail"])
+            yield d
+
     def rename_device(self, device_id: str, name: str) -> dict | None:
         with self._lock:
             self.conn.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
