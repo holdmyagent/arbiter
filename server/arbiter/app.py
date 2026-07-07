@@ -11,7 +11,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, resolve_identity
+from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, _resolve_identity_legacy
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher, callback_allowed
 from .notify.outbox import Outbox
@@ -141,7 +141,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         authorized = False
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
-            ident = resolve_identity(db, cfg, auth.removeprefix("Bearer "))
+            ident = _resolve_identity_legacy(db, cfg, auth.removeprefix("Bearer "))
             authorized = ident is not None and ident.role == "app"
         if not authorized and app.state.session_check(request.cookies.get("hma_session", "")):
             authorized = True
