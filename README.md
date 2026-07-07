@@ -105,6 +105,42 @@ exit `0` (approved), `1` (denied or expired), `2` (error) — wrap it around
 any command you want gated, in any language that can shell out and check
 an exit code.
 
+## Enforcement: the Warden
+
+Everything above is the *cooperative* tier: the agent asks, and well-behaved
+tooling blocks on the answer. A prompt-injected or misbehaving agent can
+simply skip the call.
+**HMA is the gate; the warden decides whether the agent walks through it or merely promises to.**
+
+`hold-warden` is a small trusted daemon that runs *outside* the agent's
+sandbox, holds the action credentials the agent never sees, and executes
+only what a human approved — verified, not promised:
+
+- Actions live in a registry (`warden.toml`) with constrained, validated
+  parameters — the agent picks from a menu, it cannot compose commands.
+- Every proposal is canonicalized and hashed; the human's decision comes
+  back as an **Ed25519-signed verdict bound to that exact action hash**;
+  the warden re-verifies the signature and recomputes the hash before
+  executing anything.
+- Approvals are **single-use** (atomically consumed on the server) and go
+  stale after a freshness window — no replay, no month-old "yes".
+
+```bash
+pip install holdmyagent hold-warden
+hma token create my-warden --role warden        # printed once
+hma-warden init --arbiter-url http://127.0.0.1:8000 --config ~/.config/hold-warden/warden.toml
+hma-warden doctor --config ~/.config/hold-warden/warden.toml   # dry-run secrets + pairing
+hma-warden serve  --config ~/.config/hold-warden/warden.toml
+```
+
+The agent-facing surface is three plain HTTP endpoints (`POST /v1/propose`,
+`GET /v1/proposals/{id}`, `POST /v1/execute`) — no SDK required. Start with
+[`docs/warden.md`](docs/warden.md); to pick the right tier (and see what
+each does *not* protect against) read
+[`docs/enforcement-models.md`](docs/enforcement-models.md); for the
+sandboxed-agent topology (nftables egress allowlist, warden placement) see
+[`docs/reference-sandboxed-agent.md`](docs/reference-sandboxed-agent.md).
+
 ## How it works
 
 ```mermaid
@@ -170,6 +206,14 @@ it privately.
 Guides for running Arbiter as a long-lived service:
 
 - [`docs/quickstart.md`](docs/quickstart.md) — local install, config, first request
+- [`docs/api.md`](docs/api.md) — consolidated REST API reference (every `/v1` endpoint)
+- [`docs/config.md`](docs/config.md) — full `config.toml` reference
+- [`docs/cli.md`](docs/cli.md) — `hma` and `hma-warden` CLI reference
+- [`docs/warden.md`](docs/warden.md) — the Warden: verified enforcement guide
+- [`docs/secret-managers.md`](docs/secret-managers.md) — Bitwarden/`rbw`, 1Password `op`, `pass`, Vault recipes
+- [`docs/enforcement-models.md`](docs/enforcement-models.md) — tier 0/1/2, and what each does NOT protect against
+- [`docs/claude-code-hook.md`](docs/claude-code-hook.md) — gate Claude Code's Bash tool through HMA
+- [`docs/reference-sandboxed-agent.md`](docs/reference-sandboxed-agent.md) — sandboxed-agent reference architecture
 - [`docs/deploy-docker.md`](docs/deploy-docker.md) — Docker / Compose
 - [`docs/deploy-systemd.md`](docs/deploy-systemd.md) — systemd unit (Linux)
 - [`docs/deploy-launchd.md`](docs/deploy-launchd.md) — launchd (macOS)

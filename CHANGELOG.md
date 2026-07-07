@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+## [0.4.0] - Unreleased
+
+The trust upgrade: approvals become verifiable artifacts, and a new
+enforcement daemon can execute them outside the agent's reach. All `/v1`
+changes are additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working unchanged.
+
+### Added
+
+- **Signed verdicts.** Every decision (and expiry) now produces an Ed25519
+  JWS over `{request_id, action_hash, decision, decided_at,
+  approval_ttl_seconds}`, stored on the request and served at
+  `GET /v1/requests/{id}/verdict`; the public key set is at `GET /v1/keys`
+  (unauthenticated). The signing key is minted at init/first-serve
+  (`verdict_signing_key.pem`, 0600).
+- **Action-hash binding.** `POST /v1/requests` accepts `canonical_action` +
+  `action_hash`; the server recomputes the SHA-256 over the received bytes
+  (422 on mismatch) and the hash rides inside the signed verdict. Requests
+  without it get a verifiably *unbound* `action_hash: null` verdict.
+- **Single-use consumption.** `POST /v1/requests/{id}/consume` (warden role)
+  atomically marks an approval used — 409 on replay, 410 past the
+  `approval_ttl_seconds` freshness window; the sweeper expires stale
+  unconsumed approvals so the UI reflects reality.
+- **Per-identity tokens.** A `tokens` table (hashed at rest, scopes, expiry,
+  revocation) with `hma token create|list|revoke`; roles `agent`, `warden`,
+  `app`. Requests stamp `requested_by`; agent reads are scoped to their own
+  requests. Legacy `[auth]` static tokens still work with a deprecation
+  warning.
+- **Policy layer.** `[policy]` config: per-`action_type` severity floors,
+  `deny_action_types` auto-deny, per-identity create rate limit (429),
+  duplicate-collapse of identical pending requests, `idempotency_key`
+  replay (retries return the existing request), and server-side
+  `ttl_seconds` clamping.
+- **`hold-warden` 0.1.0** — the enforcement daemon (new `warden/` package):
+  action registry with constrained params, canonicalization + golden
+  vectors, lazy secret resolvers (`env:`/`file:`/`cmd:` with tested
+  Bitwarden/1Password/`pass`/Vault recipes), verdict verification against a
+  pinned key, single-use consume, command/http/secret adapters, receipts,
+  and the `hma-warden init|serve|doctor|hash` CLI. See
+  `warden/CHANGELOG.md` and `docs/warden.md`.
+- **Audit export + new events.** `GET /v1/audit/export?format=jsonl` and
+  `hma audit export`; new audit events `consumed`, `verdict_issued`,
+  `policy_denied`, `rate_limited`.
+- **`callback_url` allowlist.** `[notify] callback_allowlist` (CIDRs / URL
+  prefixes) checked at create and at dispatch, redirects disabled; empty
+  list keeps legacy behavior with a loud startup warning on first use.
+- **Ops promotions.** `/health` now does a real DB ping (200/503);
+  `hma ask` / `hma status` accept `--url` / `HMA_URL` for remote arbiters.
+- **Docs.** New consolidated references (`docs/api.md`, `docs/config.md`,
+  `docs/cli.md`), the warden guide + secret-manager recipes, enforcement
+  tiers (`docs/enforcement-models.md`), a Claude Code PreToolUse hook
+  walkthrough, and the sandboxed-agent reference architecture.
+  `SECURITY.md` gains a first-class malicious-agent analysis and an honest
+  "what HMA does not protect against" table.
+
+### Fixed
+
+- **Decision TOCTOU.** Decisions are now a guarded atomic update
+  (`WHERE id=? AND status='pending'` + rowcount): concurrent approve/deny
+  can no longer both land, and deciding an already-expired request is
+  refused (409).
+
+### Security
+
+- See the rewritten `SECURITY.md` — notably the malicious-agent analysis
+  (self-reported severity, consent phishing, cross-agent reads,
+  notification flooding) and which 0.4.0 feature closes each.
+- Deliberately deferred (documented, not shipped): hash-chained audit rows,
+  Prometheus `/metrics`, quorum approvals, mTLS.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added
