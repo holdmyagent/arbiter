@@ -124,5 +124,38 @@ def init(arbiter_url: str, config_path: Path) -> None:
     click.echo("Then: hma-warden doctor && hma-warden serve")
 
 
+@main.command("hash")
+@click.argument("action")
+@click.option("--config", "config_path", type=click.Path(path_type=Path),
+              default=DEFAULT_CONFIG, show_default=True)
+@click.option("--param", "param_kv", multiple=True,
+              help="Action parameter as key=value (repeatable)")
+def hash_cmd(action: str, config_path: Path, param_kv: tuple[str, ...]) -> None:
+    """Print the canonical action document, then its sha256 action hash.
+
+    This is exactly what a human's approval gets cryptographically bound to.
+    """
+    cfg = _load_config(config_path)
+    spec = cfg.actions.get(action)
+    if spec is None:
+        known = ", ".join(sorted(cfg.actions)) or "none"
+        raise click.ClickException(f"unknown action: {action} (known: {known})")
+    params: dict[str, str] = {}
+    for kv in param_kv:
+        if "=" not in kv:
+            raise click.ClickException(f"--param expects key=value, got: {kv}")
+        key, value = kv.split("=", 1)
+        params[key] = value
+    try:
+        spec.validate_params(params)
+    except ParamValidationError as exc:
+        raise click.ClickException(str(exc))
+    resolved = spec.resolve_template(params)
+    canonical, digest = canonicalize(action, spec.adapter, params, resolved,
+                                     cfg.warden_name)
+    click.echo(canonical)
+    click.echo(digest)
+
+
 if __name__ == "__main__":
     main()

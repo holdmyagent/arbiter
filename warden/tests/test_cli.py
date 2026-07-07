@@ -116,3 +116,61 @@ def test_init_fails_cleanly_when_arbiter_down(tmp_path):
                                        "--config", str(tmp_path / "warden.toml")])
     assert result.exit_code != 0
     assert not (tmp_path / "warden.toml").exists()
+
+
+# ------------------------------------------------------------------ hash
+
+GREET_TOML = """
+[actions.greet]
+adapter = "command"
+severity = "low"
+ttl_seconds = 300
+description = "greet someone"
+argv = ["echo", "{word}"]
+
+[actions.greet.params.word]
+type = "enum"
+values = ["hello", "goodbye"]
+"""
+
+
+def test_hash_echo_empty_params(stub_arbiter, tmp_path):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    result = CliRunner().invoke(main, ["hash", "echo", "--config", str(cfg_path)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.strip().splitlines()
+    expected_canonical, expected_hash = canonicalize(
+        "echo", "command", {}, {"argv": ["echo", "warden-echo-ok"]},
+        f"{socket.gethostname()}-warden")
+    assert lines[-2] == expected_canonical
+    assert lines[-1] == expected_hash
+    assert '"params":{}' in lines[-2]   # empty params never key-dropped
+
+
+def test_hash_with_params(stub_arbiter, tmp_path):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    cfg_path.write_text(cfg_path.read_text() + GREET_TOML)
+    result = CliRunner().invoke(main, ["hash", "greet", "--config", str(cfg_path),
+                                       "--param", "word=hello"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.strip().splitlines()
+    expected_canonical, expected_hash = canonicalize(
+        "greet", "command", {"word": "hello"}, {"argv": ["echo", "hello"]},
+        f"{socket.gethostname()}-warden")
+    assert lines[-2] == expected_canonical
+    assert lines[-1] == expected_hash
+
+
+def test_hash_rejects_invalid_param(stub_arbiter, tmp_path):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    cfg_path.write_text(cfg_path.read_text() + GREET_TOML)
+    result = CliRunner().invoke(main, ["hash", "greet", "--config", str(cfg_path),
+                                       "--param", "word=nope"])
+    assert result.exit_code != 0
+
+
+def test_hash_unknown_action(stub_arbiter, tmp_path):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    result = CliRunner().invoke(main, ["hash", "nope", "--config", str(cfg_path)])
+    assert result.exit_code != 0
+    assert "unknown action" in result.output
