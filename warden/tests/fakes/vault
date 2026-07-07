@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake HashiCorp Vault CLI for tests: `vault kv get -field=token secret/PATH`.
+if [ "$1" != "kv" ] || [ "$2" != "get" ] || [ "$3" != "-field=token" ] || [ -z "$4" ]; then
+  echo "fake-vault: usage: vault kv get -field=token secret/PATH" >&2
+  exit 2
+fi
+case "$4" in
+  secret/api-bearer) echo "fake-vault-secret-api-bearer" ;;
+  *) echo "fake-vault: no value found at $4" >&2; exit 1 ;;
+esac

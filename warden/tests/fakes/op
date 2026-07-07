@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake 1Password CLI for tests: `op read op://vault/item/field`.
+if [ "$1" != "read" ] || [ -z "$2" ]; then
+  echo "fake-op: usage: op read op://vault/item/field" >&2
+  exit 2
+fi
+case "$2" in
+  op://homelab/api-bearer/credential) echo "fake-op-secret-api-bearer" ;;
+  *) echo "fake-op: item not found: $2" >&2; exit 1 ;;
+esac

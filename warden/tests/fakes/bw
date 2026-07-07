@@ -1,0 +1,14 @@
+#!/bin/sh
+# Fake bw (official Bitwarden CLI) for tests: `bw get password NAME`; needs BW_SESSION.
+if [ -z "$BW_SESSION" ]; then
+  echo "fake-bw: You are not logged in." >&2
+  exit 1
+fi
+if [ "$1" != "get" ] || [ "$2" != "password" ] || [ -z "$3" ]; then
+  echo "fake-bw: usage: bw get password NAME" >&2
+  exit 2
+fi
+case "$3" in
+  api-bearer) echo "fake-bw-secret-api-bearer" ;;
+  *) echo "fake-bw: Not found." >&2; exit 1 ;;
+esac
