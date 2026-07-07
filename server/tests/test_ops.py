@@ -47,6 +47,53 @@ def test_url_pattern_entry():
     assert not callback_allowed(al, "not a url")
 
 
+def test_url_pattern_host_literal_and_scheme_must_match():
+    al = ["https://hooks.example.com/*"]
+    assert callback_allowed(al, "https://hooks.example.com/webhook")
+    # a whole-string glob would let "*" cross "/" onto a path segment that
+    # merely *contains* the literal host string — must not match.
+    assert not callback_allowed(al, "https://evil.com/hooks.example.com/x")
+    assert not callback_allowed(al, "http://hooks.example.com/x")  # scheme differs
+
+
+def test_cidr_entry_ignores_userinfo_trick():
+    al = ["10.0.0.0/8"]
+    assert callback_allowed(al, "http://10.1.2.3:8080/path")
+    # "10.0.0.9@evil.com" is userinfo, not host — urlparse().hostname is
+    # "evil.com", which is not an IP literal and must not match the CIDR.
+    assert not callback_allowed(al, "http://10.0.0.9@evil.com/cb")
+    assert not callback_allowed(al, "http://internal.example/cb")  # never DNS-resolved
+
+
+def test_subdomain_wildcard_matches_parsed_hostname_only():
+    # "*." matches subdomains of the literal host, taken from the PARSED
+    # hostname — which can never contain a "/", closing the bypass below.
+    # This implementation accepts any number of subdomain labels (e.g.
+    # "deep.a.hooks.example.com"), not just a single label.
+    al = ["https://*.hooks.example.com/*"]
+    assert callback_allowed(al, "https://a.hooks.example.com/y")
+    assert callback_allowed(al, "https://deep.a.hooks.example.com/y")
+    # THE BYPASS: fnmatch-over-the-whole-URL let "*" cross "/" so this used
+    # to match. The evil.com host must never satisfy a host-wildcard rule.
+    assert not callback_allowed(al, "https://evil.com/.hooks.example.com/x")
+    # suffix-append attack: this hostname merely ends with the literal
+    # string, it is not a subdomain of hooks.example.com.
+    assert not callback_allowed(al, "https://hooks.example.com.evil.com/x")
+
+
+def test_url_pattern_path_glob_scoped_to_matched_authority():
+    al = ["https://hooks.example.com/hooks/*"]
+    assert callback_allowed(al, "https://hooks.example.com/hooks/abc")
+    assert not callback_allowed(al, "https://hooks.example.com/other")
+
+
+def test_malformed_port_fails_closed_not_uncaught():
+    # urlparse().port raises ValueError (not caught by urlparse() itself) for
+    # a non-numeric port — must fail closed, never propagate an exception.
+    al = ["https://hooks.example.com/*"]
+    assert not callback_allowed(al, "https://hooks.example.com:notaport/x")
+
+
 # ── create-time enforcement ──────────────────────────────────────────────────
 
 def test_create_rejects_disallowed_callback(cfg):

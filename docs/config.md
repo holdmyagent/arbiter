@@ -98,9 +98,17 @@ the single-use consume returns 410 past it.
 `callback_url` lets an agent point a decision webhook at an arbitrary URL —
 which makes the server an outbound-request capability from its network
 position. `callback_allowlist` closes that: entries are IP networks in CIDR
-form or `scheme://…` URL patterns (glob-style, e.g. ending in `*`). A CIDR
-entry matches only when the URL's host is a **literal IP address** — the
-server never DNS-resolves hostnames, so a CIDR entry cannot be satisfied (or
+form or `scheme://host[:port]/path` URL patterns. For URL patterns, the
+**scheme and host are matched as literals against the URL's parsed
+components** (never against the raw URL string) — a leading `*.` on the
+host matches subdomains only (e.g. `*.hooks.example.com` matches
+`a.hooks.example.com` but not `hooks.example.com` itself or
+`hooks.example.com.evil.com`). Only the path segment is glob-matched
+(`*`), and that glob can never cross the host boundary, since the
+candidate host comes from the parsed URL and can never contain a `/`. A
+CIDR entry matches only when the URL's host is a **literal IP address** —
+the server never DNS-resolves hostnames (and never trusts URL userinfo,
+e.g. `user@host`, as the host), so a CIDR entry cannot be satisfied (or
 bypassed) via DNS, and a bare-hostname entry matches nothing (fail-closed).
 Checked at create time (422) and re-checked at dispatch; redirects on
 callback POSTs are disabled. Leaving it empty preserves the old allow-all

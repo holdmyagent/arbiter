@@ -42,8 +42,11 @@ deny_action_types = []      # e.g. ["db.drop"]
 # [policy.severity_floors]  # e.g. deploy = "high"
 
 [notify]                    # restrict per-request callback_url destinations
-callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example/*"]; [] = allow all (legacy)
-                            # entries must be scheme://... URL patterns or CIDR strings — bare hostnames match nothing (fail-closed)
+callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example.com/*"]; [] = allow all (legacy)
+                            # entries must be scheme://host[:port]/path URL patterns or CIDR strings
+                            # — bare hostnames match nothing (fail-closed). For URL patterns, scheme
+                            # and host are literal (a leading "*." on the host matches subdomains
+                            # only); "*" in the path is path-only and never crosses the host boundary.
 
 [notify.apns]               # optional — bring your own Apple Developer key
 key_path = ""
