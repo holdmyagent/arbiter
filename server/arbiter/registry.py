@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import resource
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -107,7 +108,14 @@ class TenantRegistry:
         self._map: dict[str, object] = {}
         self._stream_slots: dict[str, int] = {}
         self._map_lock = asyncio.Lock()
-        # FD budget startup check is added in Task A8 (reads RLIMIT_NOFILE here).
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        self._soft_rlimit = soft
+        # Startup budget (§5/§15.13): 3 SQLite FDs per hot cell + headroom must fit.
+        if self.max_hot_cells * 3 + self._headroom >= self._soft_rlimit:
+            raise ValueError(
+                f"FD budget: max_hot_cells*3 + headroom "
+                f"({self.max_hot_cells * 3 + self._headroom}) >= RLIMIT_NOFILE "
+                f"({self._soft_rlimit}); lower max_hot_cells or raise the limit")
 
     @asynccontextmanager
     async def _locked(self):
@@ -140,6 +148,13 @@ class TenantRegistry:
                     fut = slot
                     # await OUTSIDE the map lock, then retry to ++refcount
                 else:
+                    # runtime FD budget (§15.13): shed THIS open rather than fail
+                    # another tenant's cell. Count SQLite FDs of the prospective
+                    # new open + already-open cells + live stream FDs + headroom.
+                    projected = (self._open_cell_count() + 1) * 3 \
+                        + self._active_stream_fds() + self._headroom
+                    if projected >= self._soft_rlimit:
+                        raise CapacityExceeded(tenant_id)
                     # become the single-flight opener: install the sentinel BEFORE
                     # any await, capture the dir under the same consistent lock.
                     fut = asyncio.get_running_loop().create_future()
@@ -199,6 +214,31 @@ class TenantRegistry:
             self._map.pop(k, None)
             victims.append(v.cell)
         return victims
+
+    def _open_cell_count(self) -> int:
+        return sum(1 for v in self._map.values() if isinstance(v, _Entry))
+
+    def _active_stream_fds(self) -> int:
+        return sum(self._stream_slots.values())
+
+    def acquire_stream_slot(self, tenant_id: str) -> bool:
+        """Per-tenant concurrent-stream cap AND FD-budget gate (§8/§15.13). The
+        stream group calls this BEFORE ws.accept() and releases in a finally on
+        every exit path. Returns False to shed (over the per-tenant cap OR the
+        fleet FD budget) rather than fail another tenant's cell open."""
+        n = self._stream_slots.get(tenant_id, 0)
+        if n >= self.stream_cap:
+            return False
+        projected = self._open_cell_count() * 3 + self._active_stream_fds() + 1 + self._headroom
+        if projected >= self._soft_rlimit:
+            return False
+        self._stream_slots[tenant_id] = n + 1
+        return True
+
+    def release_stream_slot(self, tenant_id: str) -> None:
+        n = self._stream_slots.get(tenant_id, 0)
+        if n > 0:
+            self._stream_slots[tenant_id] = n - 1
 
     async def evict_idle(self) -> int:
         """Maintenance sweep: evict LRU idle cells down to cap. Safe to call
