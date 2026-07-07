@@ -103,3 +103,12 @@ def test_export_unknown_format_422(cfg):
     client = _client(cfg)
     r = client.get("/v1/audit/export", params={"format": "csv"}, headers=APP)
     assert r.status_code == 422
+
+
+def test_export_auth_failures_rate_limited(cfg):
+    # parity with require_role: repeated bad tokens trip the shared auth
+    # limiter (10/60s) — mirrors test_security.test_auth_failures_rate_limited
+    client = _client(cfg)
+    bad = {"Authorization": "Bearer wrong"}
+    codes = [client.get("/v1/audit/export", headers=bad).status_code for _ in range(12)]
+    assert codes[0] == 403 and 429 in codes

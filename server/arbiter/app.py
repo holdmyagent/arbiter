@@ -11,7 +11,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import Identity, SlidingWindowLimiter, require_role, resolve_identity
+from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, resolve_identity
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher, callback_allowed
 from .policy import evaluate_create
@@ -128,7 +128,13 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @app.get("/v1/audit/export")
     def audit_export(request: Request, format: str = "jsonl"):
-        # app-role bearer OR a valid admin dashboard session
+        # app-role bearer OR a valid admin dashboard session. Inline (not
+        # require_role) because of the bearer-OR-cookie split, but with the
+        # same limiter + auth_failure discipline as require_role (auth.py):
+        # blocked-check first, record_failure + log on any failed attempt.
+        ip = _client_ip(request)
+        if limiter.blocked(ip):
+            raise HTTPException(429, "too many failed auth attempts")
         authorized = False
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
@@ -137,6 +143,9 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         if not authorized and app.state.session_check(request.cookies.get("hma_session", "")):
             authorized = True
         if not authorized:
+            limiter.record_failure(ip)
+            reason = "invalid_token" if auth.startswith("Bearer ") else "missing_bearer"
+            log.warning("auth_failure ip=%s reason=%s", ip, reason)  # never log the supplied value
             raise HTTPException(403, "app token or admin session required")
         if format != "jsonl":
             raise HTTPException(422, "unsupported format (only jsonl)")
