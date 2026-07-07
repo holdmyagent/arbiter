@@ -35,6 +35,7 @@ class ApprovalRequest(BaseModel):
     decided_by: str | None = None
     target: str | None = None
     callback_url: str | None = None
+    requested_by: str | None = None
 
 class Decision(BaseModel):
     decision: Literal["approve", "deny"]
