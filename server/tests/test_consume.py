@@ -91,8 +91,10 @@ def test_double_consume_concurrent_exactly_one_wins(client, warden_headers):
         codes.append(client.post(f"/v1/requests/{rid}/consume",
                                  headers=warden_headers).status_code)
     threads = [threading.Thread(target=hit) for _ in range(2)]
-    for t in threads: t.start()
-    for t in threads: t.join()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     assert sorted(codes) == [200, 409]
 
 
