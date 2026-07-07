@@ -58,7 +58,7 @@ class VerdictVerifier:
         if not isinstance(hma, dict):
             raise VerdictError("verdict missing 'hma' claim")
         try:
-            return Verdict(
+            v = Verdict(
                 request_id=hma["request_id"],
                 action_hash=hma["action_hash"],
                 decision=hma["decision"],
@@ -67,3 +67,19 @@ class VerdictVerifier:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise VerdictError(f"verdict 'hma' claim malformed: {exc}") from exc
+        if v.request_id != expected_request_id:
+            raise VerdictError(
+                f"verdict request_id {v.request_id!r} != expected {expected_request_id!r}")
+        if v.action_hash != expected_action_hash:
+            raise VerdictError(
+                f"verdict action_hash {v.action_hash!r} != expected {expected_action_hash!r}")
+        try:
+            decided = datetime.fromisoformat(v.decided_at)
+        except (TypeError, ValueError) as exc:
+            raise VerdictError(f"verdict decided_at unparseable: {v.decided_at!r}") from exc
+        if decided.tzinfo is None:
+            decided = decided.replace(tzinfo=timezone.utc)
+        if decided + timedelta(seconds=v.approval_ttl_seconds) < datetime.now(timezone.utc):
+            raise VerdictError(
+                f"verdict stale: decided_at {v.decided_at} + {v.approval_ttl_seconds}s has passed")
+        return v
