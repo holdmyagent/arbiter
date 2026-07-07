@@ -72,3 +72,65 @@ def test_valid_unbound_verdict_action_hash_none():
     v = VerdictVerifier(pinned).verify(token, "rid-2", None)
     assert v.action_hash is None
     assert v.decision == "denied"
+
+
+def test_wrong_key_rejected():
+    key1, kid1, pinned = _keypair()
+    key2, _, _ = _keypair()
+    # Signed by the WRONG private key but carrying the pinned kid in the header.
+    token = _sign(key2, kid1, request_id="rid-1", action_hash="h1")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_kid_header_mismatch_rejected():
+    key, _, pinned = _keypair()
+    # Signed by the RIGHT key but claiming a foreign kid — must still be refused.
+    token = _sign(key, "deadbeef", request_id="rid-1", action_hash="h1")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_tampered_payload_rejected():
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h1", decision="denied")
+    header, payload, sig = token.split(".")
+    body = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    body["hma"]["decision"] = "approved"  # flip the decision, keep the old signature
+    forged = base64.urlsafe_b64encode(json.dumps(body).encode()).rstrip(b"=").decode()
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(f"{header}.{forged}.{sig}", "rid-1", "h1")
+
+
+def test_alg_confusion_hs256_rejected():
+    # Classic key-confusion attack: HMAC-sign the token using the PUBLIC key
+    # material as the shared secret. algorithms=["EdDSA"] must refuse it.
+    key, kid, pinned = _keypair()
+    b64_pub = pinned.split(":", 1)[1]
+    now = datetime.now(timezone.utc)
+    payload = {
+        "iss": "hma", "aud": "hma-verdict", "jti": "rid-1", "iat": int(now.timestamp()),
+        "hma": {"request_id": "rid-1", "action_hash": "h1", "decision": "approved",
+                "decided_at": now.isoformat(), "approval_ttl_seconds": 600},
+    }
+    token = jwt.encode(payload, b64_pub, algorithm="HS256", headers={"kid": kid})
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_wrong_audience_rejected():
+    key, kid, pinned = _keypair()
+    token = _sign(key, kid, request_id="rid-1", action_hash="h1", aud="not-hma-verdict")
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify(token, "rid-1", "h1")
+
+
+def test_garbage_token_rejected():
+    _, _, pinned = _keypair()
+    with pytest.raises(VerdictError):
+        VerdictVerifier(pinned).verify("not-a-jws", "rid-1", "h1")
+
+
+def test_malformed_pinned_key_rejected():
+    with pytest.raises(VerdictError):
+        VerdictVerifier("missing-colon-and-not-base64")
