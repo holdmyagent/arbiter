@@ -94,6 +94,27 @@ def test_malformed_port_fails_closed_not_uncaught():
     assert not callback_allowed(al, "https://hooks.example.com:notaport/x")
 
 
+def test_url_pattern_entry_ignores_userinfo_trick():
+    # userinfo against a URL-PATTERN entry (not just CIDR): the parsed
+    # hostname is evil.com, so the trusted-host rule must not match.
+    al = ["https://hooks.example.com/*"]
+    assert not callback_allowed(al, "https://a.hooks.example.com@evil.com/x")
+
+
+def test_url_pattern_scheme_and_host_case_insensitive():
+    al = ["https://hooks.example.com/*"]
+    assert callback_allowed(al, "HTTPS://Hooks.Example.COM/x")
+
+
+def test_url_pattern_port_matching_both_directions():
+    al = ["https://hooks.example.com:8443/*"]
+    assert callback_allowed(al, "https://hooks.example.com:8443/x")       # exact port matches
+    assert not callback_allowed(al, "https://hooks.example.com:9999/x")   # wrong port rejected
+    # an entry with NO port matches the trusted host on ANY port
+    assert callback_allowed(["https://hooks.example.com/*"],
+                            "https://hooks.example.com:8443/x")
+
+
 # ── create-time enforcement ──────────────────────────────────────────────────
 
 def test_create_rejects_disallowed_callback(cfg):
