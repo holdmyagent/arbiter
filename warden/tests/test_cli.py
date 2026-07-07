@@ -174,3 +174,45 @@ def test_hash_unknown_action(stub_arbiter, tmp_path):
     result = CliRunner().invoke(main, ["hash", "nope", "--config", str(cfg_path)])
     assert result.exit_code != 0
     assert "unknown action" in result.output
+
+
+# ---------------------------------------------------------------- doctor
+
+def test_doctor_all_green_exits_zero(stub_arbiter, tmp_path, monkeypatch):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    monkeypatch.setenv("HMA_WARDEN_TOKEN", "warden-token-value")
+    result = CliRunner().invoke(main, ["doctor", "--config", str(cfg_path)])
+    assert result.exit_code == 0, result.output
+    assert "ok (non-empty)" in result.output
+
+
+def test_doctor_fails_on_unresolvable_ref_and_never_prints_values(
+        stub_arbiter, tmp_path, monkeypatch):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    monkeypatch.setenv("HMA_WARDEN_TOKEN", "sup3r-warden-secret")
+    monkeypatch.delenv("DOES_NOT_EXIST_12345", raising=False)
+    # [secrets] is the last table in the scaffold, so a plain key append lands there
+    cfg_path.write_text(cfg_path.read_text()
+                        + 'missing = "env:DOES_NOT_EXIST_12345"\n')
+    result = CliRunner().invoke(main, ["doctor", "--config", str(cfg_path)])
+    assert result.exit_code == 1
+    assert "FAILED" in result.output
+    assert "sup3r-warden-secret" not in result.output   # values never printed
+
+
+def test_doctor_fails_on_pinned_key_mismatch(stub_arbiter, tmp_path, monkeypatch):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    monkeypatch.setenv("HMA_WARDEN_TOKEN", "warden-token-value")
+    cfg_path.write_text(cfg_path.read_text().replace(
+        f'"{stub_arbiter.kid}:', '"wrongkid:'))
+    result = CliRunner().invoke(main, ["doctor", "--config", str(cfg_path)])
+    assert result.exit_code == 1
+    assert "key mismatch" in result.output
+
+
+def test_doctor_fails_when_arbiter_unreachable(stub_arbiter, tmp_path, monkeypatch):
+    cfg_path = _init(stub_arbiter, tmp_path)
+    monkeypatch.setenv("HMA_WARDEN_TOKEN", "warden-token-value")
+    stub_arbiter.close()
+    result = CliRunner().invoke(main, ["doctor", "--config", str(cfg_path)])
+    assert result.exit_code == 1
