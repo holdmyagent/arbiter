@@ -1,16 +1,17 @@
 import asyncio
 import hashlib
+import json
 import logging
 import secrets
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import Identity, require_role, SlidingWindowLimiter
+from .auth import Identity, SlidingWindowLimiter, require_role, resolve_identity
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import Dispatcher, callback_allowed
 from .policy import evaluate_create
@@ -42,6 +43,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
                                decided_at=req["expires_at"],
                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
             db.set_verdict(req["id"], jws, kid)
+            db.add_audit(req["id"], "verdict_issued", {"decision": "expired", "kid": kid})
             out.append(db.get_request(req["id"]))
         out.extend(db.expire_stale_approvals(cfg.policy.approval_ttl_seconds, now))
         return out
@@ -124,6 +126,25 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     def keys():
         return public_jwks(kid, signing_key)
 
+    @app.get("/v1/audit/export")
+    def audit_export(request: Request, format: str = "jsonl"):
+        # app-role bearer OR a valid admin dashboard session
+        authorized = False
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            ident = resolve_identity(db, cfg, auth.removeprefix("Bearer "))
+            authorized = ident is not None and ident.role == "app"
+        if not authorized and app.state.session_check(request.cookies.get("hma_session", "")):
+            authorized = True
+        if not authorized:
+            raise HTTPException(403, "app token or admin session required")
+        if format != "jsonl":
+            raise HTTPException(422, "unsupported format (only jsonl)")
+        def gen():
+            for row in db.iter_audit():
+                yield json.dumps(row) + "\n"
+        return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+
     # ── API v1 ───────────────────────────────────────────────────────────────
 
     @app.post("/v1/requests")
@@ -136,9 +157,13 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         scopes = db.get_token_scopes(identity.name) if requested_by else None
         result = evaluate_create(cfg, identity, body, scopes=scopes)
         if not result.allowed:
+            db.add_audit("-", "policy_denied",
+                         {"identity": identity.name, "action_type": body.action_type,
+                          "reason": result.reason})
             raise HTTPException(403, f"policy: {result.reason}")
         body.severity = result.effective_severity   # stored severity = effective
         if create_limiter.blocked(identity.name):
+            db.add_audit("-", "rate_limited", {"identity": identity.name})
             raise HTTPException(429, "rate limited")
         create_limiter.record_failure(identity.name)  # count this create in the window
         if body.callback_url and not callback_allowed(cfg.callback_allowlist,
@@ -238,6 +263,8 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
                            decided_at=updated["decided_at"],
                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
         db.set_verdict(updated["id"], jws, kid)
+        db.add_audit(updated["id"], "verdict_issued",
+                     {"decision": updated["status"], "kid": kid})
         updated = db.get_request(rid)
         _spawn(dispatcher.request_decided(updated))
         await hub.publish("request.decided", "request", updated)
@@ -256,6 +283,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         if code == 409:
             raise HTTPException(
                 409, f"not consumable (status={row['status']}, consumed_at={row['consumed_at']})")
+        db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
 
     @app.post("/v1/devices", dependencies=[appdep])
