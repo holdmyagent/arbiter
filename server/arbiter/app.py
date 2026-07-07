@@ -13,42 +13,41 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, _resolve_identity_legacy
 from .models import RequestCreate, Decision, DeviceRegister
-from .notify import Dispatcher, callback_allowed
-from .notify.outbox import Outbox
+from .notify import callback_allowed
 from .policy import evaluate_create
-from .signing import load_or_create_keypair, public_jwks, sign_verdict
-from .stream import Hub
+from .signing import public_jwks, sign_verdict
 from .web import build_router, session_valid
 
 log = logging.getLogger("arbiter.app")
 
 
-def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
-    hub = hub or Hub()
-    dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
-    outbox = Outbox(db, dispatcher)
+async def _drain_all_outboxes(registry, control) -> None:
+    """Process-restart outbox re-drain (§9/§15.11). Transient per tenant: hold,
+    drain, release — one extra cell open at a time (FD-budget friendly).
+
+    NOTE: adapted from the brief's shown snippet (`for tid in
+    control.list_tenants(): ... registry.hold(tid)`), which doesn't compile
+    against the shipped Group A/B APIs — `ControlPlane.list_tenants()` returns
+    dicts with `tenant_id`/`epoch` keys (not bare tenant_id strings), and
+    `TenantRegistry.hold(tenant_id, epoch)` requires the epoch. Adjusted
+    call-by-call to match the merged code, same as the A5 precedent."""
+    from .notify.outbox import Outbox
+    for t in control.list_tenants():
+        tenant_id, epoch = t["tenant_id"], t["epoch"]
+        try:
+            async with registry.hold(tenant_id, epoch) as cell:
+                await Outbox(cell.db, cell.dispatcher).drain_startup()
+        except Exception as exc:
+            log.warning("startup outbox drain failed for %s: %s", tenant_id, exc)
+
+
+def create_app(cfg, registry, control, *, sender=None, scheduler=None,
+                ws_heartbeat: float = 30.0, ws_send_timeout: float = 10.0):
+    # sender/ws_send_timeout: accepted-and-stored for later groups (per-cell
+    # dispatch already flows through TenantRegistry(sender=...); ws_send_timeout
+    # is unused until the stream group (F) wires bounded sends) — pinned here
+    # so the signature is stable across Groups C-F (reconciliation ledger #7).
     notify_tasks: set = set()
-
-    config_dir = Path(cfg.loaded_path).expanduser().parent if cfg.loaded_path \
-        else Path("~/.config/holdmyagent").expanduser()
-    kid, signing_key = load_or_create_keypair(config_dir)
-
-    def _expire_pass(now=None) -> list[dict]:
-        """One sweep: (1) flip overdue pending rows to expired and sign an
-        'expired' verdict for each; (2) flip stale unconsumed approvals to
-        expired, KEEPING the original decision verdict. Sync + clock-injectable
-        so tests drive it directly (no sleeping on the 1s loop)."""
-        out = []
-        for req in db.expire_due(now):
-            jws = sign_verdict(kid, signing_key, request_id=req["id"],
-                               action_hash=req["action_hash"], decision="expired",
-                               decided_at=req["expires_at"],
-                               approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
-            db.set_verdict(req["id"], jws, kid)
-            db.add_audit(req["id"], "verdict_issued", {"decision": "expired", "kid": kid})
-            out.append(db.get_request(req["id"]))
-        out.extend(db.expire_stale_approvals(cfg.policy.approval_ttl_seconds, now))
-        return out
 
     def _spawn(coro):
         # Hold a strong reference until done — a bare create_task() result is
@@ -60,37 +59,28 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @asynccontextmanager
     async def lifespan(app):
-        await outbox.drain_startup()
-        async def sweep():
-            while True:
-                try:
-                    for req in _expire_pass():
-                        _spawn(outbox.publish("request.expired", req))
-                        await hub.publish("request.expired", "request", req)
-                except Exception as exc:
-                    log.warning("sweep iteration failed: %s", exc)
-                await asyncio.sleep(1)
-        task = asyncio.create_task(sweep())
-        yield
-        task.cancel()
+        # §9: outbox re-drain is bounded to PROCESS-RESTART only, never cell-open.
+        await _drain_all_outboxes(registry, control)
+        sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
+        try:
+            yield
+        finally:
+            if sched_task is not None:
+                sched_task.cancel()
+            for t in list(notify_tasks):
+                t.cancel()
+
     app = FastAPI(title="Arbiter", lifespan=lifespan)
-    app.state.hub = hub
+    # app.state holds NOTHING tenant-scoped (§15.1):
+    app.state.registry = registry
+    app.state.control = control
+    app.state.cfg = cfg                         # process-global policy/server/auth(session) ONLY
+    app.state.auth_limiter = SlidingWindowLimiter(10, 60.0)   # fleet auth-failure limiter (§13)
     app.state.notify_tasks = notify_tasks
-    limiter = SlidingWindowLimiter(10, 60.0)
-    app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
-    create_limiter = SlidingWindowLimiter(cfg.policy.rate_limit_per_minute, 60.0)
-    app.state.create_limiter = create_limiter
-    app.state.expire_pass = _expire_pass
-    app.state.verdict_kid = kid
-    # require_role deps read these three off request.app.state:
-    app.state.auth_limiter = limiter
-    app.state.cfg = cfg
-    app.state.db = db
-    appdep = Depends(require_role("app"))
+    app.state.session_check = lambda v: session_valid(cfg, v)
 
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
-    app.include_router(build_router(cfg, db, hub))
-    app.state.session_check = lambda v: session_valid(cfg, v)
+    app.include_router(build_router(cfg, registry, control))   # dashboard group re-signs build_router
 
     @app.middleware("http")
     async def security_headers(request, call_next):
@@ -118,9 +108,13 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         return RedirectResponse("/dashboard/pair", status_code=302)
 
     @app.get("/health")
-    def health():
+    async def health():
         try:
-            db.ping()
+            epoch = control.epoch_of("default")
+            if epoch is None:
+                raise RuntimeError("default tenant not provisioned")
+            async with registry.hold("default", epoch) as cell:
+                cell.db.ping()
         except Exception:
             return JSONResponse(status_code=503, content={"ok": False, "db": False})
         return {"ok": True, "db": True}
@@ -214,7 +208,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         await hub.publish("request.created", "request", req)
         return req
 
-    @app.get("/v1/requests", dependencies=[appdep])
+    @app.get("/v1/requests", dependencies=[Depends(require_role("app"))])
     def list_(status: str | None = None):
         return db.list_requests(status)
 
@@ -298,7 +292,7 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
 
-    @app.post("/v1/devices", dependencies=[appdep])
+    @app.post("/v1/devices", dependencies=[Depends(require_role("app"))])
     async def register(body: DeviceRegister):
         dev = db.register_device(body.apns_token, body.name, body.min_severity,
                                   body.notifications_enabled, body.sound,
@@ -306,11 +300,11 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         await hub.publish("device.updated", "device", dev)
         return dev
 
-    @app.get("/v1/devices", dependencies=[appdep])
+    @app.get("/v1/devices", dependencies=[Depends(require_role("app"))])
     def devices():
         return db.list_devices()
 
-    @app.get("/v1/notify/policy", dependencies=[appdep])
+    @app.get("/v1/notify/policy", dependencies=[Depends(require_role("app"))])
     def notify_policy():
         return dict(cfg.notify_severities)
 
