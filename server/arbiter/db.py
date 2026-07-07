@@ -127,12 +127,12 @@ class Database:
             self.conn.execute(
                 "INSERT INTO requests(id,created_at,title,description,action_type,payload,"
                 "severity,status,ttl_seconds,expires_at,decided_at,decided_by,target,callback_url,"
-                "canonical_action,action_hash,requested_by)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "canonical_action,action_hash,requested_by,idempotency_key)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rid, _iso(now), c.title, c.description, c.action_type,
                  json.dumps(c.payload), c.severity, "pending", c.ttl_seconds,
                  _iso(expires), None, None, c.target, c.callback_url,
-                 c.canonical_action, c.action_hash, requested_by),
+                 c.canonical_action, c.action_hash, requested_by, c.idempotency_key),
             )
             self.conn.commit()
             self.add_audit(rid, "created", {"severity": c.severity})
@@ -141,6 +141,38 @@ class Database:
     def get_request(self, rid: str) -> dict | None:
         with self._lock:
             r = self.conn.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
+            return self._row_to_request(r) if r else None
+
+    def get_request_by_idem(self, requested_by: str | None, key: str) -> dict | None:
+        with self._lock:
+            if requested_by is None:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by IS NULL AND idempotency_key=?",
+                    (key,)).fetchone()
+            else:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by=? AND idempotency_key=?",
+                    (requested_by, key)).fetchone()
+            return self._row_to_request(r) if r else None
+
+    def find_duplicate_pending(self, requested_by: str | None, action_hash: str | None,
+                               title: str) -> dict | None:
+        """Duplicate-collapse lookup (spec key: action_hash|title). Hash-bound
+        creates match pending rows on action_hash; unbound creates match
+        pending rows with action_hash IS NULL on title."""
+        if action_hash is not None:
+            match, args = "action_hash=?", (action_hash,)
+        else:
+            match, args = "action_hash IS NULL AND title=?", (title,)
+        with self._lock:
+            if requested_by is None:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by IS NULL AND " + match +
+                    " AND status='pending'", args).fetchone()
+            else:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by=? AND " + match +
+                    " AND status='pending'", (requested_by, *args)).fetchone()
             return self._row_to_request(r) if r else None
 
     def list_requests(self, status: str | None = None) -> list[dict]:
@@ -154,15 +186,19 @@ class Database:
             return [self._row_to_request(r) for r in rows]
 
     def set_decision(self, rid: str, decision: str, by: str) -> dict | None:
+        """Single-shot and race-safe: the UPDATE itself guards on status='pending'
+        AND a live deadline, so concurrent decisions (or a decide racing the 1s
+        expiry sweeper) have exactly one winner. Returns None for the loser."""
+        status = "approved" if decision == "approve" else "denied"
+        now = _iso(_utcnow())
         with self._lock:
-            r = self.get_request(rid)
-            if not r or r["status"] != "pending":
-                return None
-            status = "approved" if decision == "approve" else "denied"
-            self.conn.execute(
-                "UPDATE requests SET status=?, decided_at=?, decided_by=? WHERE id=?",
-                (status, _iso(_utcnow()), by, rid))
+            cur = self.conn.execute(
+                "UPDATE requests SET status=?, decided_at=?, decided_by=?"
+                " WHERE id=? AND status='pending' AND expires_at > ?",
+                (status, now, by, rid, now))
             self.conn.commit()
+            if cur.rowcount != 1:
+                return None
             self.add_audit(rid, status, {"by": by})
             return self.get_request(rid)
 
