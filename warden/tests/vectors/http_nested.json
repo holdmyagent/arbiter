@@ -1,0 +1,23 @@
+{
+  "name": "http adapter, nested-JSON body_template: hash binds the fully substituted nested body",
+  "note": "body_sha256 is sha256 of the UTF-8 bytes of the resolved body: {\"report\": {\"text\": \"disk almost full\", \"tags\": [\"auto\", \"warden\"]}, \"dry_run\": false}",
+  "input": {
+    "action": "file_report",
+    "adapter": "http",
+    "params": {
+      "text": "disk almost full"
+    },
+    "resolved": {
+      "method": "POST",
+      "url": "https://api.example.com/v1/reports",
+      "header_names": [
+        "Authorization",
+        "Content-Type"
+      ],
+      "body_sha256": "3f0428d8154db426d9471405a06e4f263f05ee5a9cb1a1a77ef7ceccd4dfa325"
+    },
+    "warden": "knossos-warden"
+  },
+  "canonical": "{\"action\":\"file_report\",\"adapter\":\"http\",\"params\":{\"text\":\"disk almost full\"},\"resolved\":{\"body_sha256\":\"3f0428d8154db426d9471405a06e4f263f05ee5a9cb1a1a77ef7ceccd4dfa325\",\"header_names\":[\"Authorization\",\"Content-Type\"],\"method\":\"POST\",\"url\":\"https://api.example.com/v1/reports\"},\"v\":1,\"warden\":\"knossos-warden\"}",
+  "hash": "3fd57fa4160a21f87b3e7aef227f77ca5e9e7201548875b3398f628d56a7204e"
+}

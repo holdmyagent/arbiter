@@ -1,16 +1,22 @@
 import asyncio
+import hashlib
+import json
 import logging
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import require_agent, require_app, require_agent_or_app, SlidingWindowLimiter
+from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, resolve_identity
 from .models import RequestCreate, Decision, DeviceRegister
-from .notify import Dispatcher
+from .notify import Dispatcher, callback_allowed
+from .notify.outbox import Outbox
+from .policy import evaluate_create
+from .signing import load_or_create_keypair, public_jwks, sign_verdict
 from .stream import Hub
 from .web import build_router, session_valid
 
@@ -20,7 +26,29 @@ log = logging.getLogger("arbiter.app")
 def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
     hub = hub or Hub()
     dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
+    outbox = Outbox(db, dispatcher)
     notify_tasks: set = set()
+
+    config_dir = Path(cfg.loaded_path).expanduser().parent if cfg.loaded_path \
+        else Path("~/.config/holdmyagent").expanduser()
+    kid, signing_key = load_or_create_keypair(config_dir)
+
+    def _expire_pass(now=None) -> list[dict]:
+        """One sweep: (1) flip overdue pending rows to expired and sign an
+        'expired' verdict for each; (2) flip stale unconsumed approvals to
+        expired, KEEPING the original decision verdict. Sync + clock-injectable
+        so tests drive it directly (no sleeping on the 1s loop)."""
+        out = []
+        for req in db.expire_due(now):
+            jws = sign_verdict(kid, signing_key, request_id=req["id"],
+                               action_hash=req["action_hash"], decision="expired",
+                               decided_at=req["expires_at"],
+                               approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+            db.set_verdict(req["id"], jws, kid)
+            db.add_audit(req["id"], "verdict_issued", {"decision": "expired", "kid": kid})
+            out.append(db.get_request(req["id"]))
+        out.extend(db.expire_stale_approvals(cfg.policy.approval_ttl_seconds, now))
+        return out
 
     def _spawn(coro):
         # Hold a strong reference until done — a bare create_task() result is
@@ -32,11 +60,12 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @asynccontextmanager
     async def lifespan(app):
+        await outbox.drain_startup()
         async def sweep():
             while True:
                 try:
-                    for req in db.expire_due():
-                        _spawn(dispatcher.request_decided(req))
+                    for req in _expire_pass():
+                        _spawn(outbox.publish("request.expired", req))
                         await hub.publish("request.expired", "request", req)
                 except Exception as exc:
                     log.warning("sweep iteration failed: %s", exc)
@@ -49,9 +78,15 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     app.state.notify_tasks = notify_tasks
     limiter = SlidingWindowLimiter(10, 60.0)
     app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
-    agent = Depends(require_agent(cfg, limiter))
-    appdep = Depends(require_app(cfg, limiter))
-    either = Depends(require_agent_or_app(cfg, limiter))
+    create_limiter = SlidingWindowLimiter(cfg.policy.rate_limit_per_minute, 60.0)
+    app.state.create_limiter = create_limiter
+    app.state.expire_pass = _expire_pass
+    app.state.verdict_kid = kid
+    # require_role deps read these three off request.app.state:
+    app.state.auth_limiter = limiter
+    app.state.cfg = cfg
+    app.state.db = db
+    appdep = Depends(require_role("app"))
 
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
     app.include_router(build_router(cfg, db, hub))
@@ -84,14 +119,98 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @app.get("/health")
     def health():
-        return {"ok": True}
+        try:
+            db.ping()
+        except Exception:
+            return JSONResponse(status_code=503, content={"ok": False, "db": False})
+        return {"ok": True, "db": True}
+
+    @app.get("/v1/keys")
+    def keys():
+        return public_jwks(kid, signing_key)
+
+    @app.get("/v1/audit/export")
+    def audit_export(request: Request, format: str = "jsonl"):
+        # app-role bearer OR a valid admin dashboard session. Inline (not
+        # require_role) because of the bearer-OR-cookie split, but with the
+        # same limiter + auth_failure discipline as require_role (auth.py):
+        # blocked-check first, record_failure + log on any failed attempt.
+        ip = _client_ip(request)
+        if limiter.blocked(ip):
+            raise HTTPException(429, "too many failed auth attempts")
+        authorized = False
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            ident = resolve_identity(db, cfg, auth.removeprefix("Bearer "))
+            authorized = ident is not None and ident.role == "app"
+        if not authorized and app.state.session_check(request.cookies.get("hma_session", "")):
+            authorized = True
+        if not authorized:
+            limiter.record_failure(ip)
+            reason = "invalid_token" if auth.startswith("Bearer ") else "missing_bearer"
+            log.warning("auth_failure ip=%s reason=%s", ip, reason)  # never log the supplied value
+            raise HTTPException(403, "app token or admin session required")
+        if format != "jsonl":
+            raise HTTPException(422, "unsupported format (only jsonl)")
+        def gen():
+            for row in db.iter_audit():
+                yield json.dumps(row) + "\n"
+        return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
     # ── API v1 ───────────────────────────────────────────────────────────────
 
-    @app.post("/v1/requests", dependencies=[agent])
-    async def create(body: RequestCreate):
-        req = db.create_request(body)
-        _spawn(dispatcher.request_created(req))
+    @app.post("/v1/requests")
+    async def create(body: RequestCreate,
+                     identity: Identity = Depends(require_role("agent", "warden"))):
+        # Legacy config tokens (identity.legacy, set by resolve_identity only
+        # for config tokens) stay unstamped (requested_by NULL) for
+        # back-compat reads; DB tokens are stamped with their name.
+        requested_by = None if identity.legacy else identity.name
+        scopes = db.get_token_scopes(identity.name) if requested_by else None
+        result = evaluate_create(cfg, identity, body, scopes=scopes)
+        if not result.allowed:
+            db.add_audit("-", "policy_denied",
+                         {"identity": identity.name, "action_type": body.action_type,
+                          "reason": result.reason})
+            raise HTTPException(403, f"policy: {result.reason}")
+        body.severity = result.effective_severity   # stored severity = effective
+        if create_limiter.blocked(identity.name):
+            db.add_audit("-", "rate_limited", {"identity": identity.name})
+            raise HTTPException(429, "rate limited")
+        create_limiter.record_failure(identity.name)  # count this create in the window
+        if body.callback_url and not callback_allowed(cfg.callback_allowlist,
+                                                      body.callback_url):
+            raise HTTPException(422, "callback_url not in allowlist")
+        # ttl clamp: out-of-range values are clamped, never rejected
+        body.ttl_seconds = max(cfg.policy.ttl_min_seconds,
+                               min(cfg.policy.ttl_max_seconds, body.ttl_seconds))
+        # idempotency replay: same identity + key -> the original row (200, no new request)
+        if body.idempotency_key:
+            existing = db.get_request_by_idem(requested_by, body.idempotency_key)
+            if existing:
+                return existing
+        if (body.canonical_action is None) != (body.action_hash is None):
+            raise HTTPException(422, "canonical_action and action_hash must be supplied together")
+        if body.canonical_action is not None:
+            computed = hashlib.sha256(body.canonical_action.encode()).hexdigest()
+            if computed != body.action_hash:
+                raise HTTPException(422, "action_hash does not match canonical_action")
+        # duplicate-collapse (spec key action_hash|title): an identical action
+        # already pending -> that row. Hash-bound creates match on action_hash;
+        # unbound creates (action_hash NULL) match on title.
+        dup = db.find_duplicate_pending(requested_by, body.action_hash, body.title)
+        if dup:
+            return dup
+        try:
+            req = db.create_request(body, requested_by=requested_by)
+        except sqlite3.IntegrityError:
+            # concurrent identical create lost the unique(requested_by, idempotency_key) race
+            existing = db.get_request_by_idem(requested_by, body.idempotency_key) \
+                if body.idempotency_key else None
+            if existing:
+                return existing
+            raise
+        _spawn(outbox.publish("request.created", req))
         await hub.publish("request.created", "request", req)
         return req
 
@@ -99,26 +218,85 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
     def list_(status: str | None = None):
         return db.list_requests(status)
 
-    @app.get("/v1/requests/{rid}", dependencies=[either])
-    def get_(rid: str):
+    @app.get("/v1/requests/{rid}")
+    def get_(rid: str,
+             identity: Identity = Depends(require_role("agent", "warden", "app"))):
         r = db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
+        if identity.role in ("agent", "warden"):
+            if identity.legacy:
+                # Legacy config agent token (deprecated): sees exactly the
+                # legacy-created rows — requested_by IS NULL (its own creates
+                # stamp NULL too, so "its own" is the same set).
+                if r.get("requested_by") is not None:
+                    raise HTTPException(404, "not found")
+            elif r.get("requested_by") != identity.name:
+                raise HTTPException(404, "not found")
         return r
 
-    @app.post("/v1/requests/{rid}/decision", dependencies=[appdep])
-    async def decide(rid: str, body: Decision):
+    @app.get("/v1/requests/{rid}/verdict")
+    def get_verdict(rid: str,
+                    identity: Identity = Depends(require_role("agent", "warden", "app"))):
+        r = db.get_request(rid)
+        if r and identity.role in ("agent", "warden"):   # app tokens: unrestricted
+            rb = r.get("requested_by")
+            if identity.legacy:                 # legacy config token: unstamped rows only
+                if rb is not None:
+                    r = None
+            elif rb != identity.name:           # DB tokens (agent AND warden): own rows only
+                r = None
+        if not r:
+            raise HTTPException(404, "not found")
+        if not r.get("verdict_jws"):
+            raise HTTPException(404, "no verdict yet")
+        return {"verdict": r["verdict_jws"], "kid": r["verdict_kid"]}
+
+    @app.post("/v1/requests/{rid}/decision")
+    async def decide(rid: str, body: Decision,
+                     identity: Identity = Depends(require_role("app"))):
         r = db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
-        devices = db.list_devices()
-        decided_by = devices[0]["name"] if len(devices) == 1 else "app"
+        if identity.name == "app" and identity.role == "app":
+            devices = db.list_devices()
+            decided_by = devices[0]["name"] if len(devices) == 1 else "app"
+        else:
+            decided_by = identity.name
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated:
-            raise HTTPException(409, f"not pending (status={r['status']})")
-        _spawn(dispatcher.request_decided(updated))
+            cur = db.get_request(rid)
+            # a pending row that refused the guarded UPDATE is expired-by-clock
+            shown = "expired" if cur["status"] == "pending" else cur["status"]
+            raise HTTPException(409, f"not pending (status={shown})")
+        jws = sign_verdict(kid, signing_key, request_id=updated["id"],
+                           action_hash=updated["action_hash"],
+                           decision=updated["status"],
+                           decided_at=updated["decided_at"],
+                           approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+        db.set_verdict(updated["id"], jws, kid)
+        db.add_audit(updated["id"], "verdict_issued",
+                     {"decision": updated["status"], "kid": kid})
+        updated = db.get_request(rid)
+        _spawn(outbox.publish("request.decided", updated))
         await hub.publish("request.decided", "request", updated)
         return updated
+
+    @app.post("/v1/requests/{rid}/consume")
+    def consume(rid: str, identity: Identity = Depends(require_role("warden"))):
+        # Sync (not async) on purpose: it runs in the threadpool, so concurrent
+        # consumes genuinely race and the guarded UPDATE decides the winner.
+        code, row = db.consume_request(
+            rid, approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+        if code == 404:
+            raise HTTPException(404, "not found")
+        if code == 410:
+            raise HTTPException(410, "approval stale")
+        if code == 409:
+            raise HTTPException(
+                409, f"not consumable (status={row['status']}, consumed_at={row['consumed_at']})")
+        db.add_audit(rid, "consumed", {"by": identity.name})
+        return {"consumed_at": row["consumed_at"]}
 
     @app.post("/v1/devices", dependencies=[appdep])
     async def register(body: DeviceRegister):

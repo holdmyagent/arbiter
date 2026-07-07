@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -46,23 +47,70 @@ def _migrate_2_to_3(conn):
     if "badge" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN badge INTEGER DEFAULT 0")
 
-MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3]
+def _migrate_3_to_4(conn):
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS tokens(
+      id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('agent','warden','app')),
+      token_hash TEXT NOT NULL,
+      scopes TEXT,
+      created_at TEXT NOT NULL, expires_at TEXT, last_used_at TEXT, revoked_at TEXT);
+    """)
+
+def _migrate_4_to_5(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+    for col in ("canonical_action", "action_hash", "verdict_jws", "verdict_kid",
+                "consumed_at", "idempotency_key", "requested_by"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE requests ADD COLUMN {col} TEXT")
+    conn.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_idem
+      ON requests(requested_by, idempotency_key)
+      WHERE idempotency_key IS NOT NULL""")
+
+def _migrate_5_to_6(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS outbox(
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      request_expires_at TEXT NOT NULL)""")
+
+MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
+              _migrate_5_to_6]
 
 class Database:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=5000")
-        v = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if v == 0 and self.conn.execute(
-                "SELECT count(*) FROM sqlite_master WHERE name='requests'").fetchone()[0]:
-            pass  # pre-versioning DB: run every migration; each is idempotent
-        for i in range(v, SCHEMA_VERSION):
-            MIGRATIONS[i](self.conn)
-        if v < SCHEMA_VERSION:
-            self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        self.conn.commit()
+        # One shared connection used from FastAPI's threadpool (sync endpoints)
+        # AND the auth dependency, which does a read + write per authenticated
+        # request (get_token_by_hash + touch_token_last_used). Concurrent
+        # execute()/commit() sequences on the same sqlite3.Connection from
+        # multiple OS threads raise sqlite3.InterfaceError ("bad parameter or
+        # other API misuse") or return corrupted rows even though
+        # sqlite3.threadsafety reports 3 — the binding serializes individual C
+        # calls, not Python-level statement sequences. So every method that
+        # touches the connection takes this lock, reads included (a read's
+        # execute/fetch racing another thread's write/commit hits the same
+        # interleaving window). Same discipline as warden/hold_warden/db.py's
+        # WardenDB; RLock (not Lock) because these methods nest
+        # (create_request -> add_audit -> ..., set_decision -> get_request).
+        self._lock = threading.RLock()
+        with self._lock:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
+            v = self.conn.execute("PRAGMA user_version").fetchone()[0]
+            if v == 0 and self.conn.execute(
+                    "SELECT count(*) FROM sqlite_master WHERE name='requests'").fetchone()[0]:
+                pass  # pre-versioning DB: run every migration; each is idempotent
+            for i in range(v, SCHEMA_VERSION):
+                MIGRATIONS[i](self.conn)
+            if v < SCHEMA_VERSION:
+                self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            self.conn.commit()
 
     def _row_to_request(self, r: sqlite3.Row) -> dict:
         d = dict(r)
@@ -74,63 +122,210 @@ class Database:
         d["severities"] = json.loads(d["severities"]) if d["severities"] is not None else None
         return d
 
-    def add_audit(self, request_id: str, event: str, detail: dict | None = None):
-        self.conn.execute(
-            "INSERT INTO audit VALUES (?,?,?,?,?)",
-            (str(uuid.uuid4()), request_id, event, _iso(_utcnow()), json.dumps(detail or {})),
-        )
-        self.conn.commit()
+    def ping(self) -> None:
+        """Cheap liveness check for /health — raises if the connection is dead.
 
-    def create_request(self, c) -> dict:
+        Takes self._lock like every other method: /health runs sync (threadpool)
+        and would otherwise race concurrent reads/writes on the shared connection.
+        """
+        with self._lock:
+            self.conn.execute("SELECT 1")
+
+    def add_audit(self, request_id: str, event: str, detail: dict | None = None):
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO audit VALUES (?,?,?,?,?)",
+                (str(uuid.uuid4()), request_id, event, _iso(_utcnow()), json.dumps(detail or {})),
+            )
+            self.conn.commit()
+
+    def outbox_add(self, request_id: str, event: str, payload: dict,
+                   request_expires_at: str) -> str:
+        oid = str(uuid.uuid4())
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO outbox(id,request_id,event,payload,attempts,created_at,"
+                "request_expires_at) VALUES (?,?,?,?,0,?,?)",
+                (oid, request_id, event, json.dumps(payload), _iso(_utcnow()),
+                 request_expires_at))
+            self.conn.commit()
+            return oid
+
+    def outbox_delete(self, outbox_id: str) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM outbox WHERE id=?", (outbox_id,))
+            self.conn.commit()
+
+    def outbox_bump_attempts(self, outbox_id: str) -> int:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE outbox SET attempts=attempts+1 WHERE id=?", (outbox_id,))
+            self.conn.commit()
+            row = self.conn.execute(
+                "SELECT attempts FROM outbox WHERE id=?", (outbox_id,)).fetchone()
+            return row["attempts"] if row else 0
+
+    def outbox_pending(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM outbox ORDER BY created_at").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["payload"] = json.loads(d["payload"])
+                out.append(d)
+            return out
+
+    def create_request(self, c, requested_by: str | None = None) -> dict:
         now = _utcnow()
         rid = str(uuid.uuid4())
         expires = now + timedelta(seconds=c.ttl_seconds)
-        self.conn.execute(
-            "INSERT INTO requests(id,created_at,title,description,action_type,payload,"
-            "severity,status,ttl_seconds,expires_at,decided_at,decided_by,target,callback_url)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (rid, _iso(now), c.title, c.description, c.action_type,
-             json.dumps(c.payload), c.severity, "pending", c.ttl_seconds,
-             _iso(expires), None, None, c.target, c.callback_url),
-        )
-        self.conn.commit()
-        self.add_audit(rid, "created", {"severity": c.severity})
-        return self.get_request(rid)
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO requests(id,created_at,title,description,action_type,payload,"
+                "severity,status,ttl_seconds,expires_at,decided_at,decided_by,target,callback_url,"
+                "canonical_action,action_hash,requested_by,idempotency_key)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, _iso(now), c.title, c.description, c.action_type,
+                 json.dumps(c.payload), c.severity, "pending", c.ttl_seconds,
+                 _iso(expires), None, None, c.target, c.callback_url,
+                 c.canonical_action, c.action_hash, requested_by, c.idempotency_key),
+            )
+            self.conn.commit()
+            self.add_audit(rid, "created", {"severity": c.severity})
+            return self.get_request(rid)
 
     def get_request(self, rid: str) -> dict | None:
-        r = self.conn.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
-        return self._row_to_request(r) if r else None
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
+            return self._row_to_request(r) if r else None
+
+    def get_request_by_idem(self, requested_by: str | None, key: str) -> dict | None:
+        with self._lock:
+            if requested_by is None:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by IS NULL AND idempotency_key=?",
+                    (key,)).fetchone()
+            else:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by=? AND idempotency_key=?",
+                    (requested_by, key)).fetchone()
+            return self._row_to_request(r) if r else None
+
+    def find_duplicate_pending(self, requested_by: str | None, action_hash: str | None,
+                               title: str) -> dict | None:
+        """Duplicate-collapse lookup (spec key: action_hash|title). Hash-bound
+        creates match pending rows on action_hash; unbound creates match
+        pending rows with action_hash IS NULL on title."""
+        if action_hash is not None:
+            match, args = "action_hash=?", (action_hash,)
+        else:
+            match, args = "action_hash IS NULL AND title=?", (title,)
+        with self._lock:
+            if requested_by is None:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by IS NULL AND " + match +
+                    " AND status='pending'", args).fetchone()
+            else:
+                r = self.conn.execute(
+                    "SELECT * FROM requests WHERE requested_by=? AND " + match +
+                    " AND status='pending'", (requested_by, *args)).fetchone()
+            return self._row_to_request(r) if r else None
+
+    def get_token_scopes(self, name: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT scopes FROM tokens WHERE name=? AND revoked_at IS NULL",
+                (name,)).fetchone()
+            if not r or r["scopes"] is None:
+                return None
+            return json.loads(r["scopes"])
 
     def list_requests(self, status: str | None = None) -> list[dict]:
-        if status:
-            rows = self.conn.execute(
-                "SELECT * FROM requests WHERE status=? ORDER BY created_at DESC", (status,)).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM requests ORDER BY created_at DESC").fetchall()
-        return [self._row_to_request(r) for r in rows]
+        with self._lock:
+            if status:
+                rows = self.conn.execute(
+                    "SELECT * FROM requests WHERE status=? ORDER BY created_at DESC", (status,)).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM requests ORDER BY created_at DESC").fetchall()
+            return [self._row_to_request(r) for r in rows]
 
     def set_decision(self, rid: str, decision: str, by: str) -> dict | None:
-        r = self.get_request(rid)
-        if not r or r["status"] != "pending":
-            return None
+        """Single-shot and race-safe: the UPDATE itself guards on status='pending'
+        AND a live deadline, so concurrent decisions (or a decide racing the 1s
+        expiry sweeper) have exactly one winner. Returns None for the loser."""
         status = "approved" if decision == "approve" else "denied"
-        self.conn.execute(
-            "UPDATE requests SET status=?, decided_at=?, decided_by=? WHERE id=?",
-            (status, _iso(_utcnow()), by, rid))
-        self.conn.commit()
-        self.add_audit(rid, status, {"by": by})
-        return self.get_request(rid)
+        now = _iso(_utcnow())
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE requests SET status=?, decided_at=?, decided_by=?"
+                " WHERE id=? AND status='pending' AND expires_at > ?",
+                (status, now, by, rid, now))
+            self.conn.commit()
+            if cur.rowcount != 1:
+                return None
+            self.add_audit(rid, status, {"by": by})
+            return self.get_request(rid)
+
+    def set_verdict(self, rid: str, jws: str, kid: str) -> None:
+        with self._lock:
+            self.conn.execute("UPDATE requests SET verdict_jws=?, verdict_kid=? WHERE id=?",
+                              (jws, kid, rid))
+            self.conn.commit()
 
     def expire_due(self, now: datetime | None = None) -> list[dict]:
         now = now or _utcnow()
-        rows = self.conn.execute(
-            "SELECT id FROM requests WHERE status='pending' AND expires_at < ?",
-            (_iso(now),)).fetchall()
-        for r in rows:
-            self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
-            self.add_audit(r["id"], "expired", {})
-        return [self.get_request(r["id"]) for r in rows]
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id FROM requests WHERE status='pending' AND expires_at < ?",
+                (_iso(now),)).fetchall()
+            for r in rows:
+                self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+                self.add_audit(r["id"], "expired", {})
+            return [self.get_request(r["id"]) for r in rows]
+
+    def consume_request(self, rid: str, *, approval_ttl_seconds: int,
+                        now: datetime | None = None) -> tuple[int, dict | None]:
+        """Single-use consumption. Returns (http_code, row):
+        200 consumed now; 404 unknown; 409 not approved / already consumed;
+        410 approved-but-stale (decided_at + approval_ttl_seconds < now).
+        The guarded UPDATE is the atomic core — concurrent consumers race on
+        rowcount, exactly one wins; self._lock (see __init__) keeps the shared
+        connection safe under real OS-thread concurrency."""
+        now = now or _utcnow()
+        with self._lock:
+            if not self.get_request(rid):
+                return 404, None
+            cutoff = _iso(now - timedelta(seconds=approval_ttl_seconds))
+            cur = self.conn.execute(
+                "UPDATE requests SET consumed_at=? WHERE id=? AND status='approved'"
+                " AND consumed_at IS NULL AND decided_at >= ?",
+                (_iso(now), rid, cutoff))
+            self.conn.commit()
+            row = self.get_request(rid)
+            if cur.rowcount == 1:
+                return 200, row
+            if row["status"] == "approved" and row["consumed_at"] is None:
+                return 410, row     # only staleness can fail the guard on this state
+            return 409, row
+
+    def expire_stale_approvals(self, approval_ttl_seconds: int,
+                               now: datetime | None = None) -> list[dict]:
+        """Flip approved, unconsumed rows whose decided_at is older than the
+        approval window to 'expired' so the UI reflects reality. The original
+        decision verdict (verdict_jws/verdict_kid) is deliberately kept."""
+        now = now or _utcnow()
+        cutoff = _iso(now - timedelta(seconds=approval_ttl_seconds))
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id FROM requests WHERE status='approved' AND consumed_at IS NULL"
+                " AND decided_at < ?", (cutoff,)).fetchall()
+            for r in rows:
+                self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+                self.add_audit(r["id"], "expired", {"reason": "stale_approval"})
+            self.conn.commit()
+            return [self.get_request(r["id"]) for r in rows]
 
     def register_device(self, apns_token: str, name: str, min_severity: str = "low",
                         notifications_enabled: bool = True, sound: bool = True,
@@ -139,29 +334,32 @@ class Database:
         snd_int = 1 if sound else 0
         badge_int = 1 if badge else 0
         sev_json = json.dumps(severities) if severities is not None else None
-        existing = self.conn.execute(
-            "SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone()
-        if existing:
-            self.conn.execute(
-                "UPDATE devices SET name=?, min_severity=?, notifications_enabled=?, sound=?, "
-                "severities=?, badge=? WHERE apns_token=?",
-                (name, min_severity, ne_int, snd_int, sev_json, badge_int, apns_token))
-        else:
-            self.conn.execute(
-                "INSERT INTO devices(id, apns_token, name, registered_at, min_severity, "
-                "notifications_enabled, sound, severities, badge)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), apns_token, name, _iso(_utcnow()), min_severity,
-                 ne_int, snd_int, sev_json, badge_int))
-        self.conn.commit()
-        return self._row_to_device(self.conn.execute("SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone())
+        with self._lock:
+            existing = self.conn.execute(
+                "SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone()
+            if existing:
+                self.conn.execute(
+                    "UPDATE devices SET name=?, min_severity=?, notifications_enabled=?, sound=?, "
+                    "severities=?, badge=? WHERE apns_token=?",
+                    (name, min_severity, ne_int, snd_int, sev_json, badge_int, apns_token))
+            else:
+                self.conn.execute(
+                    "INSERT INTO devices(id, apns_token, name, registered_at, min_severity, "
+                    "notifications_enabled, sound, severities, badge)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), apns_token, name, _iso(_utcnow()), min_severity,
+                     ne_int, snd_int, sev_json, badge_int))
+            self.conn.commit()
+            return self._row_to_device(self.conn.execute("SELECT * FROM devices WHERE apns_token=?", (apns_token,)).fetchone())
 
     def list_devices(self) -> list[dict]:
-        return [self._row_to_device(r) for r in self.conn.execute("SELECT * FROM devices").fetchall()]
+        with self._lock:
+            return [self._row_to_device(r) for r in self.conn.execute("SELECT * FROM devices").fetchall()]
 
     def get_audit(self, rid: str) -> list[dict]:
-        return [dict(r) for r in self.conn.execute(
-            "SELECT * FROM audit WHERE request_id=? ORDER BY at", (rid,)).fetchall()]
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM audit WHERE request_id=? ORDER BY at", (rid,)).fetchall()]
 
     def list_audit(self, request_id: str | None = None, limit: int = 200) -> list[dict]:
         # LEFT JOIN requests for severity/title/decided_by, plus a scalar subquery
@@ -174,22 +372,86 @@ class Database:
             " (SELECT d.name FROM devices d WHERE d.name = r.decided_by LIMIT 1) AS decided_device"
             " FROM audit a LEFT JOIN requests r ON a.request_id = r.id"
         )
-        if request_id:
-            rows = self.conn.execute(
-                base + " WHERE a.request_id = ? ORDER BY a.at DESC LIMIT ?",
-                (request_id, limit)).fetchall()
-        else:
-            rows = self.conn.execute(
-                base + " ORDER BY a.at DESC LIMIT ?", (limit,)).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            if request_id:
+                rows = self.conn.execute(
+                    base + " WHERE a.request_id = ? ORDER BY a.at DESC LIMIT ?",
+                    (request_id, limit)).fetchall()
+            else:
+                rows = self.conn.execute(
+                    base + " ORDER BY a.at DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def iter_audit(self):
+        """Yield every audit row oldest-first, detail parsed to a dict."""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT id, request_id, event, at, detail FROM audit ORDER BY at, id")
+            rows = cur.fetchall()
+        for r in rows:
+            d = dict(r)
+            d["detail"] = json.loads(d["detail"])
+            yield d
 
     def rename_device(self, device_id: str, name: str) -> dict | None:
-        self.conn.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
-        self.conn.commit()
-        r = self.conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
-        return dict(r) if r else None
+        with self._lock:
+            self.conn.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
+            self.conn.commit()
+            r = self.conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+            return dict(r) if r else None
 
     def delete_device(self, device_id: str) -> bool:
-        cur = self.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
-        self.conn.commit()
-        return cur.rowcount > 0
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    # ── tokens (per-identity bearer credentials, hashed at rest) ────────────
+
+    def _row_to_token(self, r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["scopes"] = json.loads(d["scopes"]) if d["scopes"] is not None else None
+        return d
+
+    def create_token(self, name: str, role: str, token_hash: str,
+                     scopes: dict | None = None, expires_at: str | None = None) -> dict:
+        tid = str(uuid.uuid4())
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO tokens(id,name,role,token_hash,scopes,created_at,expires_at,"
+                "last_used_at,revoked_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (tid, name, role, token_hash,
+                 json.dumps(scopes) if scopes is not None else None,
+                 _iso(_utcnow()), expires_at, None, None))
+            self.conn.commit()
+            return self._row_to_token(
+                self.conn.execute("SELECT * FROM tokens WHERE id=?", (tid,)).fetchone())
+
+    def get_token_by_hash(self, token_hash: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM tokens WHERE token_hash=?", (token_hash,)).fetchone()
+            return self._row_to_token(r) if r else None
+
+    def list_tokens(self) -> list[dict]:
+        with self._lock:
+            return [self._row_to_token(r) for r in self.conn.execute(
+                "SELECT * FROM tokens ORDER BY created_at").fetchall()]
+
+    def revoke_token(self, name: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM tokens WHERE name=?", (name,)).fetchone()
+            if r is None:
+                return None
+            if r["revoked_at"] is None:
+                self.conn.execute("UPDATE tokens SET revoked_at=? WHERE name=?",
+                                  (_iso(_utcnow()), name))
+                self.conn.commit()
+            return self._row_to_token(
+                self.conn.execute("SELECT * FROM tokens WHERE name=?", (name,)).fetchone())
+
+    def touch_token_last_used(self, token_id: str) -> None:
+        with self._lock:
+            self.conn.execute("UPDATE tokens SET last_used_at=? WHERE id=?",
+                              (_iso(_utcnow()), token_id))
+            self.conn.commit()

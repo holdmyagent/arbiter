@@ -1,0 +1,19 @@
+{
+  "name": "command adapter, unicode param value survives ensure_ascii=False",
+  "input": {
+    "action": "post_note",
+    "adapter": "command",
+    "params": {
+      "text": "café ☕ déjà"
+    },
+    "resolved": {
+      "argv": [
+        "notify-send",
+        "café ☕ déjà"
+      ]
+    },
+    "warden": "knossos-warden"
+  },
+  "canonical": "{\"action\":\"post_note\",\"adapter\":\"command\",\"params\":{\"text\":\"café ☕ déjà\"},\"resolved\":{\"argv\":[\"notify-send\",\"café ☕ déjà\"]},\"v\":1,\"warden\":\"knossos-warden\"}",
+  "hash": "8f5c7091072ac83c42dd411ace7fa427cb092488151b5ac9fd22bbe6b9e2289a"
+}

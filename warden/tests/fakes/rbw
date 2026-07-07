@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake rbw (unofficial Bitwarden/Vaultwarden CLI) for tests: `rbw get NAME`.
+if [ "$1" != "get" ] || [ -z "$2" ]; then
+  echo "fake-rbw: usage: rbw get NAME" >&2
+  exit 2
+fi
+case "$2" in
+  api-bearer) echo "fake-rbw-secret-api-bearer" ;;
+  *) echo "fake-rbw: no such entry: $2" >&2; exit 1 ;;
+esac

@@ -1,8 +1,11 @@
+import inspect
 import tempfile
 import threading
 import time
+import warnings
 from pathlib import Path
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 from arbiter.app import create_app
@@ -26,7 +29,7 @@ def test_approved():
     app, db = _server()
     # TestClient is an httpx.Client subclass that properly bridges sync→async ASGI
     tc = TestClient(app, base_url="http://test", raise_server_exceptions=False)
-    client = ArbiterClient("http://test","A",app_token="P")
+    client = ArbiterClient("http://test", "A")
     client._http = tc
     # create via SDK in a thread, approve out-of-band
     result = {}
@@ -72,3 +75,59 @@ def test_failclosed_garbage_poll_body():
     client = ArbiterClient("http://test", "A")
     client._http = tc
     assert client.request_approval("t", ttl=5, poll_interval=0.05, timeout=1) == "denied"
+
+def test_no_app_token_param():
+    """0.3.0 breaking change: the dead app_token constructor param is gone."""
+    assert "app_token" not in inspect.signature(ArbiterClient.__init__).parameters
+
+def test_verify_false_warns():
+    with pytest.warns(UserWarning, match="TLS verification disabled"):
+        ArbiterClient("https://example.invalid", "A", verify=False)
+
+def test_verify_true_is_silent():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ArbiterClient("https://example.invalid", "A")  # must not raise-as-warning
+
+def test_client_passes_idempotency_and_callback():
+    fapp = FastAPI()
+    seen = {}
+
+    @fapp.post("/v1/requests")
+    async def _create(request: Request):
+        seen.update(await request.json())
+        return {"id": "stub-1", "status": "pending"}
+
+    @fapp.get("/v1/requests/{rid}")
+    def _get(rid: str):
+        return {"id": rid, "status": "approved"}
+
+    tc = TestClient(fapp, base_url="http://test", raise_server_exceptions=False)
+    client = ArbiterClient("http://test", "A")
+    client._http = tc
+    out = client.request_approval("t", poll_interval=0.05, timeout=2,
+                                  idempotency_key="idem-9",
+                                  callback_url="http://cb.local/x")
+    assert out == "approved"
+    assert seen["idempotency_key"] == "idem-9"
+    assert seen["callback_url"] == "http://cb.local/x"
+
+def test_client_omits_optional_fields_when_unset():
+    fapp = FastAPI()
+    seen = {}
+
+    @fapp.post("/v1/requests")
+    async def _create(request: Request):
+        seen.update(await request.json())
+        return {"id": "stub-2", "status": "pending"}
+
+    @fapp.get("/v1/requests/{rid}")
+    def _get(rid: str):
+        return {"id": rid, "status": "approved"}
+
+    tc = TestClient(fapp, base_url="http://test", raise_server_exceptions=False)
+    client = ArbiterClient("http://test", "A")
+    client._http = tc
+    assert client.request_approval("t", poll_interval=0.05, timeout=2) == "approved"
+    assert "idempotency_key" not in seen
+    assert "callback_url" not in seen

@@ -47,6 +47,15 @@ class WebhookCfg:
     def enabled(self) -> bool:
         return bool(self.url)
 
+@dataclass
+class PolicyCfg:
+    ttl_min_seconds: int = 30
+    ttl_max_seconds: int = 86400
+    approval_ttl_seconds: int = 600
+    rate_limit_per_minute: int = 30
+    deny_action_types: list[str] = field(default_factory=list)
+    severity_floors: dict[str, str] = field(default_factory=dict)
+
 _DEFAULT_TOKENS = {"dev-agent-token", "dev-app-token"}
 
 SEVERITIES = ("low", "medium", "high", "critical")
@@ -58,8 +67,10 @@ class Config:
     apns: ApnsCfg = field(default_factory=ApnsCfg)
     ntfy: NtfyCfg = field(default_factory=NtfyCfg)
     webhook: WebhookCfg = field(default_factory=WebhookCfg)
+    policy: PolicyCfg = field(default_factory=PolicyCfg)
     notify_severities: dict[str, bool] = field(
         default_factory=lambda: {s: True for s in SEVERITIES})
+    callback_allowlist: list[str] = field(default_factory=list)
     loaded_path: str = ""
 
     @staticmethod
@@ -77,6 +88,8 @@ class Config:
             s = doc.get("server", {})
             a = doc.get("auth", {})
             n = doc.get("notify", {})
+            if "callback_allowlist" in n:
+                cfg.callback_allowlist = [str(x) for x in n["callback_allowlist"]]
             for k in ("host", "port", "db_path"):
                 if k in s:
                     setattr(cfg.server, k, s[k])
@@ -95,6 +108,16 @@ class Config:
             for k, v in n.get("severities", {}).items():
                 if k in cfg.notify_severities and isinstance(v, bool):
                     cfg.notify_severities[k] = v
+            pol = doc.get("policy", {})
+            for k in ("ttl_min_seconds", "ttl_max_seconds", "approval_ttl_seconds",
+                      "rate_limit_per_minute"):
+                if k in pol:
+                    setattr(cfg.policy, k, int(pol[k]))
+            if "deny_action_types" in pol:
+                cfg.policy.deny_action_types = [str(x) for x in pol["deny_action_types"]]
+            for k, v in pol.get("severity_floors", {}).items():
+                if isinstance(v, str) and v in SEVERITIES:
+                    cfg.policy.severity_floors[str(k)] = v
         env = os.environ
         m = [("HMA_HOST", cfg.server, "host", str), ("HMA_PORT", cfg.server, "port", int),
              ("HMA_DB_PATH", cfg.server, "db_path", str),
