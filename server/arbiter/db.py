@@ -9,7 +9,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -46,7 +46,28 @@ def _migrate_2_to_3(conn):
     if "badge" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN badge INTEGER DEFAULT 0")
 
-MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3]
+def _migrate_3_to_4(conn):
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS tokens(
+      id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('agent','warden','app')),
+      token_hash TEXT NOT NULL,
+      scopes TEXT,
+      created_at TEXT NOT NULL, expires_at TEXT, last_used_at TEXT, revoked_at TEXT);
+    """)
+
+def _migrate_4_to_5(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+    for col in ("canonical_action", "action_hash", "verdict_jws", "verdict_kid",
+                "consumed_at", "idempotency_key", "requested_by"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE requests ADD COLUMN {col} TEXT")
+    conn.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_idem
+      ON requests(requested_by, idempotency_key)
+      WHERE idempotency_key IS NOT NULL""")
+
+MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5]
 
 class Database:
     def __init__(self, path: str):
@@ -193,3 +214,48 @@ class Database:
         cur = self.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    # ── tokens (per-identity bearer credentials, hashed at rest) ────────────
+
+    def _row_to_token(self, r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["scopes"] = json.loads(d["scopes"]) if d["scopes"] is not None else None
+        return d
+
+    def create_token(self, name: str, role: str, token_hash: str,
+                     scopes: dict | None = None, expires_at: str | None = None) -> dict:
+        tid = str(uuid.uuid4())
+        self.conn.execute(
+            "INSERT INTO tokens(id,name,role,token_hash,scopes,created_at,expires_at,"
+            "last_used_at,revoked_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (tid, name, role, token_hash,
+             json.dumps(scopes) if scopes is not None else None,
+             _iso(_utcnow()), expires_at, None, None))
+        self.conn.commit()
+        return self._row_to_token(
+            self.conn.execute("SELECT * FROM tokens WHERE id=?", (tid,)).fetchone())
+
+    def get_token_by_hash(self, token_hash: str) -> dict | None:
+        r = self.conn.execute(
+            "SELECT * FROM tokens WHERE token_hash=?", (token_hash,)).fetchone()
+        return self._row_to_token(r) if r else None
+
+    def list_tokens(self) -> list[dict]:
+        return [self._row_to_token(r) for r in self.conn.execute(
+            "SELECT * FROM tokens ORDER BY created_at").fetchall()]
+
+    def revoke_token(self, name: str) -> dict | None:
+        r = self.conn.execute("SELECT * FROM tokens WHERE name=?", (name,)).fetchone()
+        if r is None:
+            return None
+        if r["revoked_at"] is None:
+            self.conn.execute("UPDATE tokens SET revoked_at=? WHERE name=?",
+                              (_iso(_utcnow()), name))
+            self.conn.commit()
+        return self._row_to_token(
+            self.conn.execute("SELECT * FROM tokens WHERE name=?", (name,)).fetchone())
+
+    def touch_token_last_used(self, token_id: str) -> None:
+        self.conn.execute("UPDATE tokens SET last_used_at=? WHERE id=?",
+                          (_iso(_utcnow()), token_id))
+        self.conn.commit()
