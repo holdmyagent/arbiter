@@ -91,6 +91,15 @@ def test_cmd_timeout_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert excinfo.value.reason == "timeout"
 
 
+def test_cmd_malformed_quoting_fails_closed() -> None:
+    with pytest.raises(SecretResolutionError) as excinfo:
+        resolve('cmd:rbw get "unterminated')
+    assert excinfo.value.reason == "malformed reference"
+    result = doctor_check('cmd:rbw get "unterminated')
+    assert result == DoctorResult(
+        ref_scheme="cmd", ok=False, detail="FAILED (malformed reference)")
+
+
 def test_unknown_scheme_fails_closed() -> None:
     with pytest.raises(SecretResolutionError) as excinfo:
         resolve("vault:not-a-scheme")
