@@ -150,3 +150,58 @@ def test_unknown_route_404(app_env):
     app, _ = app_env
     status, payload = asgi_call(app, "GET", "/v1/nope", token="hermes-token")
     assert status == 404 and payload == {"detail": "not found"}
+
+
+# ------------------------------------------------------------- propose
+
+def _pending_row(pid="p-1", rid="req-1"):
+    return {"id": pid, "request_id": rid, "status": "pending",
+            "expires_at": "2026-07-06T00:05:00+00:00"}
+
+
+def test_propose_201_shape(app_env):
+    app, orch = app_env
+    orch.propose_result = _pending_row()
+    status, payload = asgi_call(app, "POST", "/v1/propose", token="hermes-token",
+                                body={"action": "echo", "params": {},
+                                      "idempotency_key": "k1"})
+    assert status == 201
+    assert payload == {"proposal_id": "p-1", "request_id": "req-1",
+                       "status": "pending",
+                       "expires_at": "2026-07-06T00:05:00+00:00"}
+    assert orch.propose_calls == [("hermes", "echo", {}, "k1")]
+
+
+def test_propose_unknown_action_404(app_env):
+    app, orch = app_env
+    orch.propose_error = UnknownActionError("unknown action: nope")
+    status, payload = asgi_call(app, "POST", "/v1/propose", token="hermes-token",
+                                body={"action": "nope", "params": {}})
+    assert status == 404 and "unknown action" in payload["detail"]
+
+
+def test_propose_param_validation_422(app_env):
+    app, orch = app_env
+    orch.propose_error = ParamValidationError("param 'word': not in enum")
+    status, payload = asgi_call(app, "POST", "/v1/propose", token="hermes-token",
+                                body={"action": "greet", "params": {"word": "zzz"}})
+    assert status == 422 and "word" in payload["detail"]
+
+
+def test_propose_arbiter_unavailable_502(app_env):
+    app, orch = app_env
+    orch.propose_error = ArbiterUnavailable("connect refused")
+    status, payload = asgi_call(app, "POST", "/v1/propose", token="hermes-token",
+                                body={"action": "echo", "params": {}})
+    assert status == 502 and payload == {"detail": "arbiter unreachable"}
+
+
+def test_propose_malformed_body_422(app_env):
+    app, orch = app_env
+    orch.propose_result = _pending_row()
+    for bad in [None, {"params": {}}, {"action": "", "params": {}},
+                {"action": "echo", "params": {"k": 1}},
+                {"action": "echo", "params": {}, "idempotency_key": "x" * 129}]:
+        status, _ = asgi_call(app, "POST", "/v1/propose",
+                              token="hermes-token", body=bad)
+        assert status == 422, bad
