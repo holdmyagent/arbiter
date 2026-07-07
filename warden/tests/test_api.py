@@ -205,3 +205,67 @@ def test_propose_malformed_body_422(app_env):
         status, _ = asgi_call(app, "POST", "/v1/propose",
                               token="hermes-token", body=bad)
         assert status == 422, bad
+
+
+# ------------------------------------------------------- get proposal
+
+def _create_row(db, agent="hermes"):
+    return db.create_proposal(agent=agent, action="echo", params={},
+                              canonical='{"v":1}', action_hash="a" * 64,
+                              request_id="req-1", idempotency_key=None)
+
+
+def test_get_proposal_returns_status_result_receipt(app_env):
+    app, orch = app_env
+    row = _create_row(orch.db)
+    orch.db.set_status(row["id"], "executed",
+                       result={"exit_code": 0, "stdout_tail": "ok",
+                               "stderr_tail": "", "duration_ms": 3},
+                       receipt={"request_id": "req-1", "action_hash": "a" * 64,
+                                "decision": "approved",
+                                "decided_at": "2026-07-06T00:01:00+00:00",
+                                "verdict_jws": "h.p.s",
+                                "executed_at": "2026-07-06T00:01:02+00:00"})
+    status, payload = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
+                                token="hermes-token")
+    assert status == 200
+    assert payload["status"] == "executed"
+    assert payload["result"]["exit_code"] == 0
+    assert payload["receipt"]["decision"] == "approved"
+
+
+def test_get_proposal_pending_has_no_result_or_receipt(app_env):
+    app, orch = app_env
+    row = _create_row(orch.db)
+    status, payload = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
+                                token="hermes-token")
+    assert status == 200 and payload == {"status": "pending"}
+
+
+def test_get_proposal_agent_isolation_404(app_env):
+    app, orch = app_env
+    row = _create_row(orch.db, agent="other")
+    status, _ = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
+                          token="hermes-token")
+    assert status == 404
+    status, _ = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
+                          token="other-token")
+    assert status == 200
+
+
+def test_get_proposal_missing_404(app_env):
+    app, _ = app_env
+    status, _ = asgi_call(app, "GET", "/v1/proposals/nope", token="hermes-token")
+    assert status == 404
+
+
+def test_get_proposal_secret_result_single_read(app_env):
+    app, orch = app_env
+    row = _create_row(orch.db)
+    orch.db.set_status(row["id"], "executed", result={"secret": "s3cr3t-value"})
+    status, payload = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
+                                token="hermes-token")
+    assert status == 200 and payload["result"] == {"secret": "s3cr3t-value"}
+    status, payload = asgi_call(app, "GET", f"/v1/proposals/{row['id']}",
+                                token="hermes-token")
+    assert status == 200 and "result" not in payload
