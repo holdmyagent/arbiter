@@ -22,7 +22,8 @@ class WebhookNotifier:
         attempts = len(self.sleeps) if self.sleeps else 1
         for i in range(attempts):
             try:
-                async with httpx.AsyncClient(transport=self.transport, timeout=10) as c:
+                async with httpx.AsyncClient(transport=self.transport, timeout=10,
+                                             follow_redirects=False) as c:
                     r = await c.post(url, headers=headers, content=body)
                 if r.status_code < 300:
                     return True

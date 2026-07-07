@@ -27,7 +27,7 @@ def test_request_detail_requires_token(client, agent_headers, app_headers):
     assert client.get(f"/v1/requests/{rid}", headers=app_headers).status_code == 200
 
 def test_health_is_minimal(client):
-    assert client.get("/health").json() == {"ok": True}
+    assert client.get("/health").json() == {"ok": True, "db": True}
 
 def test_devices_list_requires_app_token(client, app_headers):
     assert client.get("/v1/devices").status_code == 401
