@@ -118,3 +118,41 @@ def test_purge_older_than_deletes_only_old_rows(db):
     assert db.get(old["id"]) is None
     assert db.get(fresh["id"]) is not None
     assert db.purge_older_than(7) == 0
+
+
+def test_take_secret_result_single_read(db):
+    p = _mk(db)
+    db.set_status(p["id"], "executed", result={"secret": "hunter2"},
+                  receipt={"decision": "approved"})
+    assert db.take_secret_result(p["id"]) == {"secret": "hunter2"}
+    assert db.take_secret_result(p["id"]) is None       # second read: gone
+    row = db.get(p["id"])
+    assert row["result"] is None                        # value destroyed
+    assert row["status"] == "executed"                  # status intact
+    assert row["receipt"] == {"decision": "approved"}   # receipt intact
+
+
+def test_take_secret_result_missing_proposal(db):
+    assert db.take_secret_result("nope") is None
+
+
+def test_take_secret_result_two_threads_exactly_one_wins(db):
+    p = _mk(db)
+    db.set_status(p["id"], "executed", result={"secret": "hunter2"})
+    barrier = threading.Barrier(2)
+    results: list[dict | None] = []
+    results_lock = threading.Lock()
+
+    def taker():
+        barrier.wait()  # maximize contention: both threads race the take together
+        value = db.take_secret_result(p["id"])
+        with results_lock:
+            results.append(value)
+
+    threads = [threading.Thread(target=taker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(None) == 1
+    assert {"secret": "hunter2"} in results
