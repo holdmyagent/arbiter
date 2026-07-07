@@ -4,7 +4,6 @@ import secrets as pysecrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app

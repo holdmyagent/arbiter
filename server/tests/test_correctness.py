@@ -35,8 +35,10 @@ def test_concurrent_approve_deny_exactly_one_wins(db, make):
         barrier.wait()
         results[word] = db.set_decision(r["id"], word, "tester")
     threads = [threading.Thread(target=decide, args=(w,)) for w in ("approve", "deny")]
-    for t in threads: t.start()
-    for t in threads: t.join()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     winners = [v for v in results.values() if v is not None]
     assert len(winners) == 1
     assert db.get_request(r["id"])["status"] == winners[0]["status"]
