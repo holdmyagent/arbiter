@@ -54,9 +54,16 @@ def _check(request: Request, authorization: str | None, expected: tuple[str, ...
 
 @dataclass
 class Identity:
+    # Field set matches the pinned contract Identity(tenant_id, name, role, scopes,
+    # epoch, legacy). name/role stay first (all construction is keyword-based, so
+    # membership — not position — is what composes) and the rest carry defaults so
+    # this remains a drop-in for existing keyword constructions.
     name: str
-    role: str             # "agent" | "warden" | "app"
-    legacy: bool = False  # True only for the static [auth] config tokens (deprecated)
+    role: str                 # "agent" | "warden" | "app"
+    tenant_id: str | None = None
+    scopes: dict | None = None
+    epoch: int | None = None
+    legacy: bool = False      # True only for the static [auth] config tokens (deprecated)
 
 _LEGACY_WARNED = False  # deprecation warning fires once per process
 
@@ -67,8 +74,12 @@ def _warn_legacy_once() -> None:
         log.warning("legacy config token in use - static [auth] tokens are deprecated; "
                     "mint scoped tokens with hma token create")
 
-def resolve_identity(db, cfg, bearer: str) -> Identity | None:
-    """DB tokens first (sha256 lookup, revocation + expiry checks, last-used touch),
+def _resolve_identity_legacy(db, cfg, bearer: str) -> Identity | None:
+    """Single-tenant resolver (shipped pre-multitenancy). Still used by require_role
+    and the inline /v1/audit/export check until Group C rewires routes onto the
+    multi-tenant resolve_identity(request, registry, control) below (this task,
+    B5, adds that resolver alongside — it does not touch existing route wiring).
+    DB tokens first (sha256 lookup, revocation + expiry checks, last-used touch),
     then the legacy config tokens, which map to the fixed single identities
     Identity("agent","agent",legacy=True) / Identity("app","app",legacy=True)
     (deprecated; warns once per process)."""
@@ -91,6 +102,71 @@ def resolve_identity(db, cfg, bearer: str) -> Identity | None:
         return Identity(name="app", role="app", legacy=True)
     return None
 
+def _deny() -> "NoReturn":
+    # One identical generic 403 for route-miss / bad-MAC / in-cell-invalid /
+    # disabled / epoch-mismatch — no tenant-existence or "real route key" oracle
+    # in the status or body (spec §11).
+    raise HTTPException(403, "forbidden")
+
+async def resolve_identity(request: Request, registry, control):
+    """Derive (Identity, Cell) from the bearer alone (spec §4). Router is a HINT;
+    the cell is the authority. Returns a REFCOUNT-PINNED cell — the caller MUST
+    registry.release(cell) exactly once. Any failure raises a generic 403 and
+    releases the pin if one was taken."""
+    cfg = request.app.state.cfg
+    auth = request.headers.get("authorization", "")
+    bearer = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else ""
+    # Hash unconditionally: a missing/short bearer takes the same dominant-cost
+    # path as a real one (equalized-timing generic 403, §11).
+    token_hash = hashlib.sha256(bearer.encode()).hexdigest()
+
+    tenant_id = None
+    epoch = None
+    legacy_role = None
+    if bearer and cfg.auth.app_token and secrets.compare_digest(
+            bearer.encode(), cfg.auth.app_token.encode()):
+        tenant_id, legacy_role = "default", "app"          # strict 'default' (§14)
+    elif bearer and cfg.auth.agent_token and secrets.compare_digest(
+            bearer.encode(), cfg.auth.agent_token.encode()):
+        tenant_id, legacy_role = "default", "agent"        # hold-sdk 0.2.1 back-compat
+    else:
+        resolved = control.resolve(token_hash)             # (tenant_id, epoch) | None; MAC-verified
+        if resolved is not None:
+            tenant_id, epoch = resolved
+
+    if tenant_id is None:
+        _deny()                                            # route miss / bad MAC / unknown token
+
+    if legacy_role is not None:
+        epoch = control.epoch_of("default")
+        if epoch is None:
+            _deny()                                        # 'default' cell not provisioned
+
+    if control.is_disabled(tenant_id):                     # read on EVERY resolution, never cached
+        _deny()
+
+    cell = await registry.acquire(tenant_id, epoch)        # pins; caller MUST release
+    try:
+        if cell.epoch != epoch:                            # snapshot-consistent / TOCTOU (§5)
+            _deny()
+        if legacy_role is not None:
+            return (Identity(name=legacy_role, role=legacy_role, tenant_id="default",
+                             scopes=None, epoch=epoch, legacy=True), cell)
+        row = cell.db.get_token_by_hash(token_hash)        # re-validate in the CELL (full hex)
+        if row is None:                                    # route hint but no cell row -> hard 403
+            _deny()
+        if row["revoked_at"] is not None:
+            _deny()
+        if row["expires_at"] is not None and \
+                datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            _deny()
+        cell.db.touch_token_last_used(row["id"])
+        return (Identity(name=row["name"], role=row["role"], tenant_id=tenant_id,
+                         scopes=row["scopes"], epoch=epoch, legacy=False), cell)
+    except BaseException:
+        registry.release(cell)                             # release the pin on EVERY failure exit
+        raise
+
 def require_role(*roles: str):
     """FastAPI dependency factory: authenticate the bearer and return its Identity;
     403 unless identity.role is in *roles. Reads cfg/db/limiter off request.app.state
@@ -105,7 +181,7 @@ def require_role(*roles: str):
             st.auth_limiter.record_failure(ip)
             log.warning("auth_failure ip=%s reason=missing_bearer", ip)
             raise HTTPException(401, "missing bearer token")
-        ident = resolve_identity(st.db, st.cfg, authorization.removeprefix("Bearer "))
+        ident = _resolve_identity_legacy(st.db, st.cfg, authorization.removeprefix("Bearer "))
         if ident is None:
             st.auth_limiter.record_failure(ip)
             log.warning("auth_failure ip=%s reason=invalid_token", ip)  # never log the supplied value
