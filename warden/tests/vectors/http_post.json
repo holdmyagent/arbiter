@@ -1,0 +1,23 @@
+{
+  "name": "http adapter: body_sha256 + sorted header_names (names only, never values)",
+  "note": "body_sha256 is sha256 of the UTF-8 bytes of the resolved body: {\"text\": \"deploy done\"}",
+  "input": {
+    "action": "post_status",
+    "adapter": "http",
+    "params": {
+      "text": "deploy done"
+    },
+    "resolved": {
+      "method": "POST",
+      "url": "https://api.example.com/v1/status",
+      "header_names": [
+        "Authorization",
+        "Content-Type"
+      ],
+      "body_sha256": "5a435dff38ad22b81a3bd3ab981090a2610df729be73f13c7bfd0d146283e5a6"
+    },
+    "warden": "knossos-warden"
+  },
+  "canonical": "{\"action\":\"post_status\",\"adapter\":\"http\",\"params\":{\"text\":\"deploy done\"},\"resolved\":{\"body_sha256\":\"5a435dff38ad22b81a3bd3ab981090a2610df729be73f13c7bfd0d146283e5a6\",\"header_names\":[\"Authorization\",\"Content-Type\"],\"method\":\"POST\",\"url\":\"https://api.example.com/v1/status\"},\"v\":1,\"warden\":\"knossos-warden\"}",
+  "hash": "853953fea43efe00b75bfbe66f5ca87745de2cf6af751ead3cd1e8d3226410c2"
+}
