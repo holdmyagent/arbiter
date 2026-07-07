@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+from pathlib import Path
 
 import jwt
 import pytest
@@ -42,6 +43,17 @@ def test_distinct_keypairs_get_distinct_kids(tmp_path):
     kid_a, _ = load_or_create_keypair(tmp_path / "a")
     kid_b, _ = load_or_create_keypair(tmp_path / "b")
     assert kid_a != kid_b
+
+
+def test_race_loser_loads_winners_key(tmp_path, monkeypatch):
+    # Simulate losing the O_EXCL first-run race: the winner minted the key
+    # after we checked is_file() but before our O_EXCL create. The loser must
+    # recover by loading the winner's key, not crash with FileExistsError.
+    kid_winner, key_winner = load_or_create_keypair(tmp_path)
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+    kid, key = load_or_create_keypair(tmp_path)
+    assert kid == kid_winner
+    assert _raw_pub(key) == _raw_pub(key_winner)
 
 
 # ── sign_verdict round trip ─────────────────────────────────────────────────
