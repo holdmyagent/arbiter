@@ -80,3 +80,44 @@ def test_merely_holding_a_cell_does_not_drain():
     asyncio.run(hold_without_draining())
     assert cell.dispatcher.fires == 0            # cell-open never drains
     assert len(cell.db.outbox_pending()) == 1    # row untouched
+
+
+class FailingRegistry:
+    """Registry that raises on hold for a specific tenant."""
+    def __init__(self, cells, fail_on_tenant):
+        self._cells = cells
+        self._fail_on_tenant = fail_on_tenant
+
+    @asynccontextmanager
+    async def hold(self, tenant_id, epoch):
+        if tenant_id == self._fail_on_tenant:
+            raise RuntimeError(f"simulated drain failure for tenant {tenant_id}")
+        yield self._cells[tenant_id]
+
+
+def test_startup_drain_isolates_per_tenant_failures(caplog):
+    # One tenant's drain failure (or hold failure) must NOT abort the entire
+    # startup, per design principle §5/§15.13 "shed one tenant, never the fleet".
+    # Assert: (a) exception does NOT propagate, (b) good tenant still drains,
+    # (c) warning logged for bad tenant.
+    import logging
+    caplog.set_level(logging.WARNING, logger="arbiter.outbox")
+
+    cells = {"bad": _cell_with_pending("bad"), "good": _cell_with_pending("good")}
+    reg = FailingRegistry(cells, "bad")
+    ctrl = FakeControl([("bad", 1), ("good", 1)])
+
+    # Should NOT raise — exception is caught and logged.
+    asyncio.run(drain_all_at_startup(reg, ctrl))
+
+    # Good tenant's pending was drained (dispatcher fired once, row deleted).
+    assert cells["good"].dispatcher.fires == 1
+    assert cells["good"].db.outbox_pending() == []
+
+    # Bad tenant's drain was never attempted (registry.hold raised), so it has
+    # no dispatcher fires, but that's OK — the point is the fleet booted.
+    assert cells["bad"].dispatcher.fires == 0
+
+    # Warning logged for bad tenant.
+    assert any("startup drain failed for tenant bad" in record.message
+               for record in caplog.records)
