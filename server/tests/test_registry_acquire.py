@@ -102,7 +102,15 @@ async def test_background_task_keeps_cell_pinned(tmp_path):
             await gate.wait()
 
     t = asyncio.create_task(bg())
-    await asyncio.sleep(0.05)
+    # Wait for bg()'s acquire to resolve the single-flight slot into a live
+    # _Entry. A fixed sleep is racy: the open does SQLite + Ed25519 signer I/O
+    # that can exceed a short sleep on a busy CI runner, leaving the slot as the
+    # in-flight Future (no .refcount). Poll until it resolves, bounded.
+    for _ in range(500):
+        await asyncio.sleep(0.01)
+        slot = reg._map.get("acme")
+        if slot is not None and not isinstance(slot, asyncio.Future):
+            break
     assert reg._map["acme"].refcount == 1     # still pinned by the background task
     gate.set()
     await t
