@@ -92,6 +92,19 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     async def lifespan(app):
         # §9: outbox re-drain is bounded to PROCESS-RESTART only, never cell-open.
         await drain_all_at_startup(registry, control)
+        # §16 eviction-race test/ops seam: TenantRegistry.try_evict_idle() is
+        # async and its locks bind to whichever loop first uses them -- THIS
+        # lifespan's loop. A plain thread (e.g. a test's churn loop) cannot
+        # await it directly, so expose a synchronous driver that hops onto
+        # this loop via run_coroutine_threadsafe, mirroring scheduler_tick
+        # below.
+        _loop = asyncio.get_running_loop()
+
+        def evict_tick(timeout: float = 5.0) -> int:
+            return asyncio.run_coroutine_threadsafe(
+                registry.try_evict_idle(), _loop).result(timeout=timeout)
+
+        app.state.evict_tick = evict_tick
         sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
         if scheduler is not None:
             # §16 test/ops seam: a SYNCHRONOUS, clock-injectable one-shot that
