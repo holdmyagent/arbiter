@@ -1,8 +1,26 @@
+import hashlib
+
 import pytest
 from pathlib import Path
 
 from arbiter.provisioning import canonicalize_tenant_dir, assert_dir_isolated, TenantDirError
 from arbiter import control as control_mod
+from arbiter.control import ControlPlane
+from arbiter.signing import KEY_FILENAME
+from arbiter.provisioning import provision_tenant
+
+
+def _h(v):
+    return hashlib.sha256(v.encode()).hexdigest()
+
+
+def _control(tmp_path):
+    # NOTE: the H2 brief's illustrative `ControlPlane(tmp_path / "control.sqlite3")`
+    # doesn't match the shipped constructor (`ControlPlane(db_path, mac_key,
+    # tenants_root)` / classmethod `.open(control_dir, tenants_root)` — same drift
+    # H1's report flagged for `signing.load_or_create_keypair`). Use the real API.
+    root = tmp_path / "tenants"
+    return ControlPlane.open(tmp_path / "control", root), root
 
 
 def test_canonicalize_rejects_bad_charset(tmp_path):
@@ -82,3 +100,23 @@ def test_provisioning_and_control_isolation_logic_agree(tmp_path):
         except ValueError:
             ctrl_raised = True
         assert prov_raised == ctrl_raised, (candidate, existing)
+
+
+def test_provision_two_tenants_have_distinct_keys_and_tokens(tmp_path):
+    control, root = _control(tmp_path)
+    a = provision_tenant(control, root, "alpha")
+    b = provision_tenant(control, root, "beta")
+    # distinct on-disk key bytes (§15.7: no two cells load identical key bytes)
+    assert (a.dir / KEY_FILENAME).read_bytes() != (b.dir / KEY_FILENAME).read_bytes()
+    assert a.epoch != b.epoch or a.tenant_id != b.tenant_id
+    assert a.app_token.startswith("hma_app_") and a.warden_token.startswith("hma_warden_")
+    # both first-tokens route to their own tenant
+    assert control.resolve(_h(a.app_token))[0] == "alpha"
+    assert control.resolve(_h(b.warden_token))[0] == "beta"
+
+
+def test_provision_duplicate_tenant_id_rejected(tmp_path):
+    control, root = _control(tmp_path)
+    provision_tenant(control, root, "acme")
+    with pytest.raises(Exception):
+        provision_tenant(control, root, "acme")   # dir already exists / tenant exists
