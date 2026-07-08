@@ -201,19 +201,24 @@ class TenantRegistry:
             await asyncio.to_thread(v.db.checkpoint_and_close)
         return cell
 
-    def _collect_evictions_locked(self) -> list["Cell"]:
+    def _collect_evictions_locked(self, ignore_cap: bool = False) -> list["Cell"]:
         """Pop LRU idle (refcount==0) entries until at/under cap. Returns the
         cells whose connections the caller must close AFTER releasing the map lock
         (never checkpoint under the outer lock). If every over-cap cell is pinned,
-        return [] and stay temporarily over-cap (an ops signal, logged)."""
+        return [] and stay temporarily over-cap (an ops signal, logged).
+
+        ignore_cap=True (used by try_evict_idle, §16) drops the cap check and
+        instead keeps popping every currently-idle entry regardless of count;
+        a live holder (refcount>0) is still never evicted (evict-only-at-0)."""
         victims: list["Cell"] = []
         while True:
             entries = [(k, v) for k, v in self._map.items() if isinstance(v, _Entry)]
-            if len(entries) <= self.max_hot_cells:
+            if not ignore_cap and len(entries) <= self.max_hot_cells:
                 break
             idle = [(k, v) for k, v in entries if v.refcount == 0]
             if not idle:
-                logger.warning("tenant registry over cap=%d with all %d cells pinned; raise max_hot_cells", self.max_hot_cells, len(entries))
+                if not ignore_cap:
+                    logger.warning("tenant registry over cap=%d with all %d cells pinned; raise max_hot_cells", self.max_hot_cells, len(entries))
                 break  # all pinned: go over-cap rather than block a live holder
             k, v = min(idle, key=lambda kv: kv[1].last_used)
             self._map.pop(k, None)
@@ -253,6 +258,28 @@ class TenantRegistry:
         for cell in victims:
             await asyncio.to_thread(cell.db.checkpoint_and_close)
         return len(victims)
+
+    async def try_evict_idle(self) -> int:
+        """Gate/ops affordance (§16): attempt to evict every currently-idle
+        (refcount==0) cell, ignoring the LRU cap (unlike evict_idle()'s
+        cap-bounded sweep). A live holder (refcount>0) is always skipped —
+        no use-after-free: a concurrent eviction attempt can never pull a
+        connection out from under a pinned cell."""
+        async with self._locked():
+            victims = self._collect_evictions_locked(ignore_cap=True)
+        for cell in victims:
+            await asyncio.to_thread(cell.db.checkpoint_and_close)
+        return len(victims)
+
+    def refcount(self, cell: "Cell") -> int:
+        """Gate/ops affordance (§16): current refcount for `cell`, looked up
+        by object identity (never by tenant_id/epoch value — a reopened twin
+        must not alias a live holder's count). Returns 0 if `cell` is not the
+        live mapped object for its tenant (already released/evicted)."""
+        entry = self._map.get(cell.tenant_id)
+        if isinstance(entry, _Entry) and entry.cell is cell:
+            return entry.refcount
+        return 0
 
     def release(self, cell: "Cell") -> None:
         # Synchronous + no await => atomic on the event loop, safe to call from a
