@@ -91,5 +91,8 @@ async def drain_all_at_startup(registry, control) -> None:
     is expected to run this once, before serving traffic."""
     for t in control.list_tenants():
         tenant_id, epoch = t["tenant_id"], t["epoch"]
-        async with registry.hold(tenant_id, epoch) as cell:
-            await Outbox(cell.db, cell.dispatcher).drain_startup()
+        try:
+            async with registry.hold(tenant_id, epoch) as cell:
+                await Outbox(cell.db, cell.dispatcher).drain_startup()
+        except Exception as exc:
+            log.warning("startup drain failed for tenant %s: %s", tenant_id, exc)
