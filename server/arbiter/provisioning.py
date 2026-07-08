@@ -116,12 +116,19 @@ def provision_tenant(control, root: Path, tenant_id: str) -> ProvisionResult:
 
 
 def control_path_for(cfg) -> Path:
-    # The live control DB file. Its parent is the `control_dir` passed to
-    # `ControlPlane.open(...)`, and the filename matches B1's CONTROL_DB_FILENAME
-    # ("control.db") so the raw-read paths (`hma tenant list`, `hma admin restore`)
-    # point at exactly the file `.open()` creates.
-    return Path(cfg.db_path_expanded()).parent / "control.db"
+    # The live control DB file. Its parent (`.parent`) is the `control_dir`
+    # passed to `ControlPlane.open(...)`, matching `hma serve`'s / main.py's
+    # boot layout (`<db_path.parent>/control/control.db`), and the filename
+    # matches B1's CONTROL_DB_FILENAME ("control.db") so the raw-read paths
+    # (`hma tenant list`, `hma admin restore`) point at exactly the file
+    # `.open()` creates. This is the single source of truth for the control
+    # dir — every caller (serve, main.py boot, tenant CLI) must resolve it
+    # through this helper so they all open the same control.db.
+    return Path(cfg.db_path_expanded()).parent / "control" / "control.db"
 
 
 def tenants_root_for(cfg) -> Path:
-    return Path(cfg.db_path_expanded()).parent / "tenants"
+    # Matches `hma serve`'s / main.py's boot layout
+    # (`<db_path.parent>/cells`) — single source of truth, see
+    # `control_path_for` above.
+    return Path(cfg.db_path_expanded()).parent / "cells"

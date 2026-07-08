@@ -1,9 +1,9 @@
 import sys
-from pathlib import Path
 from .config import Config
 from .apns import APNsSender
 from .app import create_app
 from .control import ControlPlane
+from .provisioning import control_path_for, tenants_root_for
 from .registry import TenantRegistry
 from .scheduler import ExpiryScheduler
 
@@ -15,9 +15,10 @@ if problems:
 # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one
 # provisioned "default" cell rooted alongside the configured db_path, so an
 # existing install's data keeps landing in the same place it always has.
-db_path = Path(cfg.db_path_expanded())
-tenants_root = db_path.parent / "cells"
-control = ControlPlane.open(db_path.parent / "control", tenants_root)
+# control_path_for/tenants_root_for are the single source of truth for this
+# layout — the tenant CLI resolves through the same helpers.
+tenants_root = tenants_root_for(cfg)
+control = ControlPlane.open(control_path_for(cfg).parent, tenants_root)
 default_dir = tenants_root / "default"
 if control.epoch_of("default") is None:
     default_dir.mkdir(parents=True, exist_ok=True)

@@ -119,14 +119,17 @@ def serve(config_path, lan, log_json):
     from .notify import APNsSender
     from .app import create_app
     from .control import ControlPlane
+    from .provisioning import control_path_for, tenants_root_for
     from .registry import TenantRegistry
     from .scheduler import ExpiryScheduler
     # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one
     # provisioned "default" cell rooted alongside the configured db_path —
     # mirrors arbiter/main.py's boot (task C1).
-    db_path = Path(cfg.db_path_expanded())
-    tenants_root = db_path.parent / "cells"
-    control = ControlPlane.open(db_path.parent / "control", tenants_root)
+    # control_path_for/tenants_root_for are the single source of truth for
+    # this layout — the tenant CLI resolves through the same helpers, so
+    # `hma tenant create` and `hma serve` always agree on one control.db.
+    tenants_root = tenants_root_for(cfg)
+    control = ControlPlane.open(control_path_for(cfg).parent, tenants_root)
     default_dir = tenants_root / "default"
     if control.epoch_of("default") is None:
         default_dir.mkdir(parents=True, exist_ok=True)
@@ -438,13 +441,13 @@ def tenant_delete(tenant_id, config_path):
 @click.option("--config", "config_path", default=None, help="Path to config.toml")
 def tenant_pair_code(tenant_id, minutes, host_url, config_path):
     """Mint a single-use pairing credential for TENANT_ID and print its deep-link."""
-    from .control import ControlPlane
     from .pair import build_pairing_payload, local_ip
     cfg = Config.load(config_path)
-    db_path = Path(cfg.db_path_expanded())
-    tenants_root = db_path.parent / "cells"
-    control = ControlPlane.open(db_path.parent / "control", tenants_root)
-    code, _ = _mint_pair_code(control, tenant_id, minutes)
+    control = _control(cfg)
+    try:
+        code, _ = _mint_pair_code(control, tenant_id, minutes)
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(f"cannot mint pairing code for '{tenant_id}': {exc}")
     base = host_url or f"http://{local_ip()}:{cfg.server.port}"
     click.echo(f"pairing code: {code}")
     click.echo(f"deep-link:    {build_pairing_payload(base, code)}")

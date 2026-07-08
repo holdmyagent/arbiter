@@ -47,3 +47,19 @@ def test_tenant_delete_nonexistent_fails_not_false_success(tmp_path, monkeypatch
     r = CliRunner().invoke(main, ["tenant", "delete", "ghost"])
     assert r.exit_code != 0
     assert "tombstoned ghost" not in r.output.lower()
+
+def test_tenant_create_then_pair_code_share_one_control_db(tmp_path, monkeypatch):
+    """`hma tenant create` and `hma tenant pair-code` must resolve the SAME
+    control.db (the H5 path-divergence bug): create a tenant, then mint a
+    pairing code for it on the same cfg/db_path — pair-code must succeed
+    rather than raising "no live tenant"."""
+    _env(tmp_path, monkeypatch)
+    assert CliRunner().invoke(main, ["init"]).exit_code == 0
+    create = CliRunner().invoke(main, ["tenant", "create", "acme"])
+    assert create.exit_code == 0, create.output
+    listed = CliRunner().invoke(main, ["tenant", "list"])
+    assert "acme" in listed.output
+    paired = CliRunner().invoke(main, ["tenant", "pair-code", "acme"])
+    assert paired.exit_code == 0, paired.output
+    assert "pairing code:" in paired.output
+    assert "deep-link:" in paired.output
