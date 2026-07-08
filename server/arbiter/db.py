@@ -416,6 +416,27 @@ class Database:
             self.conn.commit()
             return [self.get_request(r["id"]) for r in rows]
 
+    def invalidate_in_flight(self) -> int:
+        """Restore-safety (§12): flip every in-flight approval (pending, or
+        approved-and-unconsumed) to 'expired' so a rolled-back cell cannot
+        re-execute an already-consumed action or resurrect a stale approval.
+        The agent must re-propose. Returns the number of rows invalidated."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id FROM requests WHERE status='pending'"
+                " OR (status='approved' AND consumed_at IS NULL)").fetchall()
+            for r in rows:
+                self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+                self.add_audit(r["id"], "expired", {"reason": "cell_restored"})
+            self.conn.commit()
+            return len(rows)
+
+    def backup_to(self, dest: str) -> None:
+        """Online consistent snapshot of this cell DB (VACUUM INTO), safe under
+        concurrent writers. dest must not already exist."""
+        with self._lock:
+            self.conn.execute("VACUUM INTO ?", (dest,))
+
     def register_device(self, apns_token: str, name: str, min_severity: str = "low",
                         notifications_enabled: bool = True, sound: bool = True,
                         severities: dict | None = None, badge: bool = False) -> dict:
@@ -560,6 +581,13 @@ class Database:
         with self._lock:
             return [self._row_to_token(r) for r in self.conn.execute(
                 "SELECT * FROM tokens ORDER BY created_at").fetchall()]
+
+    def active_token_hashes(self) -> set[str]:
+        """token_hash of every unrevoked token — the reconciler's liveness set (§12)."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT token_hash FROM tokens WHERE revoked_at IS NULL").fetchall()
+            return {r["token_hash"] for r in rows}
 
     def revoke_token(self, name: str) -> dict | None:
         with self._lock:
