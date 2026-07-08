@@ -79,3 +79,17 @@ class Outbox:
             await self.dispatcher.request_created(req)
         else:  # request.decided | request.expired — Dispatcher derives from req["status"]
             await self.dispatcher.request_decided(req)
+
+
+async def drain_all_at_startup(registry, control) -> None:
+    """Process-restart-only re-drain coordinator (§9/§15.11). Iterates every
+    provisioned tenant exactly once at process start, opening each cell just
+    long enough to drain its outbox, then releasing it. This is the ONLY place
+    a drain is triggered — the per-cell lazy open path (``open_cell`` /
+    ``TenantRegistry.acquire``) never drains, so constant hot-cell churn
+    cannot re-fire a callback. The caller (the FastAPI ``lifespan`` startup)
+    is expected to run this once, before serving traffic."""
+    for t in control.list_tenants():
+        tenant_id, epoch = t["tenant_id"], t["epoch"]
+        async with registry.hold(tenant_id, epoch) as cell:
+            await Outbox(cell.db, cell.dispatcher).drain_startup()
