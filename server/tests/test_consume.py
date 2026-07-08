@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import secrets as pysecrets
@@ -9,20 +10,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app
+from arbiter.scheduler import ExpiryScheduler
 
 from tests.conftest import build_registry_env
 
 AGENT = {"Authorization": "Bearer test-agent"}
 APP = {"Authorization": "Bearer test-app"}
-
-# app.state.expire_pass was the shipped single-tenant sweep hook; it's removed
-# per §15.1 (nothing tenant-scoped/process-local on app.state) and F9 deletes
-# the whole _expire_pass/sweep machinery outright, replacing it with the
-# per-cell ExpiryScheduler (Group F). These two tests drive the old hook
-# directly and genuinely await that replacement.
-_SCHEDULER_XFAIL = pytest.mark.xfail(
-    reason="app.state.expire_pass removed; replaced by ExpiryScheduler in task F9 (Group F)",
-    strict=False)
 
 
 class FakeSender:
@@ -51,11 +44,15 @@ def mint_token(client, name, role, scopes=None):
 def _client(cfg, tmp_path):
     sender = FakeSender()
     env = build_registry_env(cfg, tmp_path, sender=sender)
-    app = create_app(cfg, env.registry, env.control, sender=sender)
+    sched = ExpiryScheduler(env.registry, env.control,
+                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+    app = create_app(cfg, env.registry, env.control, sender=sender, scheduler=sched)
     c = TestClient(app)
     c.db = env.default_db
     c.env = env
     c.app_ref = app
+    c.cfg = cfg
+    c.sched = sched
     return c
 
 
@@ -134,24 +131,43 @@ def test_db_consume_stale_with_explicit_clock(db, make):
     assert code == 410 and row["consumed_at"] is None
 
 
-@_SCHEDULER_XFAIL
+def _force_stale_decided_at(client, rid):
+    """Push decided_at far enough into the past that decided_at+approval_ttl
+    is already overdue, mirroring test_scheduler.py's cold-cell pattern."""
+    stale_ttl = client.cfg.policy.approval_ttl_seconds
+    past = (datetime.now(timezone.utc) - timedelta(seconds=stale_ttl + 10)).isoformat()
+    with client.db._lock:
+        client.db.conn.execute("UPDATE requests SET decided_at=? WHERE id=?", (past, rid))
+        client.db.conn.commit()
+
+
 def test_sweeper_flips_stale_approval_keeps_verdict(client, warden_headers):
     rid = _approved_request(client)
     jws_before = client.db.get_request(rid)["verdict_jws"]
     assert jws_before
-    future = datetime.now(timezone.utc) + timedelta(seconds=3600)
-    flipped = client.app_ref.state.expire_pass(now=future)
-    assert any(e["id"] == rid for e in flipped)
+    _force_stale_decided_at(client, rid)
+
+    async def _run():
+        await client.sched._fire_one((0, 0, "default", rid))
+        for t in list(client.sched._bg):
+            await t
+    asyncio.run(_run())
+
     row = client.db.get_request(rid)
     assert row["status"] == "expired"
     assert row["verdict_jws"] == jws_before   # original approved verdict kept
 
 
-@_SCHEDULER_XFAIL
 def test_sweeper_leaves_consumed_approvals_alone(client, warden_headers):
     rid = _approved_request(client)
     assert client.post(f"/v1/requests/{rid}/consume",
                        headers=warden_headers).status_code == 200
-    future = datetime.now(timezone.utc) + timedelta(seconds=3600)
-    client.app_ref.state.expire_pass(now=future)
+    _force_stale_decided_at(client, rid)
+
+    async def _run():
+        await client.sched._fire_one((0, 0, "default", rid))
+        for t in list(client.sched._bg):
+            await t
+    asyncio.run(_run())
+
     assert client.db.get_request(rid)["status"] == "approved"

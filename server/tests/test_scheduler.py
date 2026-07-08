@@ -292,3 +292,41 @@ async def test_seed_recovers_expired_without_verdict():
     assert cell.db.expired_without_verdict() == []               # nothing left stranded
     for t in list(sched._bg):
         await t
+
+# ── F9 ───────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_two_tenant_scheduler_isolation_and_durability():
+    A = _Cell("acme", 1)
+    B = _Cell("beta", 1)
+    sched, reg, _ = _mk(A, B, per_tenant_batch=3)
+    overdue = _iso(_now() - timedelta(seconds=5))
+
+    a_ids = [_add_pending(A, overdue)["id"] for _ in range(5)]      # A floods
+    b_id = _add_pending(B, overdue)["id"]                           # B is small
+    # a dropped push for one of A's rows (never scheduled) — rescan must catch it
+    for rid in a_ids[:-1]:
+        sched.schedule(overdue, "acme", rid)
+    sched.schedule(overdue, "beta", b_id)
+
+    await sched._fire_due()          # B not starved by A's flood
+    assert B.db.get_request(b_id)["status"] == "expired"
+    await sched._rescan_tick()        # picks up the dropped one + A's deferred overflow
+    await sched._fire_due()
+    await sched._fire_due()
+    for t in list(sched._bg):
+        await t
+
+    # every A row expired, each verified under A's key and NOT B's; and vice-versa
+    for rid in a_ids:
+        row = A.db.get_request(rid)
+        assert row["status"] == "expired" and row["verdict_jws"]
+        _verify(row["verdict_jws"], A.signer, "acme")
+        with pytest.raises(jwt.InvalidSignatureError):
+            jwt.decode(row["verdict_jws"], B.signer.public_key(),
+                       algorithms=["EdDSA"], audience="hma-verdict:acme")
+    # no cross-tenant db bleed and all pins released (FD budget respected)
+    assert all(B.db.get_request(rid) is None for rid in a_ids)
+    assert reg.refcount["acme"] == 0 and reg.refcount["beta"] == 0
+    # each cell only ever saw its own expiry events on its own hub
+    assert all(e["request"]["id"] in a_ids for e in A.hub.events)
+    assert all(e["request"]["id"] == b_id for e in B.hub.events)

@@ -5,6 +5,7 @@ from .apns import APNsSender
 from .app import create_app
 from .control import ControlPlane
 from .registry import TenantRegistry
+from .scheduler import ExpiryScheduler
 
 cfg = Config.load()
 problems = cfg.validate_for_serve()
@@ -24,4 +25,6 @@ if control.epoch_of("default") is None:
 
 sender = APNsSender(cfg)
 registry = TenantRegistry(control, cfg=cfg, sender=sender)
-app = create_app(cfg, registry, control, sender=sender)
+scheduler = ExpiryScheduler(registry, control,
+                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+app = create_app(cfg, registry, control, sender=sender, scheduler=scheduler)

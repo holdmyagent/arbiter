@@ -151,15 +151,15 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 
-wait_proposal() {  # wait_proposal <proposal_id> <want_status> [<port>] — echoes final proposal JSON
-  local pid="$1" want="$2" port="${3:-8903}" body status
-  for _ in $(seq 1 60); do
+wait_proposal() {  # wait_proposal <proposal_id> <want_status> [<port>] [<max_tries>] [<interval>] — echoes final proposal JSON
+  local pid="$1" want="$2" port="${3:-8903}" max_tries="${4:-60}" interval="${5:-0.5}" body status
+  for _ in $(seq 1 "$max_tries"); do
     body=$(curl -fsS "localhost:$port/v1/proposals/$pid" \
            -H "Authorization: Bearer $SMOKE_AGENT_TOKEN")
     status=$(json_get "$body" status)
     if [ "$status" = "$want" ]; then echo "$body"; return 0; fi
     case "$status" in
-      pending|executing) sleep 0.5 ;;
+      pending|executing) sleep "$interval" ;;
       *) echo "FAIL: proposal $pid reached '$status', wanted '$want'" >&2; return 1 ;;
     esac
   done
@@ -242,12 +242,18 @@ wait_proposal "$PID2" denied >/dev/null
 echo "ok: deny path held — no side effect"
 
 # ── expiry: propose at the policy-floor TTL, never answer -> expired ──────
-# SKIPPED (not a D8 regression): TTL-driven expiry sweeping is not wired
-# into `hma serve` yet — `create_app()` is called with no `scheduler=`, so
-# `Database.expire_due()` is dead code today. This is the tracked "3x F9
-# scheduler-expiry" xfail group (task index: F9 is task 45, after D8 = 29) —
-# deferred to that task. Re-enable this leg once F9 lands.
-echo "skip: expiry leg deferred to task F9 (scheduler not yet wired into hma serve)"
+# `hma serve` now constructs an ExpiryScheduler and wires it into create_app
+# (task F9): the create handler schedules the request's deadline in-process,
+# so it expires on its own — no poll-and-sweep loop, no manual decision.
+# 90 tries * 1s covers the 30s TTL floor plus scheduler wake + warden tick lag.
+P3=$(curl -fsS -X POST localhost:8903/v1/propose \
+  -H "Authorization: Bearer $SMOKE_AGENT_TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"touch_expiry_marker","params":{}}')
+PID3=$(json_get "$P3" proposal_id)
+wait_proposal "$PID3" expired 8903 90 1 >/dev/null
+[ ! -e "$TMP/expiry-marker" ] \
+  || { echo "FAIL: expiry path executed the action (marker file exists)" >&2; exit 1; }
+echo "ok: expiry leg — request expired via the wired scheduler, no side effect"
 
 # ── wrong key: a warden pinned to the WRONG Ed25519 key must fail closed ──
 WRONG_X=$("$PY" - <<'PYEOF'
