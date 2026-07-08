@@ -171,11 +171,13 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     def keys(ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
         # Tenant is derived from the credential only, and require_cell already
         # pins the resolved cell for this handler's whole lifetime and releases
-        # it exactly once (§15.4). This assert is the last-line invariant check
-        # before serving JWKS: it fails CLOSED (500) rather than ever handing a
-        # pairing fetch a neighbour's keys (§7, §15.2, §16 eviction-race row).
+        # it exactly once (§15.4). This explicit check is the last-line invariant
+        # check before serving JWKS: it fails CLOSED (500) rather than ever
+        # handing a pairing fetch a neighbour's keys (§7, §15.2, §16
+        # eviction-race row). Explicit raise survives python -O (asserts strip).
         identity, cell = ctx
-        assert identity.tenant_id == cell.tenant_id
+        if identity.tenant_id != cell.tenant_id:
+            raise HTTPException(status_code=500, detail="tenant/cell binding mismatch")
         return cell.signer.public_jwks()
 
     @app.get("/v1/audit/export")
