@@ -11,8 +11,8 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import (Identity, SlidingWindowLimiter, _client_ip, require_role,
-                   _resolve_identity_legacy, resolve_identity, trusted_client_id)
+from .auth import (Identity, SlidingWindowLimiter, require_role,
+                   resolve_identity, trusted_client_id)
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .notify.outbox import Outbox
@@ -173,31 +173,47 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         return public_jwks(kid, signing_key)
 
     @app.get("/v1/audit/export")
-    def audit_export(request: Request, format: str = "jsonl"):
-        # app-role bearer OR a valid admin dashboard session. Inline (not
-        # require_role) because of the bearer-OR-cookie split, but with the
-        # same limiter + auth_failure discipline as require_role (auth.py):
-        # blocked-check first, record_failure + log on any failed attempt.
-        ip = _client_ip(request)
-        if limiter.blocked(ip):
+    async def audit_export(request: Request, format: str = "jsonl"):
+        # app-role bearer -> its own cell, OR a valid admin dashboard session ->
+        # the 'default' cell (back-compat, §14/§16). Inline (not require_cell)
+        # because of the bearer-OR-cookie split, but with the same limiter +
+        # auth_failure discipline (§13): blocked-check first, record_failure +
+        # log on any failed attempt. Tenant is derived from the credential ONLY
+        # (§15.2) -- never a query/header hint.
+        st = app.state
+        key = trusted_client_id(request, st.cfg)
+        if st.auth_limiter.blocked(key):
             raise HTTPException(429, "too many failed auth attempts")
-        authorized = False
+        cell = None
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
-            ident = _resolve_identity_legacy(db, cfg, auth.removeprefix("Bearer "))
-            authorized = ident is not None and ident.role == "app"
-        if not authorized and app.state.session_check(request.cookies.get("hma_session", "")):
-            authorized = True
-        if not authorized:
-            limiter.record_failure(ip)
+            try:
+                identity, resolved = await resolve_identity(request, st.registry, st.control)
+            except HTTPException:
+                identity, resolved = None, None
+            if identity is not None and identity.role == "app":
+                cell = resolved
+            elif resolved is not None:
+                st.registry.release(resolved)          # resolved but not app-role: drop the pin
+        if cell is None and st.session_check(request.cookies.get("hma_session", "")):
+            # admin dashboard session -> default cell (back-compat, §14)
+            default_epoch = st.control.epoch_of("default")
+            if default_epoch is not None:
+                cell = await st.registry.acquire("default", default_epoch)
+        if cell is None:
+            st.auth_limiter.record_failure(key)
             reason = "invalid_token" if auth.startswith("Bearer ") else "missing_bearer"
-            log.warning("auth_failure ip=%s reason=%s", ip, reason)  # never log the supplied value
+            log.warning("auth_failure key=%s reason=%s", key, reason)  # never log the supplied value
             raise HTTPException(403, "app token or admin session required")
         if format != "jsonl":
+            st.registry.release(cell)
             raise HTTPException(422, "unsupported format (only jsonl)")
         def gen():
-            for row in db.iter_audit():
-                yield json.dumps(row) + "\n"
+            try:
+                for row in cell.db.iter_audit():
+                    yield json.dumps(row) + "\n"
+            finally:
+                st.registry.release(cell)               # release after the stream drains (§15.4)
         return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
     # ── API v1 ───────────────────────────────────────────────────────────────

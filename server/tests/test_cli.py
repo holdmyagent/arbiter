@@ -109,7 +109,6 @@ def test_config_template_has_callback_allowlist():
     assert "callback_allowlist" in CONFIG_TEMPLATE
 
 
-@_API_XFAIL
 def test_cli_audit_export_writes_jsonl_file(client, cfg, tmp_path, app_headers, agent_headers):
     import json as _json
     from arbiter.cli import _audit_export
