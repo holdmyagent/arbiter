@@ -29,6 +29,34 @@ def test_nondefault_cell_no_config_has_no_egress(tmp_path):
     d = cell_delivery(cfg, "c", cdir)
     assert d.webhook.enabled is False and d.callback_allowlist == []
 
+def test_open_cell_wires_per_cell_delivery(tmp_path):
+    """§9 at the real wiring point: open_cell must feed each cell's Dispatcher
+    the PER-CELL delivery config, never the process cfg's sinks."""
+    from arbiter.registry import open_cell
+    cfg = Config.load(str(tmp_path / "absent.toml"))
+    cfg.webhook.url = "https://proc.example/hook"
+    cfg.callback_allowlist = ["https://proc.example/*"]
+    class S:  # sentinel sender
+        pass
+    s = S()
+
+    bdir = (tmp_path / "cells" / "b").resolve()
+    bdir.mkdir(parents=True)
+    (bdir / "notify.toml").write_text(
+        '[webhook]\nurl = "https://b.example/hook"\n'
+        '[notify]\ncallback_allowlist = ["https://b.example/*"]\n')
+    cell_b = open_cell("b", bdir, 1, cfg, sender=s)
+    assert cell_b.dispatcher.cfg.webhook.url == "https://b.example/hook"
+    assert cell_b.dispatcher.cfg.callback_allowlist == ["https://b.example/*"]
+    assert cell_b.dispatcher.sender is s
+
+    cdir = (tmp_path / "cells" / "c").resolve()
+    cdir.mkdir(parents=True)
+    cell_c = open_cell("c", cdir, 1, cfg, sender=s, other_open_dirs=(bdir,))
+    assert cell_c.dispatcher.cfg.webhook.enabled is False   # safe fallback: no egress
+    assert cell_c.dispatcher.cfg.callback_allowlist == []
+    assert cell_c.dispatcher.cfg is not cell_b.dispatcher.cfg  # no sink sharing
+
 def test_build_cell_dispatcher_uses_passed_sender_and_db(tmp_path):
     cfg = Config.load(str(tmp_path / "absent.toml"))
     db = Database(":memory:")

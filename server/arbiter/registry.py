@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .control import assert_dir_isolated   # §15.7 shared mint/open non-overlap guard (leaf module)
 from .db import Database
-from .notify import Dispatcher
+from .notify import APNsSender, Dispatcher, build_cell_dispatcher, cell_delivery
 from .auth import SlidingWindowLimiter
 from .signing import Signer, load_or_create_signer
 from .stream import Hub
@@ -46,8 +46,12 @@ def open_cell(tenant_id: str, dir, epoch: int, cfg, sender=None, other_open_dirs
     tampered/symlink-swapped AFTER mint so two live tenants now resolve to one dir.
     `other_open_dirs` is supplied by `TenantRegistry.acquire` (the dirs of all live
     `_Entry` cells, captured under the map lock). Dispatcher is built with THIS cell's
-    db + the process delivery cfg; the notify group refines per-tenant
-    webhook/ntfy/allowlist overrides (§9)."""
+    db + THIS cell's delivery config (`cell_delivery`: the default tenant inherits the
+    process cfg; every other tenant reads only <dir>/notify.toml, absent = no egress),
+    so no tenant's request/decision bodies ever egress through another tenant's sinks (§9).
+    The APNs sender stays shared/process-level: when the caller passes none, it is built
+    from the process cfg here — never from the per-cell delivery config, which has no
+    .apns (same fallback the pre-§9 wiring had via Dispatcher's `sender or APNsSender(cfg)`)."""
     d = Path(dir).expanduser()
     if not d.is_absolute():
         raise ValueError(f"cell dir must be absolute, got {dir!r}")
@@ -62,7 +66,8 @@ def open_cell(tenant_id: str, dir, epoch: int, cfg, sender=None, other_open_dirs
     db = Database(str(resolved / "arbiter.sqlite3"))          # runs the full migration ladder
     signer = load_or_create_signer(tenant_id, resolved)        # per-cell key, namespaced kid
     hub = Hub()
-    dispatcher = Dispatcher(cfg, db, sender=sender)
+    dispatcher = build_cell_dispatcher(cell_delivery(cfg, tenant_id, resolved), db,
+                                       sender or APNsSender(cfg))
     create_limiter = SlidingWindowLimiter(cfg.policy.rate_limit_per_minute, 60.0)
     login_limiter = SlidingWindowLimiter(5, 60.0)
     return Cell(tenant_id=tenant_id, epoch=epoch, dir=resolved, db=db, signer=signer,
