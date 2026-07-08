@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from arbiter.db import Database
 from arbiter.models import RequestCreate
-from arbiter.scheduler import ExpiryScheduler
+from arbiter.scheduler import ExpiryScheduler, _ts
 
 # ── shared fakes for the whole Group F suite ─────────────────────────────
 def _now():
@@ -110,3 +110,49 @@ def test_time_until_next_empty_is_none():
     assert sched._time_until_next() is None
     sched.schedule(_iso(_now() + timedelta(seconds=50)), "default", "r1")
     assert 0 < sched._time_until_next() <= 50
+
+# ── F4 ───────────────────────────────────────────────────────────────────
+def _verify(jws, signer, tenant_id):
+    return jwt.decode(jws, signer.public_key(), algorithms=["EdDSA"],
+                      audience=f"hma-verdict:{tenant_id}")
+
+@pytest.mark.asyncio
+async def test_fire_one_signs_with_that_cells_key_and_db():
+    cellA = _Cell("acme", 1)
+    cellB = _Cell("beta", 1)
+    sched, reg, _ = _mk(cellA, cellB)
+    overdue = _iso(_now() - timedelta(seconds=5))
+    rB = _add_pending(cellB, overdue)                 # B's request only
+
+    await sched._fire_one((_ts(overdue), 0, "beta", rB["id"]))
+
+    row = cellB.db.get_request(rB["id"])
+    assert row["status"] == "expired" and row["verdict_jws"]
+    # verifies under B's key + audience
+    claims = _verify(row["verdict_jws"], cellB.signer, "beta")
+    assert claims["hma"]["decision"] == "expired"
+    assert claims["hma"]["request_id"] == rB["id"]
+    # FAILS under A's key (cross-tenant forgery rejected)
+    with pytest.raises(jwt.InvalidSignatureError):
+        jwt.decode(row["verdict_jws"], cellA.signer.public_key(),
+                   algorithms=["EdDSA"], audience="hma-verdict:beta")
+    # hit B's db, never A's; and the cell was cold-opened via the registry
+    assert cellA.db.get_request(rB["id"]) is None
+    assert reg.opens >= 1
+    # emitted on B's hub, and refcount released exactly once (back to 0)
+    assert any(e.get("event") == "request.expired" for e in cellB.hub.events)
+    # drain the spawned outbox task, then assert the pin was released
+    for t in list(sched._bg):
+        await t
+    assert reg.refcount["beta"] == 0
+
+@pytest.mark.asyncio
+async def test_fire_one_skips_tombstoned_tenant():
+    cell = _Cell("gone", 1)
+    sched, reg, ctl = _mk(cell)
+    overdue = _iso(_now() - timedelta(seconds=5))
+    r = _add_pending(cell, overdue)
+    ctl._t = []                                       # tenant tombstoned: absent from control
+    await sched._fire_one((_ts(overdue), 0, "gone", r["id"]))
+    assert reg.opens == 0                              # never opened a dead cell
+    assert cell.db.get_request(r["id"])["status"] == "pending"
