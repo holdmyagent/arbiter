@@ -19,6 +19,29 @@ def test_tenant_create_prints_tokens_once_and_registers(tmp_path, monkeypatch):
     control = ControlPlane.open(control_path_for(Config.load()).parent, tenants_root_for(Config.load()))
     assert "acme" in [t["tenant_id"] for t in control.list_tenants()]
 
+def test_admin_migrate_wraps_legacy_install_as_default(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    assert CliRunner().invoke(main, ["init"]).exit_code == 0
+    # Legacy pre-multitenant token mint (no control.db yet -> writes to db_path).
+    create = CliRunner().invoke(main, ["token", "create", "hermes", "--role", "agent"])
+    assert create.exit_code == 0, create.output
+
+    migrate = CliRunner().invoke(main, ["admin", "migrate"])
+    assert migrate.exit_code == 0, migrate.output
+    assert "default" in migrate.output
+
+    listed = CliRunner().invoke(main, ["tenant", "list"])
+    assert "default" in listed.output
+    tokens = CliRunner().invoke(main, ["token", "list", "--tenant", "default"])
+    assert tokens.exit_code == 0, tokens.output
+    assert "hermes" in tokens.output
+
+    # idempotent: a second run does not error or duplicate the tenant
+    again = CliRunner().invoke(main, ["admin", "migrate"])
+    assert again.exit_code == 0, again.output
+    assert CliRunner().invoke(main, ["tenant", "list"]).output.count("default") == 1
+
+
 def test_tenant_list_disable_delete(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)
     CliRunner().invoke(main, ["init"])

@@ -209,6 +209,26 @@ def restore_fleet(control_db_path: Path, backup_dir: Path) -> None:
     reconcile_routes(control_db_path)
 
 
+def migrate_to_multitenant(cfg, control, root: Path) -> None:
+    """Wrap today's single arbiter DB as the 'default' cell (idempotent, §14).
+    Registers 'default' pointing at the EXISTING DB's dir — exempt from the
+    tenants-root layout via `allow_out_of_root` (narrowly scoped to the
+    "default" tenant_id inside `ControlPlane.create_tenant`; a normal
+    `hma tenant create` stays strictly under-root) — and backfills a router
+    route for every unrevoked cell token. Legacy `cfg.auth.app_token` then
+    resolves strictly to 'default' (auth already does this, spec §4); existing
+    devices already live in that DB, so they map to 'default' unchanged."""
+    if any(t["tenant_id"] == "default" for t in control.list_tenants()):
+        return
+    legacy_path = Path(cfg.db_path_expanded())
+    legacy_dir = legacy_path.parent.resolve()
+    control.create_tenant("default", str(legacy_dir), allow_out_of_root=True)
+    cell_db = Database(str(legacy_path))
+    for t in cell_db.list_tokens():
+        if t["revoked_at"] is None:
+            control.add_route(t["token_hash"], "default")
+
+
 def control_path_for(cfg) -> Path:
     # The live control DB file. Its parent (`.parent`) is the `control_dir`
     # passed to `ControlPlane.open(...)`, matching `hma serve`'s / main.py's

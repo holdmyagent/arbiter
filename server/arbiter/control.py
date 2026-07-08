@@ -122,18 +122,29 @@ class ControlPlane:
             (token_hash.encode(), tenant_id.encode(), str(epoch).encode()))
         return hmac.new(self._mac_key, msg, hashlib.sha256).hexdigest()
 
-    def _canonical_under_root(self, dir: str) -> str:
+    def _canonical_under_root(self, dir: str, *, require_under_root: bool = True) -> str:
         cand = Path(dir).resolve()
-        root = self._root.resolve()
         if not cand.is_absolute():
             raise ValueError(f"tenant dir must be absolute: {dir!r}")
-        if root not in cand.parents:
-            raise ValueError(f"tenant dir {cand} is not strictly under root {root}")
+        if require_under_root:
+            root = self._root.resolve()
+            if root not in cand.parents:
+                raise ValueError(f"tenant dir {cand} is not strictly under root {root}")
         return str(cand)
 
-    def create_tenant(self, tenant_id: str, dir: str) -> int:
+    def create_tenant(self, tenant_id: str, dir: str, *, allow_out_of_root: bool = False) -> int:
+        """§14 back-compat migration hook: `allow_out_of_root` skips ONLY the
+        under-tenants-root check, and ONLY for tenant_id == "default" — the sole
+        legitimate case (`migrate_to_multitenant` wrapping the pre-existing
+        single-tenant DB's dir, which lives outside `tenants_root` by
+        construction). Any other tenant_id ignores the flag and stays under the
+        strict layout (`hma tenant create` is never exempt). §15.7 dir-isolation
+        (`assert_dir_isolated` against every other LIVE tenant's dir) still runs
+        unconditionally either way — a default cell must not overlap another
+        tenant's dir any more than a normal one may."""
         _validate_tenant_id(tenant_id)
-        canonical = self._canonical_under_root(dir)
+        exempt = allow_out_of_root and tenant_id == "default"
+        canonical = self._canonical_under_root(dir, require_under_root=not exempt)
         with self._lock:
             # §15.7 dir isolation AT MINT: reject a dir that equals, nests under, or is
             # symlink/`..`-resolvable into any existing LIVE (non-tombstoned) tenant dir —

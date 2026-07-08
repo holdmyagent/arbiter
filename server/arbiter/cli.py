@@ -532,6 +532,17 @@ def admin_restore(backup_dir, config_path):
     click.echo("restore complete — in-flight approvals invalidated; agents must re-propose")
 
 
+@admin.command("migrate")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def admin_migrate(config_path):
+    """Wrap a single-tenant install as the 'default' cell (idempotent, §14)."""
+    from .provisioning import migrate_to_multitenant, tenants_root_for
+    cfg = Config.load(config_path)
+    migrate_to_multitenant(cfg, _control(cfg), tenants_root_for(cfg))
+    click.echo("migrated single-tenant DB to the 'default' cell "
+               "(legacy app_token + existing devices → default)")
+
+
 @main.group()
 def audit():
     """Audit-log utilities."""
