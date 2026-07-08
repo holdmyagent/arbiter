@@ -3,8 +3,6 @@
 the fleet (the auth-failure limiter is keyed on trusted_client_id, C3, and must
 never gate a request that SUCCESSFULLY authenticates)."""
 
-import asyncio
-
 from tests.isolation.conftest import bearer_hdr, mint_into_cell
 
 
@@ -37,7 +35,10 @@ def test_create_limiter_is_per_tenant(two_tenant):
         async with tt.registry.hold(a.tenant_id, a.epoch) as alice_cell, \
                    tt.registry.hold(b.tenant_id, b.epoch) as bob_cell:
             return alice_cell, bob_cell
-    alice_cell, bob_cell = asyncio.run(_cells())
+    # Drive the live registry on the app's own loop: its asyncio locks are bound
+    # to the lifespan/portal loop, so a fresh asyncio.run() here would raise
+    # "bound to a different event loop" under Python 3.11.
+    alice_cell, bob_cell = tt.client.portal.call(_cells)
     assert alice_cell.create_limiter is not bob_cell.create_limiter, \
         "alice and bob share one create_limiter object — not per-cell"
 
@@ -50,8 +51,10 @@ def test_create_limiter_survives_identically_named_agents_across_tenants(two_ten
     the shared name is irrelevant — bob is untouched."""
     tt = two_tenant
     a, b = tt.tenants["alice"], tt.tenants["bob"]
-    alice_bearer = mint_into_cell(tt.control, tt.registry, "alice", a.epoch, "agent", "agent")
-    bob_bearer = mint_into_cell(tt.control, tt.registry, "bob", b.epoch, "agent", "agent")
+    alice_bearer = mint_into_cell(tt.control, tt.registry, "alice", a.epoch, "agent", "agent",
+                                  portal=tt.client.portal)
+    bob_bearer = mint_into_cell(tt.control, tt.registry, "bob", b.epoch, "agent", "agent",
+                                portal=tt.client.portal)
     alice_hdr, bob_hdr = bearer_hdr(alice_bearer), bearer_hdr(bob_bearer)
 
     saw_429 = False
