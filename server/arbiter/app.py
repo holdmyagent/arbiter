@@ -11,8 +11,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import (Identity, SlidingWindowLimiter, require_role,
-                   resolve_identity, trusted_client_id)
+from .auth import SlidingWindowLimiter, resolve_identity, trusted_client_id
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .notify.outbox import Outbox
@@ -169,8 +168,9 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         return {"ok": True, "db": True}
 
     @app.get("/v1/keys")
-    def keys():
-        return public_jwks(kid, signing_key)
+    def keys(ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        _identity, cell = ctx
+        return cell.signer.public_jwks()
 
     @app.get("/v1/audit/export")
     async def audit_export(request: Request, format: str = "jsonl"):
@@ -368,21 +368,24 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         cell.db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
 
-    @app.post("/v1/devices", dependencies=[Depends(require_role("app"))])
-    async def register(body: DeviceRegister):
-        dev = db.register_device(body.apns_token, body.name, body.min_severity,
-                                  body.notifications_enabled, body.sound,
-                                  severities=body.severities, badge=body.badge)
-        await hub.publish("device.updated", "device", dev)
+    @app.post("/v1/devices")
+    async def register(body: DeviceRegister, ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        dev = cell.db.register_device(body.apns_token, body.name, body.min_severity,
+                                      body.notifications_enabled, body.sound,
+                                      severities=body.severities, badge=body.badge)
+        await cell.hub.publish("device.updated", "device", dev)
         return dev
 
-    @app.get("/v1/devices", dependencies=[Depends(require_role("app"))])
-    def devices():
-        return db.list_devices()
+    @app.get("/v1/devices")
+    def devices(ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        return cell.db.list_devices()
 
-    @app.get("/v1/notify/policy", dependencies=[Depends(require_role("app"))])
-    def notify_policy():
-        return dict(cfg.notify_severities)
+    @app.get("/v1/notify/policy")
+    def notify_policy(ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        return dict(cell.dispatcher.cfg.notify_severities)
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
