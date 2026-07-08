@@ -46,17 +46,27 @@ class FakeSender:
 
 
 def mint_into_cell(control, registry, tenant_id: str, epoch: int,
-                   name: str, role: str) -> str:
+                   name: str, role: str, *, portal=None) -> str:
     """Mint a bearer into a tenant, §12 order: cell row FIRST, router row SECOND.
     Runs the cell write through the real registry.hold path (real cell.db, real
-    on-disk filename) so setup never opens a second connection on the cell file."""
+    on-disk filename) so setup never opens a second connection on the cell file.
+
+    `portal`: when a live `two_tenant` registry is being minted into from a test
+    body, pass `tt.client.portal`. The registry's asyncio locks bind to the
+    lifespan/portal loop, so a bare `asyncio.run()` here spins a *different* loop
+    and Python 3.11 raises "bound to a different event loop". Routing through the
+    portal keeps every registry touch on one loop. For pre-client fixture
+    provisioning (no portal yet) the default `asyncio.run` path is correct."""
     bearer = f"hma_{role}_{secrets.token_hex(24)}"
     th = hashlib.sha256(bearer.encode()).hexdigest()
 
     async def _cell_write():
         async with registry.hold(tenant_id, epoch) as cell:
             cell.db.create_token(name, role, th)  # cell row first
-    asyncio.run(_cell_write())
+    if portal is not None:
+        portal.call(_cell_write)
+    else:
+        asyncio.run(_cell_write())
     control.add_route(th, tenant_id)               # router row second
     return bearer
 
