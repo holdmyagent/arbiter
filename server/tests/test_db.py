@@ -75,3 +75,37 @@ def test_ping_takes_the_lock_and_raises_when_closed(db):
     db.conn.close()
     with pytest.raises(sqlite3.ProgrammingError):
         db.ping()
+
+from datetime import timedelta, timezone
+from datetime import datetime as _dt
+from arbiter.db import Database
+from arbiter.models import RequestCreate
+
+def _past_iso(seconds=60):
+    return (_dt.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+def test_expire_request_with_verdict_atomic_flip():
+    db = Database(":memory:")
+    req = db.create_request(RequestCreate(title="t", ttl_seconds=300))
+    # force it overdue
+    with db._lock:
+        db.conn.execute("UPDATE requests SET expires_at=? WHERE id=?",
+                        (_past_iso(), req["id"]))
+        db.conn.commit()
+    out = db.expire_request_with_verdict(req["id"], "JWS.B64.SIG", "default:abc123de")
+    assert out is not None
+    assert out["status"] == "expired"
+    assert out["verdict_jws"] == "JWS.B64.SIG"
+    assert out["verdict_kid"] == "default:abc123de"
+    events = [a["event"] for a in db.get_audit(req["id"])]
+    assert "expired" in events and "verdict_issued" in events
+
+def test_expire_request_with_verdict_loses_to_decision():
+    db = Database(":memory:")
+    req = db.create_request(RequestCreate(title="t", ttl_seconds=300))
+    # a decision won first: row is now 'approved', not 'pending'
+    db.set_decision(req["id"], "approve", "phone")
+    out = db.expire_request_with_verdict(req["id"], "X", "default:kid")
+    assert out is None                      # guard refused: not pending
+    assert db.get_request(req["id"])["status"] == "approved"
+    assert db.get_request(req["id"])["verdict_jws"] is None
