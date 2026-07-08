@@ -11,6 +11,7 @@ import heapq
 import itertools
 import logging
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 from .notify.outbox import Outbox
@@ -117,3 +118,92 @@ class ExpiryScheduler:
         t = asyncio.create_task(_run())
         self._bg.add(t)
         t.add_done_callback(self._bg.discard)
+
+    async def _fire_due(self) -> None:
+        now = time.time()
+        due = []
+        while self._heap and self._heap[0][0] <= now:
+            due.append(heapq.heappop(self._heap))
+        if not due:
+            return
+        by_tenant: "OrderedDict[str, list]" = OrderedDict()
+        for entry in due:
+            by_tenant.setdefault(entry[2], []).append(entry)
+        deferred = []
+        for entries in by_tenant.values():
+            head, tail = entries[:self.per_tenant_batch], entries[self.per_tenant_batch:]
+            for entry in head:
+                await self._fire_one(entry)
+            deferred.extend(tail)               # over-cap this pass -> next pass (fairness)
+        for entry in deferred:
+            heapq.heappush(self._heap, entry)
+        if deferred:
+            self._wake.set()                    # loop again promptly to drain fairly
+
+    def _schedule_row(self, tenant_id: str, row: dict) -> None:
+        if row["status"] == "pending":
+            self.schedule(row["expires_at"], tenant_id, row["id"])
+        elif row["status"] == "approved" and row["consumed_at"] is None:
+            deadline = datetime.fromisoformat(row["decided_at"]).timestamp() \
+                + self.approval_ttl_seconds
+            heapq.heappush(self._heap,
+                           (deadline, next(self._seq), tenant_id, row["id"]))
+            self._wake.set()
+
+    async def _recover(self, cell) -> None:
+        """Re-sign rows flipped to 'expired' whose verdict never committed, so a
+        crash between an old two-commit flip and its sign is not a permanent
+        verdict-404 (spec §6 recovery clause)."""
+        for row in cell.db.expired_without_verdict():
+            jws = sign_verdict(cell.signer, request_id=row["id"],
+                               action_hash=row["action_hash"], decision="expired",
+                               decided_at=row["expires_at"],
+                               approval_ttl=self.approval_ttl_seconds,
+                               tenant_id=cell.tenant_id)
+            cell.db.set_verdict(row["id"], jws, cell.signer.kid)
+            cell.db.add_audit(row["id"], "verdict_issued",
+                              {"decision": "expired", "kid": cell.signer.kid,
+                               "recovered": True})
+            self._spawn_outbox(cell.tenant_id, cell.epoch, "request.expired",
+                               cell.db.get_request(row["id"]))
+
+    async def seed(self) -> None:
+        """Bounded startup scan: open each cell (one at a time via hold, so at
+        most one transient cell FD beyond the hot set), recover stranded expired
+        rows, and schedule every open deadline. Yields between tenants."""
+        for t in self.control.list_tenants():
+            try:
+                async with self.registry.hold(t["tenant_id"], t["epoch"]) as cell:
+                    await self._recover(cell)
+                    for row in cell.db.open_deadline_rows():
+                        self._schedule_row(t["tenant_id"], row)
+            except Exception as exc:
+                log.warning("seed scan failed tenant=%s: %s", t["tenant_id"], exc)
+            await asyncio.sleep(0)
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._wake.set()
+
+    async def run(self) -> None:
+        await self.seed()
+        self._last_rescan = time.monotonic()
+        while not self._stopped:
+            wait = self._time_until_next()
+            timeout = self.rescan_interval if wait is None \
+                else min(wait, self.rescan_interval)
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+            self._wake.clear()
+            if self._stopped:
+                break
+            await self._fire_due()
+            if time.monotonic() - self._last_rescan >= self.rescan_interval:
+                self._last_rescan = time.monotonic()
+                await self._rescan_tick()
+
+    async def _rescan_tick(self) -> None:
+        # TODO(F6): replaced by the real periodic-rescan body + its own test.
+        return
