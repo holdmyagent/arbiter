@@ -67,22 +67,27 @@ class ExpiryScheduler:
                 return t["epoch"]
         return None
 
-    async def _fire_one(self, entry) -> None:
+    async def _fire_one(self, entry, now: datetime | None = None) -> list[dict]:
+        """Returns the rows this firing actually flipped (usually 0 or 1; the
+        approved-unconsumed branch can flip more than its own heap entry) --
+        the sync scheduler_tick test/ops seam (§16) collects these across a
+        drain pass."""
         _, _, tenant_id, request_id = entry
         epoch = self._current_epoch(tenant_id)
         if epoch is None:
-            return
+            return []
         try:
             async with self.registry.hold(tenant_id, epoch) as cell:
                 row = cell.db.get_request(request_id)
                 if row is not None:
-                    await self._process_row(cell, row)
+                    return await self._process_row(cell, row, now=now)
         except Exception as exc:
             log.warning("expiry firing failed tenant=%s rid=%s: %s",
                         tenant_id, request_id, exc)
+        return []
 
-    async def _process_row(self, cell, row) -> None:
-        now = _now()
+    async def _process_row(self, cell, row, now: datetime | None = None) -> list[dict]:
+        now = now or _now()
         if row["status"] == "pending":
             jws = sign_verdict(cell.signer, request_id=row["id"],
                                action_hash=row["action_hash"], decision="expired",
@@ -93,12 +98,17 @@ class ExpiryScheduler:
                 row["id"], jws, cell.signer.kid, now)
             if updated is not None:                    # None => a decision won the race
                 self._emit_expired(cell, updated)
+                return [updated]
+            return []
         elif row["status"] == "approved" and row["consumed_at"] is None:
             # staleness deadline: flip approved-unconsumed, KEEP the original
             # decision verdict (shipped expire_stale_approvals). Emit for every
             # row this call flipped (its own heap entry, if any, becomes a no-op).
-            for flipped in cell.db.expire_stale_approvals(self.approval_ttl_seconds, now):
+            flipped_rows = cell.db.expire_stale_approvals(self.approval_ttl_seconds, now)
+            for flipped in flipped_rows:
                 self._emit_expired(cell, flipped)
+            return flipped_rows
+        return []
 
     def _emit_expired(self, cell, row) -> None:
         cell.hub.publish({"event": "request.expired", "request": row})
@@ -119,26 +129,34 @@ class ExpiryScheduler:
         self._bg.add(t)
         t.add_done_callback(self._bg.discard)
 
-    async def _fire_due(self) -> None:
-        now = time.time()
+    async def _fire_due(self, now: float | None = None) -> list[dict]:
+        """now: injectable wall-clock (epoch seconds) for the heap-due check AND
+        the DB guard passed to every firing in this pass, so a caller (the
+        scheduler_tick test/ops seam, §16) can drive a single consistent clock
+        through the whole pass. Defaults to the real clock for run()'s own use.
+        Returns every row this pass actually flipped."""
+        now_ts = time.time() if now is None else now
         due = []
-        while self._heap and self._heap[0][0] <= now:
+        while self._heap and self._heap[0][0] <= now_ts:
             due.append(heapq.heappop(self._heap))
         if not due:
-            return
+            return []
+        now_dt = datetime.fromtimestamp(now_ts, tz=timezone.utc)
         by_tenant: "OrderedDict[str, list]" = OrderedDict()
         for entry in due:
             by_tenant.setdefault(entry[2], []).append(entry)
         deferred = []
+        fired: list[dict] = []
         for entries in by_tenant.values():
             head, tail = entries[:self.per_tenant_batch], entries[self.per_tenant_batch:]
             for entry in head:
-                await self._fire_one(entry)
+                fired.extend(await self._fire_one(entry, now=now_dt))
             deferred.extend(tail)               # over-cap this pass -> next pass (fairness)
         for entry in deferred:
             heapq.heappush(self._heap, entry)
         if deferred:
             self._wake.set()                    # loop again promptly to drain fairly
+        return fired
 
     def _schedule_row(self, tenant_id: str, row: dict) -> None:
         if row["status"] == "pending":

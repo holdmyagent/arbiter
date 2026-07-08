@@ -10,7 +10,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi.testclient import TestClient
 
 # ── SUT aliases (single edit point if a producing group renames a path) ──────
-from arbiter.config import Config
 from arbiter.db import Database
 from arbiter.control import ControlPlane
 from arbiter.registry import TenantRegistry, Cell
@@ -110,7 +109,9 @@ def two_tenant(cfg, tmp_path) -> TwoTenant:
     sender = FakeSender()
     registry = TenantRegistry(control, cfg=cfg, sender=sender)
     handles = _provision(control, registry, root)
-    app = create_app(cfg, registry, control, sender=sender)
+    scheduler = ExpiryScheduler(registry, control,
+                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+    app = create_app(cfg, registry, control, sender=sender, scheduler=scheduler)
     client = TestClient(app)
     client.__enter__()  # run lifespan (starts the ExpiryScheduler)
     try:
