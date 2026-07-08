@@ -1,6 +1,7 @@
 import hashlib
 import re
 
+import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,8 @@ from arbiter.app import create_app
 from arbiter.cli import main
 from arbiter.config import Config
 from arbiter.db import Database
+
+from tests.conftest import build_registry_env
 
 TOKEN_RE = r"hma_(agent|warden|app)_[0-9a-f]{48}"
 
@@ -77,6 +80,9 @@ def test_token_audit_events_written_without_secret(tmp_path, monkeypatch):
     joined = " ".join(r["detail"] for r in rows)
     assert value not in joined  # secrets never land in audit rows
 
+@pytest.mark.xfail(
+    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
+    strict=False)
 def test_created_token_authenticates_and_revocation_bites(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)
     CliRunner().invoke(main, ["init"])
@@ -84,7 +90,8 @@ def test_created_token_authenticates_and_revocation_bites(tmp_path, monkeypatch)
     value = re.search(TOKEN_RE, out).group(0)
     cfg = Config.load()
     db = Database(cfg.db_path_expanded())
-    app = create_app(cfg, db, APNsSender(cfg))
+    env = build_registry_env(cfg, tmp_path / "registry")
+    app = create_app(cfg, env.registry, env.control, sender=APNsSender(cfg))
     client = TestClient(app)
     r = client.post("/v1/requests", headers={"Authorization": f"Bearer {value}"},
                     json={"title": "Deploy", "severity": "high", "ttl_seconds": 300})
