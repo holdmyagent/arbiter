@@ -7,7 +7,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 
-from arbiter.signing import load_or_create_keypair, public_jwks, sign_verdict
+from arbiter.signing import Signer, load_or_create_keypair, public_jwks, sign_verdict
 
 
 def _raw_pub(key) -> bytes:
@@ -60,51 +60,56 @@ def test_race_loser_loads_winners_key(tmp_path, monkeypatch):
 
 def test_sign_verdict_round_trips_with_pyjwt(tmp_path):
     kid, key = load_or_create_keypair(tmp_path)
-    jws = sign_verdict(kid, key, request_id="r1", action_hash="ab" * 32,
+    signer = Signer(tenant_id="acme", kid=kid, signing_key=key)
+    jws = sign_verdict(signer, request_id="r1", action_hash="ab" * 32,
                        decision="approved", decided_at="2026-07-06T00:00:00+00:00",
-                       approval_ttl_seconds=600)
+                       approval_ttl=600, tenant_id="acme")
     assert jwt.get_unverified_header(jws)["kid"] == kid
-    decoded = jwt.decode(jws, key.public_key(), algorithms=["EdDSA"], audience="hma-verdict")
+    decoded = jwt.decode(jws, key.public_key(), algorithms=["EdDSA"], audience="hma-verdict:acme")
     assert set(decoded) == {"iss", "aud", "jti", "iat", "hma"}
-    assert decoded["iss"] == "hma" and decoded["aud"] == "hma-verdict"
+    assert decoded["iss"] == "hma" and decoded["aud"] == "hma-verdict:acme"
     assert decoded["jti"] == "r1" and isinstance(decoded["iat"], int)
     assert decoded["hma"] == {"request_id": "r1", "action_hash": "ab" * 32,
                               "decision": "approved",
                               "decided_at": "2026-07-06T00:00:00+00:00",
-                              "approval_ttl_seconds": 600}
+                              "approval_ttl_seconds": 600,
+                              "tenant_id": "acme"}
 
 
 def test_action_hash_none_signs_verifiably_unbound(tmp_path):
     kid, key = load_or_create_keypair(tmp_path)
-    jws = sign_verdict(kid, key, request_id="r2", action_hash=None,
+    signer = Signer(tenant_id="acme", kid=kid, signing_key=key)
+    jws = sign_verdict(signer, request_id="r2", action_hash=None,
                        decision="expired", decided_at="2026-07-06T00:00:00+00:00",
-                       approval_ttl_seconds=600)
-    decoded = jwt.decode(jws, key.public_key(), algorithms=["EdDSA"], audience="hma-verdict")
+                       approval_ttl=600, tenant_id="acme")
+    decoded = jwt.decode(jws, key.public_key(), algorithms=["EdDSA"], audience="hma-verdict:acme")
     assert decoded["hma"]["action_hash"] is None
 
 
 def test_wrong_key_fails_verification(tmp_path):
     kid, key = load_or_create_keypair(tmp_path / "signer")
     _, other = load_or_create_keypair(tmp_path / "other")
-    jws = sign_verdict(kid, key, request_id="r3", action_hash=None,
+    signer = Signer(tenant_id="acme", kid=kid, signing_key=key)
+    jws = sign_verdict(signer, request_id="r3", action_hash=None,
                        decision="approved", decided_at="2026-07-06T00:00:00+00:00",
-                       approval_ttl_seconds=600)
+                       approval_ttl=600, tenant_id="acme")
     with pytest.raises(jwt.InvalidSignatureError):
-        jwt.decode(jws, other.public_key(), algorithms=["EdDSA"], audience="hma-verdict")
+        jwt.decode(jws, other.public_key(), algorithms=["EdDSA"], audience="hma-verdict:acme")
 
 
 def test_tampered_payload_fails_verification(tmp_path):
     kid, key = load_or_create_keypair(tmp_path)
-    jws = sign_verdict(kid, key, request_id="r4", action_hash=None,
+    signer = Signer(tenant_id="acme", kid=kid, signing_key=key)
+    jws = sign_verdict(signer, request_id="r4", action_hash=None,
                        decision="denied", decided_at="2026-07-06T00:00:00+00:00",
-                       approval_ttl_seconds=600)
+                       approval_ttl=600, tenant_id="acme")
     h, p, s = jws.split(".")
     body = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
     body["hma"]["decision"] = "approved"
     p2 = base64.urlsafe_b64encode(json.dumps(body).encode()).rstrip(b"=").decode()
     with pytest.raises(jwt.InvalidSignatureError):
         jwt.decode(f"{h}.{p2}.{s}", key.public_key(), algorithms=["EdDSA"],
-                   audience="hma-verdict")
+                   audience="hma-verdict:acme")
 
 
 # ── public_jwks ─────────────────────────────────────────────────────────────

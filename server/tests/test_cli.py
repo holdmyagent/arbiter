@@ -49,7 +49,6 @@ def test_gather_status_happy(client, cfg, app_headers):
     out = _gather_status(client, cfg.auth.app_token)
     assert out["ok"] is True and out["devices"] == [] and out["pending"] == []
 
-@_API_XFAIL
 def test_ask_approved(client, cfg, app_headers):
     def approve_soon():
         time.sleep(0.3)

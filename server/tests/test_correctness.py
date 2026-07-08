@@ -60,7 +60,6 @@ def test_db_decision_refuses_clock_expired(db, make):
     assert db.get_request(r["id"])["status"] == "pending"   # sweeper's job to flip it
 
 
-@_API_XFAIL
 def test_decide_expired_by_clock_409(client):
     rid = client.post("/v1/requests", headers=AGENT, json={"title": "t"}).json()["id"]
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
@@ -100,7 +99,6 @@ def test_idempotency_key_max_length_422(client):
     assert r.status_code == 422
 
 
-@_API_XFAIL
 def test_duplicate_pending_collapses_on_action_hash(client):
     canonical = '{"a":1}'
     ah = hashlib.sha256(canonical.encode()).hexdigest()

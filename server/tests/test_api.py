@@ -42,7 +42,6 @@ def test_create_and_push(client):
     assert r.status_code==200 and r.json()["status"]=="pending"
     assert len(client.sender.calls)==1
 
-@_API_XFAIL
 def test_list_and_decide(client):
     rid=_create(client).json()["id"]
     lst=client.get("/v1/requests?status=pending", headers={"Authorization":"Bearer test-app"})
@@ -66,7 +65,6 @@ def test_device_register(client):
     devices = client.db.list_devices()
     assert len(devices) == 1 and devices[0]["apns_token"] == "abc123"
 
-@_API_XFAIL
 def test_decision_records_device_name(client):
     client.db.register_device("tokX", "Kevins-iPhone")
     rid = _create(client).json()["id"]
@@ -79,7 +77,6 @@ def test_create_invalid_severity_returns_422(client):
                     json={"title": "T", "severity": "extreme", "ttl_seconds": 300})
     assert r.status_code == 422
 
-@_API_XFAIL
 def test_decide_invalid_decision_value_returns_422(client):
     rid = _create(client).json()["id"]
     r = client.post(f"/v1/requests/{rid}/decision",
