@@ -42,6 +42,12 @@ class VerdictVerifier:
         self._last_seq = last_seq
         self._audience = f"hma-verdict:{tenant_id}"
 
+    @property
+    def pinned(self) -> dict[str, bytes]:
+        """Read-only view of the local trust anchor: kid -> raw public-key
+        bytes, including any kids adopted via adopt_rotation (§16)."""
+        return dict(self._pinned)
+
     def _pubkey(self, kid: str) -> Ed25519PublicKey:
         raw = self._pinned.get(kid)
         if raw is None:
