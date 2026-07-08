@@ -153,6 +153,7 @@ name = "test-warden"
 arbiter_url = "http://127.0.0.1:8000"
 arbiter_token = "env:HMA_WARDEN_TOKEN"
 arbiter_pubkey = "kid1:bm90LWEtcmVhbC1rZXk"
+arbiter_tenant = "test-tenant"
 
 [agents.test]
 token = "env:WARDEN_AGENT_TEST"

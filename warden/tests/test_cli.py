@@ -33,7 +33,7 @@ class StubArbiter:
     """Minimal HTTP arbiter: canned /v1/keys + /health on an ephemeral port."""
 
     def __init__(self):
-        self.kid = "abcd1234"
+        self.kid = "acme:abcd1234"
         self.x = _ed25519_x()
         jwks = {"keys": [{"kty": "OKP", "crv": "Ed25519",
                           "kid": self.kid, "x": self.x}]}
@@ -77,10 +77,14 @@ def stub_arbiter():
     stub.close()
 
 
+WARDEN_TOKEN = "warden-token-value"
+
+
 def _init(stub, tmp_path) -> Path:
     cfg_path = tmp_path / "warden.toml"
     res = CliRunner().invoke(main, ["init", "--arbiter-url", stub.url,
-                                    "--config", str(cfg_path)])
+                                    "--config", str(cfg_path)],
+                             env={"HMA_WARDEN_TOKEN": WARDEN_TOKEN})
     assert res.exit_code == 0, res.output
     return cfg_path
 
@@ -90,11 +94,13 @@ def _init(stub, tmp_path) -> Path:
 def test_init_scaffolds_config_and_prints_token_once(stub_arbiter, tmp_path):
     cfg_path = tmp_path / "warden.toml"
     result = CliRunner().invoke(main, ["init", "--arbiter-url", stub_arbiter.url,
-                                       "--config", str(cfg_path)])
+                                       "--config", str(cfg_path)],
+                                env={"HMA_WARDEN_TOKEN": WARDEN_TOKEN})
     assert result.exit_code == 0, result.output
     assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
     text = cfg_path.read_text()
     assert f'arbiter_pubkey = "{stub_arbiter.kid}:{stub_arbiter.x}"' in text
+    assert 'arbiter_tenant = "acme"' in text
     assert 'arbiter_token = "env:HMA_WARDEN_TOKEN"' in text
     assert "[actions.echo]" in text
     token_path = tmp_path / "agent.default.token"
@@ -114,8 +120,18 @@ def test_init_refuses_to_overwrite(stub_arbiter, tmp_path):
 
 def test_init_fails_cleanly_when_arbiter_down(tmp_path):
     result = CliRunner().invoke(main, ["init", "--arbiter-url", "http://127.0.0.1:9",
-                                       "--config", str(tmp_path / "warden.toml")])
+                                       "--config", str(tmp_path / "warden.toml")],
+                                env={"HMA_WARDEN_TOKEN": WARDEN_TOKEN})
     assert result.exit_code != 0
+    assert not (tmp_path / "warden.toml").exists()
+
+
+def test_init_fails_cleanly_when_warden_token_unset(stub_arbiter, tmp_path):
+    result = CliRunner().invoke(main, ["init", "--arbiter-url", stub_arbiter.url,
+                                       "--config", str(tmp_path / "warden.toml")],
+                                env={"HMA_WARDEN_TOKEN": None})
+    assert result.exit_code != 0
+    assert "HMA_WARDEN_TOKEN" in result.output
     assert not (tmp_path / "warden.toml").exists()
 
 
@@ -126,7 +142,8 @@ def test_init_secret_files_are_0600_under_permissive_umask(stub_arbiter, tmp_pat
     try:
         cfg_path = tmp_path / "warden.toml"
         result = CliRunner().invoke(main, ["init", "--arbiter-url", stub_arbiter.url,
-                                           "--config", str(cfg_path)])
+                                           "--config", str(cfg_path)],
+                                    env={"HMA_WARDEN_TOKEN": WARDEN_TOKEN})
         assert result.exit_code == 0, result.output
     finally:
         os.umask(old_umask)
@@ -218,13 +235,20 @@ def test_doctor_fails_on_unresolvable_ref_and_never_prints_values(
 
 
 def test_doctor_fails_on_pinned_key_mismatch(stub_arbiter, tmp_path, monkeypatch):
+    """A key-only drift (e.g. a legitimate rotation) is tolerated as long as
+    the served key's tenant still matches the paired tenant — that's the
+    "or" leniency clause. What doctor must still catch is a genuine
+    mismatch: the exact pin no longer matches AND the tenant doesn't
+    either (stale pairing / wrong arbiter entirely)."""
     cfg_path = _init(stub_arbiter, tmp_path)
     monkeypatch.setenv("HMA_WARDEN_TOKEN", "warden-token-value")
-    cfg_path.write_text(cfg_path.read_text().replace(
-        f'"{stub_arbiter.kid}:', '"wrongkid:'))
+    text = cfg_path.read_text().replace(
+        f'"{stub_arbiter.kid}:', '"wrongkid:')
+    text = text.replace('arbiter_tenant = "acme"', 'arbiter_tenant = "wrong-tenant"')
+    cfg_path.write_text(text)
     result = CliRunner().invoke(main, ["doctor", "--config", str(cfg_path)])
     assert result.exit_code == 1
-    assert "key mismatch" in result.output
+    assert "mismatch" in result.output
 
 
 def test_doctor_fails_when_arbiter_unreachable(stub_arbiter, tmp_path, monkeypatch):

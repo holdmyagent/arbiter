@@ -129,7 +129,13 @@ class VerdictVerifier:
         if served.get(new_kid) != new_x:
             raise VerdictError(
                 "new key not present in served /v1/keys set (candidate material required)")
-        raw = base64.urlsafe_b64decode(new_x + "=" * (-len(new_x) % 4))
+        # Eager Ed25519 shape validation: fail loudly here, never as a bare
+        # ValueError deferred to the first verify() against this new pin.
+        try:
+            raw = base64.urlsafe_b64decode(new_x + "=" * (-len(new_x) % 4))
+            Ed25519PublicKey.from_public_bytes(raw)
+        except ValueError as exc:
+            raise VerdictError(f"rotation record new key bytes invalid: {exc}") from exc
         self._pinned[new_kid] = raw
         self._last_seq = seq
         return new_kid
