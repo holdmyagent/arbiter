@@ -1,19 +1,18 @@
 """Verdict verification — the warden's trust anchor.
 
-The pinned arbiter public key is a "kid:b64url" string (kid = first 8 hex of
-sha256(raw public bytes); b64url = unpadded base64url of the 32 raw Ed25519
-public bytes — identical to the JWKS `x` value served at GET /v1/keys).
+The warden trusts ONLY locally pinned public-key bytes (from `hma-warden init`),
+keyed by kid = f"{tenant_id}:{hash8}". A verdict must (a) carry a header kid that
+is a LOCAL pin, (b) verify under that pin's bytes, (c) have aud == "hma-verdict:
+{paired-tenant}" AND hma.tenant_id == paired-tenant — so a neighbour's verdict is
+a loud rejection even if the raw keys ever coincide (§7, §15.8/9).
 """
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-AUDIENCE = "hma-verdict"
 
 
 class VerdictError(Exception):
@@ -30,16 +29,20 @@ class Verdict:
 
 
 class VerdictVerifier:
-    def __init__(self, pubkey: str):
-        try:
-            kid, b64 = pubkey.split(":", 1)
-            raw = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
-            key = Ed25519PublicKey.from_public_bytes(raw)
-        except Exception as exc:
-            raise VerdictError(
-                f"invalid pinned arbiter_pubkey (expected 'kid:b64url'): {exc}") from exc
-        self._kid = kid
-        self._key = key
+    def __init__(self, pinned: dict[str, bytes], tenant_id: str, *, last_seq: int = 0):
+        if not pinned:
+            raise VerdictError("no pinned keys — run 'hma-warden init'")
+        # Copy so adopt_rotation mutations do not alias the caller's dict.
+        self._pinned: dict[str, bytes] = dict(pinned)
+        self._tenant_id = tenant_id
+        self._last_seq = last_seq
+        self._audience = f"hma-verdict:{tenant_id}"
+
+    def _pubkey(self, kid: str) -> Ed25519PublicKey:
+        raw = self._pinned.get(kid)
+        if raw is None:
+            raise VerdictError(f"verdict kid {kid!r} is not a locally pinned key")
+        return Ed25519PublicKey.from_public_bytes(raw)
 
     def verify(self, jws: str, expected_request_id: str,
                expected_action_hash: str | None) -> Verdict:
@@ -47,16 +50,17 @@ class VerdictVerifier:
             header = jwt.get_unverified_header(jws)
         except jwt.InvalidTokenError as exc:
             raise VerdictError(f"malformed verdict token: {exc}") from exc
-        if header.get("kid") != self._kid:
-            raise VerdictError(
-                f"verdict kid {header.get('kid')!r} does not match pinned kid {self._kid!r}")
+        key = self._pubkey(header.get("kid"))       # LOCAL pin or VerdictError
         try:
-            payload = jwt.decode(jws, self._key, algorithms=["EdDSA"], audience=AUDIENCE)
+            payload = jwt.decode(jws, key, algorithms=["EdDSA"], audience=self._audience)
         except jwt.InvalidTokenError as exc:
             raise VerdictError(f"verdict signature/claims invalid: {exc}") from exc
         hma = payload.get("hma")
         if not isinstance(hma, dict):
             raise VerdictError("verdict missing 'hma' claim")
+        if hma.get("tenant_id") != self._tenant_id:
+            raise VerdictError(
+                f"verdict tenant_id {hma.get('tenant_id')!r} != paired {self._tenant_id!r}")
         try:
             v = Verdict(
                 request_id=hma["request_id"],
@@ -81,5 +85,5 @@ class VerdictVerifier:
             decided = decided.replace(tzinfo=timezone.utc)
         if decided + timedelta(seconds=v.approval_ttl_seconds) < datetime.now(timezone.utc):
             raise VerdictError(
-                f"verdict stale: decided_at {v.decided_at} + {v.approval_ttl_seconds}s has passed")
+                f"verdict stale: decided_at {v.decided_at} + {v.approval_ttl_seconds}s passed")
         return v
