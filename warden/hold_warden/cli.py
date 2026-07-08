@@ -1,6 +1,7 @@
 """hma-warden CLI: init | serve | doctor | hash."""
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import socket
@@ -20,11 +21,27 @@ from hold_warden.config import ConfigError, ParamValidationError, WardenConfig
 from hold_warden.db import WardenDB
 from hold_warden.secrets import SecretResolutionError, doctor_check, resolve
 from hold_warden.service import Orchestrator
-from hold_warden.verdict import VerdictVerifier
+from hold_warden.verdict import VerdictError, VerdictVerifier
 
 log = logging.getLogger("hold_warden.cli")
 
 DEFAULT_CONFIG = Path.home() / ".config" / "hold-warden" / "warden.toml"
+
+
+def _pinned_from_config(arbiter_pubkey: str) -> dict[str, bytes]:
+    """Decode config's single "kid:b64url" pin into VerdictVerifier's pin set.
+
+    TODO(multi-tenant CLI): warden.toml has no [warden] tenant_id yet, so
+    `serve` pairs against cfg.warden_name as a same-package stand-in until a
+    follow-up task wires a real tenant_id through init/config/doctor.
+    """
+    try:
+        kid, b64 = arbiter_pubkey.split(":", 1)
+        raw = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
+    except Exception as exc:
+        raise VerdictError(
+            f"invalid pinned arbiter_pubkey (expected 'kid:b64url'): {exc}") from exc
+    return {kid: raw}
 
 
 def _data_dir() -> Path:
@@ -247,7 +264,10 @@ def serve(config_path: Path) -> None:
         raise click.ClickException(
             f"cannot resolve warden.arbiter_token: {exc} - run `hma-warden doctor`")
     arbiter = ArbiterClient(cfg.arbiter_url, warden_token)
-    verifier = VerdictVerifier(cfg.arbiter_pubkey)
+    try:
+        verifier = VerdictVerifier(_pinned_from_config(cfg.arbiter_pubkey), cfg.warden_name)
+    except VerdictError as exc:
+        raise click.ClickException(str(exc))
     orch = Orchestrator(cfg, db, arbiter, verifier)
     app = create_asgi_app(orch, cfg)   # resolves [agents.*] token refs; fails loud
     stop = threading.Event()
