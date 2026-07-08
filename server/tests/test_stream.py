@@ -1,15 +1,8 @@
 import pytest
 
-# C1 migration (task-C1-brief): create_app no longer builds a `hub` — it's
-# removed per §15.1 (nothing tenant-scoped on app.state, and the old
-# single-process Hub isn't wired anywhere yet). The stream route accepts the
-# websocket (no `hub` touched) but 500s/errors once it tries `hub.subscribe()`
-# — ported by Group E's task E7 ("wire /v1/stream into create_app, drop the
-# process-global Hub, repoint publish sites"). test_stream_rejects_without_auth
-# is unaffected: the auth check closes the socket before `hub` is ever touched.
-_STREAM_XFAIL = pytest.mark.xfail(
-    reason="stream route reads the removed `hub` process-global; ported by task E7 (Group E)",
-    strict=False)
+# E7 (task-E7-brief): /v1/stream now delegates to run_stream against the
+# request's acquired cell.hub (no more process-global `hub`) — these tests
+# pass for real again.
 
 
 def test_stream_rejects_without_auth(client):
@@ -18,7 +11,6 @@ def test_stream_rejects_without_auth(client):
             pass
 
 
-@_STREAM_XFAIL
 def test_stream_emits_created_and_decided(client, agent_headers, app_headers):
     with client.websocket_connect("/v1/stream", headers=app_headers) as ws:
         rid = client.post("/v1/requests", headers=agent_headers, json={"title": "x"}).json()["id"]
@@ -29,7 +21,6 @@ def test_stream_emits_created_and_decided(client, agent_headers, app_headers):
         assert evt["event"] == "request.decided" and evt["request"]["status"] == "approved"
 
 
-@_STREAM_XFAIL
 def test_stream_emits_device_updated(client, app_headers):
     with client.websocket_connect("/v1/stream", headers=app_headers) as ws:
         client.post("/v1/devices", headers=app_headers, json={"apns_token": "t1", "name": "iPhone"})
@@ -37,7 +28,6 @@ def test_stream_emits_device_updated(client, app_headers):
         assert evt["event"] == "device.updated" and evt["device"]["name"] == "iPhone"
 
 
-@_STREAM_XFAIL
 def test_stream_heartbeat(cfg, tmp_path):
     from arbiter.apns import APNsSender
     from arbiter.app import create_app
