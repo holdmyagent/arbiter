@@ -253,18 +253,28 @@ def ensure_default_cell(cfg, control, tenants_root: Path) -> None:
     as before.
 
     Upgraded install that hasn't run `hma admin migrate` yet: a legacy
-    single-tenant DB already sits at `cfg.db_path_expanded()` with at least one
-    token (the live app_token, devices, etc). Minting an empty 'default' here
-    would register it at the WRONG dir and permanently strand the legacy data
-    (migrate's idempotency check would then see 'default' already registered
-    and no-op forever — the exact C1 back-compat break this closes). Instead,
-    wrap the legacy DB as 'default' via `migrate_to_multitenant`, so `hma
-    serve` does the right thing regardless of whether the operator ran migrate
-    first."""
+    single-tenant DB already sits at `cfg.db_path_expanded()` (the live
+    app_token, devices, pending requests, etc). Minting an empty 'default'
+    here would register it at the WRONG dir and permanently strand the legacy
+    data (migrate's idempotency check would then see 'default' already
+    registered and no-op forever — the exact C1 back-compat break this
+    closes). Instead, wrap the legacy DB as 'default' via
+    `migrate_to_multitenant`, so `hma serve` does the right thing regardless
+    of whether the operator ran migrate first.
+
+    The trigger is legacy_path EXISTENCE, not `list_tokens()` non-empty: the
+    canonical iOS-0.5.0 install path (`hma init` writes app_token to CONFIG
+    only, and device pairing calls `register_device`, not `create_token`)
+    leaves a legacy DB with devices/requests but ZERO token rows. In the
+    multi-tenant era, a genuinely fresh install never creates this db_path
+    file at all (all data lands under `cells/`), so file-existence alone
+    correctly distinguishes "upgraded install with legacy data" from "fresh
+    install" — any legacy DB, token rows or not, must be wrapped rather than
+    stranded."""
     if control.epoch_of("default") is not None:
         return
     legacy_path = Path(cfg.db_path_expanded())
-    if legacy_path.exists() and Database(str(legacy_path)).list_tokens():
+    if legacy_path.exists():
         migrate_to_multitenant(cfg, control, tenants_root)
         return
     default_dir = Path(tenants_root) / "default"

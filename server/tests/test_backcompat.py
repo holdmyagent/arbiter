@@ -5,6 +5,7 @@ import pytest
 from arbiter.config import Config
 from arbiter.control import ControlPlane
 from arbiter.db import Database
+from arbiter.models import RequestCreate
 from arbiter.provisioning import ensure_default_cell, migrate_to_multitenant
 
 
@@ -77,6 +78,52 @@ def test_ensure_default_cell_auto_migrates_upgraded_install(tmp_path):
     assert control.tenant_dir("default").resolve() == legacy.parent.resolve()
     assert control.resolve(_h("hma_app_live"))[0] == "default"
     assert not (tmp_path / "cells" / "default").exists()  # no empty default minted
+
+
+def test_ensure_default_cell_auto_migrates_device_only_install(tmp_path):
+    # The CANONICAL iOS-0.5.0 install: `hma init` writes app_token to CONFIG
+    # only (no DB token row), and device pairing calls `register_device`, not
+    # `create_token` — so list_tokens() == [] even though a phone is paired
+    # and (say) a request is pending. "default" is NOT yet registered. The
+    # gate must trigger on legacy DB EXISTENCE, not on token rows, or this
+    # install strands the paired device in an orphaned legacy dir forever.
+    legacy = tmp_path / "data" / "arbiter.sqlite3"
+    legacy.parent.mkdir(parents=True)
+    db = Database(str(legacy))
+    db.register_device("apns1", "iPhone")
+    db.create_request(RequestCreate(title="pending approval", ttl_seconds=300))
+    assert db.list_tokens() == []
+    cfg = Config.load(str(tmp_path / "absent.toml"))
+    cfg.server.db_path = str(legacy)
+    control = ControlPlane.open(tmp_path / "control", tmp_path / "cells")
+
+    ensure_default_cell(cfg, control, tmp_path / "cells")
+
+    assert control.epoch_of("default") is not None
+    # default is registered at the LEGACY dir, not a fresh cells/default —
+    # this is what keeps the paired device reachable via the config app_token
+    # (which auth.py special-cases straight to tenant_id="default").
+    assert control.tenant_dir("default").resolve() == legacy.parent.resolve()
+    assert len(Database(str(legacy)).list_devices()) == 1
+    assert not (tmp_path / "cells" / "default").exists()  # no empty default minted
+
+
+def test_ensure_default_cell_auto_migrates_requests_only_legacy_db(tmp_path):
+    # Any legacy data at all — even just a pending request, no tokens, no
+    # devices — must still be wrapped rather than stranded.
+    legacy = tmp_path / "data" / "arbiter.sqlite3"
+    legacy.parent.mkdir(parents=True)
+    db = Database(str(legacy))
+    db.create_request(RequestCreate(title="pending approval", ttl_seconds=300))
+    cfg = Config.load(str(tmp_path / "absent.toml"))
+    cfg.server.db_path = str(legacy)
+    control = ControlPlane.open(tmp_path / "control", tmp_path / "cells")
+
+    ensure_default_cell(cfg, control, tmp_path / "cells")
+
+    assert control.epoch_of("default") is not None
+    assert control.tenant_dir("default").resolve() == legacy.parent.resolve()
+    assert not (tmp_path / "cells" / "default").exists()
 
 
 def test_ensure_default_cell_fresh_install_mints_empty_default(tmp_path):
