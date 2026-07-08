@@ -1,4 +1,11 @@
+import json
+
+from fastapi.testclient import TestClient
+
+from arbiter.app import create_app
 from arbiter.web import make_session
+
+from tests.conftest import build_registry_env
 
 
 def _seed(client, tenant):
@@ -45,6 +52,43 @@ def test_export_requires_app_role_or_admin_session(client):
     # without depending on the unrelated, not-yet-ported login endpoint.
     client.cookies.set("hma_session", make_session(client.app_ref.state.cfg))
     assert client.get("/v1/audit/export").status_code == 200   # admin session -> default cell
+
+
+def test_export_disabled_default_blocks_session(client):
+    # A valid admin session must NOT reach a disabled default tenant: the
+    # session path re-reads control.is_disabled on every resolution, same as
+    # resolve_identity does for bearers, and denies with the same generic 403.
+    client.env.control.disable_tenant("default")
+    client.cookies.set("hma_session", make_session(client.app_ref.state.cfg))
+    assert client.get("/v1/audit/export").status_code == 403
+
+
+def test_policy_denied_and_rate_limited_events(cfg, tmp_path):
+    # Restored from the pre-C7 test_audit_export.py (it passed at base and was
+    # dropped by the C7 full-file replacement): policy_denied and rate_limited
+    # must land in the audit log with their detail payloads, not just surface
+    # as HTTP statuses (test_policy.py covers only the status codes). Adapted
+    # per-cell: the legacy agent token resolves to the default cell, whose db
+    # is env.default_db. Builds its own app (not the `client` fixture) because
+    # rate_limit_per_minute is baked into the cell's create_limiter at cell
+    # open, so cfg must be mutated before the first request opens the cell.
+    cfg.policy.deny_action_types = ["db.drop"]
+    cfg.policy.rate_limit_per_minute = 1
+    env = build_registry_env(cfg, tmp_path)
+    client = TestClient(create_app(cfg, env.registry, env.control))
+    agent = {"Authorization": "Bearer test-agent"}
+    assert client.post("/v1/requests", headers=agent,
+                       json={"title": "t", "action_type": "db.drop"}).status_code == 403
+    assert client.post("/v1/requests", headers=agent,
+                       json={"title": "t"}).status_code == 200
+    assert client.post("/v1/requests", headers=agent,
+                       json={"title": "t2"}).status_code == 429
+    rows = {a["event"]: a for a in env.default_db.list_audit(limit=500)}
+    assert "policy_denied" in rows and "rate_limited" in rows
+    denied = json.loads(rows["policy_denied"]["detail"])
+    assert denied["action_type"] == "db.drop" and denied["identity"] == "agent"
+    limited = json.loads(rows["rate_limited"]["detail"])
+    assert limited["identity"] == "agent"
 
 
 def test_export_unknown_format_422(client, app_headers):
