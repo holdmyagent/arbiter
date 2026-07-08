@@ -262,6 +262,17 @@ class ExpiryScheduler:
         now_ts = now.timestamp() if isinstance(now, datetime) else now
         return await self._fire_due(now=now_ts)
 
+    async def tick(self, now: datetime | float | None = None) -> list[dict]:
+        """Public §16 gate seam (I20): a bounded ONE-SHOT discover-then-fire
+        pass across every tenant, round-robin and per-tenant-batch-bounded so
+        one tenant's large due batch cannot starve another's due expiries
+        (§15.13/§6). Identical machinery to rescan() (discover via
+        open_deadline_rows, fire via _fire_due's per-tenant-grouped, batch-
+        capped pass) -- kept as a distinctly-named alias because the
+        fairness/FD-budget gate exercises this discover+fire contract
+        specifically, not the durability-rescan story rescan() is named for."""
+        return await self.rescan(now=now)
+
     async def recover(self, now: datetime | None = None) -> list[dict]:
         """Crash-recovery pass across every tenant cell: re-signs any row stuck
         at status='expired' with verdict_jws IS NULL (a crash between the flip

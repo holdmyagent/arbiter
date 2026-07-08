@@ -228,6 +228,22 @@ class TenantRegistry:
     def _open_cell_count(self) -> int:
         return sum(1 for v in self._map.values() if isinstance(v, _Entry))
 
+    # ── §16 FD-budget-gate seams (I20): thin public read-only accessors over
+    # the existing A8 FD-budget state -- no new accounting, just visibility
+    # for a gate that must observe the live open-cell count/headroom/limit.
+
+    def open_cell_count(self) -> int:
+        """Public accessor: number of currently live open _Entry cells."""
+        return self._open_cell_count()
+
+    def fd_headroom(self) -> int:
+        """Public accessor: the reserved-FD headroom constant (§15.13)."""
+        return self._headroom
+
+    def fd_budget(self) -> int:
+        """Public accessor: the RLIMIT_NOFILE soft limit the budget is checked against."""
+        return self._soft_rlimit
+
     def _active_stream_fds(self) -> int:
         return sum(self._stream_slots.values())
 
