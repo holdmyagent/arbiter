@@ -287,6 +287,32 @@ class Database:
                               (jws, kid, rid))
             self.conn.commit()
 
+    def expire_request_with_verdict(self, rid: str, jws: str, kid: str,
+                                    now: datetime | None = None) -> dict | None:
+        """Atomically flip an overdue pending row to 'expired', store its
+        'expired' verdict, and write both audit rows in ONE transaction. The
+        UPDATE guards on status='pending' AND expires_at<=now so a concurrent
+        set_decision (which moved the row to approved/denied) wins and this
+        returns None — closing the two-commit window that could otherwise strand
+        an expired row with no verdict (permanent verdict-404). Audit rows are
+        inlined (not add_audit) so the whole flip commits exactly once."""
+        now = now or _utcnow()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE requests SET status='expired', verdict_jws=?, verdict_kid=?"
+                " WHERE id=? AND status='pending' AND expires_at <= ?",
+                (jws, kid, rid, _iso(now)))
+            if cur.rowcount != 1:
+                self.conn.rollback()
+                return None
+            self.conn.execute("INSERT INTO audit VALUES (?,?,?,?,?)",
+                              (str(uuid.uuid4()), rid, "expired", _iso(now), json.dumps({})))
+            self.conn.execute("INSERT INTO audit VALUES (?,?,?,?,?)",
+                              (str(uuid.uuid4()), rid, "verdict_issued", _iso(now),
+                               json.dumps({"decision": "expired", "kid": kid})))
+            self.conn.commit()
+            return self.get_request(rid)
+
     def expire_due(self, now: datetime | None = None) -> list[dict]:
         now = now or _utcnow()
         with self._lock:
