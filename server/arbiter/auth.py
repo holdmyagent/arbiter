@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import logging
 import secrets
 import time
@@ -37,6 +38,30 @@ class SlidingWindowLimiter:
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+def trusted_client_id(request, cfg) -> str:
+    """A TRUSTED per-caller key for the fleet auth-failure limiter (§13). Never
+    key solely on a shared ingress IP (10 bad tokens would 429 the whole fleet).
+    With no configured proxies the direct peer IS the trusted id; behind a
+    configured trusted proxy, believe X-Forwarded-For and return the rightmost
+    hop that is NOT itself a trusted proxy (the real client)."""
+    peer = request.client.host if request.client else "unknown"
+    trusted = getattr(cfg.server, "trusted_proxies", None) or []
+    if not trusted:
+        return peer
+    def _in_trusted(ip_s: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(ip_s)
+        except ValueError:
+            return False
+        return any(ip in ipaddress.ip_network(c, strict=False) for c in trusted)
+    if not _in_trusted(peer):
+        return peer                      # peer isn't our proxy → XFF untrusted
+    xff = request.headers.get("x-forwarded-for", "")
+    for hop in reversed([h.strip() for h in xff.split(",") if h.strip()]):
+        if not _in_trusted(hop):
+            return hop
+    return peer
 
 def _check(request: Request, authorization: str | None, expected: tuple[str, ...], limiter: SlidingWindowLimiter):
     ip = _client_ip(request)

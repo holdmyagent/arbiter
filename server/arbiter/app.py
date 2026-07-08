@@ -11,7 +11,8 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, _resolve_identity_legacy
+from .auth import (Identity, SlidingWindowLimiter, _client_ip, require_role,
+                   _resolve_identity_legacy, resolve_identity, trusted_client_id)
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .policy import evaluate_create
@@ -39,6 +40,35 @@ async def _drain_all_outboxes(registry, control) -> None:
                 await Outbox(cell.db, cell.dispatcher).drain_startup()
         except Exception as exc:
             log.warning("startup outbox drain failed for %s: %s", tenant_id, exc)
+
+
+def require_cell(*roles: str):
+    """Authenticate the bearer → (Identity, Cell); pin the cell for the whole
+    request; release exactly once on EVERY exit path; enforce role. All
+    tenant state comes from the returned cell — never app.state. Module-level
+    (not nested in create_app): it closes over nothing tenant-scoped, reading
+    everything off request.app.state, so it can be imported directly (the
+    brief's inline sketch nests it inside create_app, but that would make it
+    unimportable as `arbiter.app.require_cell` — module scope is equivalent
+    and matches the require_role precedent in auth.py)."""
+    async def dep(request: Request):
+        st = request.app.state
+        key = trusted_client_id(request, st.cfg)
+        if st.auth_limiter.blocked(key):
+            raise HTTPException(429, "too many failed auth attempts")
+        try:
+            identity, cell = await resolve_identity(request, st.registry, st.control)
+        except HTTPException:
+            st.auth_limiter.record_failure(key)   # count the failed auth
+            raise
+        try:
+            if roles and identity.role not in roles:
+                st.auth_limiter.record_failure(key)
+                raise HTTPException(403, "forbidden")   # generic (§11)
+            yield (identity, cell)
+        finally:
+            st.registry.release(cell)                  # exactly once (§15.4)
+    return dep
 
 
 def create_app(cfg, registry, control, *, sender=None, scheduler=None,
