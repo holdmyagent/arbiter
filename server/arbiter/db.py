@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -85,8 +85,15 @@ def _migrate_6_to_7(conn):
       expires_at TEXT NOT NULL,
       consumed_at TEXT)""")
 
+def _migrate_7_to_8(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS notify_sent(
+      request_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      PRIMARY KEY(request_id, event))""")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
-              _migrate_5_to_6, _migrate_6_to_7]
+              _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8]
 
 class Database:
     def __init__(self, path: str):
@@ -195,6 +202,21 @@ class Database:
                 d["payload"] = json.loads(d["payload"])
                 out.append(d)
             return out
+
+    def notify_reserve(self, request_id: str, event: str) -> bool:
+        """Reserve the (request, event) dedupe key. Returns True iff newly
+        reserved; False if this outward action was already claimed. Reserve is
+        committed BEFORE the outward call so a re-drain (process restart) or a
+        cell reopened after churn observes the claim and never re-fires it."""
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "INSERT INTO notify_sent(request_id,event,sent_at) VALUES (?,?,?)",
+                    (request_id, event, _iso(_utcnow())))
+                self.conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
 
     def create_request(self, c, requested_by: str | None = None) -> dict:
         now = _utcnow()
