@@ -15,6 +15,7 @@ from .auth import (Identity, SlidingWindowLimiter, _client_ip, require_role,
                    _resolve_identity_legacy, resolve_identity, trusted_client_id)
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
+from .notify.outbox import Outbox
 from .policy import evaluate_create
 from .signing import public_jwks, sign_verdict
 from .web import build_router, session_valid
@@ -40,6 +41,21 @@ async def _drain_all_outboxes(registry, control) -> None:
                 await Outbox(cell.db, cell.dispatcher).drain_startup()
         except Exception as exc:
             log.warning("startup outbox drain failed for %s: %s", tenant_id, exc)
+
+
+def _spawn_publish(app, tenant_id, epoch, event, req):
+    """Background outbox publish that pins ITS OWN cell for its lifetime (§15.4):
+    the HTTP request's pin is gone by the time this runs, so re-acquire by object
+    via registry.hold and release exactly once. Held strongly in notify_tasks so
+    it isn't GC'd mid-flight."""
+    st = app.state
+    async def run():
+        async with st.registry.hold(tenant_id, epoch) as cell:
+            await Outbox(cell.db, cell.dispatcher).publish(event, req)
+    t = asyncio.create_task(run())
+    st.notify_tasks.add(t)
+    t.add_done_callback(st.notify_tasks.discard)
+    return t
 
 
 def require_cell(*roles: str):
@@ -185,12 +201,14 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
 
     @app.post("/v1/requests")
     async def create(body: RequestCreate,
-                     identity: Identity = Depends(require_role("agent", "warden"))):
+                     ctx: tuple = Depends(require_cell("agent", "warden"))):
+        identity, cell = ctx
+        db = cell.db
         # Legacy config tokens (identity.legacy, set by resolve_identity only
         # for config tokens) stay unstamped (requested_by NULL) for
         # back-compat reads; DB tokens are stamped with their name.
         requested_by = None if identity.legacy else identity.name
-        scopes = db.get_token_scopes(identity.name) if requested_by else None
+        scopes = None if identity.legacy else identity.scopes
         result = evaluate_create(cfg, identity, body, scopes=scopes)
         if not result.allowed:
             db.add_audit("-", "policy_denied",
@@ -198,12 +216,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                           "reason": result.reason})
             raise HTTPException(403, f"policy: {result.reason}")
         body.severity = result.effective_severity   # stored severity = effective
-        if create_limiter.blocked(identity.name):
+        if cell.create_limiter.blocked(identity.name):
             db.add_audit("-", "rate_limited", {"identity": identity.name})
             raise HTTPException(429, "rate limited")
-        create_limiter.record_failure(identity.name)  # count this create in the window
-        if body.callback_url and not callback_allowed(cfg.callback_allowlist,
-                                                      body.callback_url):
+        cell.create_limiter.record_failure(identity.name)  # count this create in the window
+        if body.callback_url and not callback_allowed(
+                cell.dispatcher.cfg.callback_allowlist, body.callback_url):
             raise HTTPException(422, "callback_url not in allowlist")
         # ttl clamp: out-of-range values are clamped, never rejected
         body.ttl_seconds = max(cfg.policy.ttl_min_seconds,
@@ -234,13 +252,14 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             if existing:
                 return existing
             raise
-        _spawn(outbox.publish("request.created", req))
-        await hub.publish("request.created", "request", req)
+        _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
+        await cell.hub.publish("request.created", "request", req)
         return req
 
-    @app.get("/v1/requests", dependencies=[Depends(require_role("app"))])
-    def list_(status: str | None = None):
-        return db.list_requests(status)
+    @app.get("/v1/requests")
+    def list_(status: str | None = None, ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        return cell.db.list_requests(status)
 
     @app.get("/v1/requests/{rid}")
     def get_(rid: str,

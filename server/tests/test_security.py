@@ -16,7 +16,6 @@ _DASHBOARD_XFAIL = pytest.mark.xfail(
            "pending the dashboard's per-cell port",
     strict=False)
 
-@_API_XFAIL
 def test_non_ascii_bearer_is_403_not_500(client):
     # httpx encodes plain str header values as ASCII client-side, so a literal
     # non-ASCII str never reaches the wire; bytes bypass that and land on the
@@ -56,7 +55,6 @@ def test_security_headers_on_html(client):
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-frame-options"] == "DENY"
 
-@_API_XFAIL
 def test_auth_failures_rate_limited(client):
     bad = {"Authorization": "Bearer wrong"}
     codes = [client.get("/v1/requests", headers=bad).status_code for _ in range(12)]

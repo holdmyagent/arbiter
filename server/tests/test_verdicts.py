@@ -155,7 +155,6 @@ def test_expiry_verdict_signed_by_sweep_pass(client):
     assert claims["hma"]["action_hash"] is None
 
 
-@_API_XFAIL
 def test_create_hash_mismatch_422(client):
     r = client.post("/v1/requests", headers=AGENT,
                     json={"title": "t", "canonical_action": "{}",

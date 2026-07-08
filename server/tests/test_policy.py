@@ -91,7 +91,6 @@ def test_evaluate_create_scopes(cfg):
 
 # ── HTTP wiring ──────────────────────────────────────────────────────────────
 
-@_API_XFAIL
 def test_create_policy_denied_403(cfg, tmp_path):
     cfg.policy.deny_action_types = ["db.drop"]
     client = _client(cfg, tmp_path)
@@ -101,7 +100,6 @@ def test_create_policy_denied_403(cfg, tmp_path):
     assert r.json()["detail"] == "policy: denied by policy"
 
 
-@_API_XFAIL
 def test_create_floor_raises_stored_severity(cfg, tmp_path):
     cfg.policy.severity_floors = {"deploy": "high"}
     client = _client(cfg, tmp_path)
@@ -127,7 +125,6 @@ def test_scoped_token_enforcement_403(cfg, tmp_path):
     assert ok.status_code == 200
 
 
-@_API_XFAIL
 def test_rate_limit_429_after_n_creates(cfg, tmp_path):
     cfg.policy.rate_limit_per_minute = 3
     client = _client(cfg, tmp_path)

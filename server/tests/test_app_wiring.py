@@ -1,5 +1,3 @@
-import pytest
-
 from arbiter.app import create_app
 from arbiter.apns import APNsSender
 
@@ -18,7 +16,6 @@ def test_health_ok_on_default_cell(client):
     assert r.status_code == 200 and r.json() == {"ok": True, "db": True}
 
 
-@pytest.mark.xfail(reason="route ported in C4", strict=False)
 def test_legacy_app_token_resolves_default(client, app_headers):
     # legacy cfg.auth.app_token → default cell; a protected route no longer 500s
     r = client.get("/v1/requests", headers=app_headers)
