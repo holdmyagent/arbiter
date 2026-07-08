@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi.testclient import TestClient
 
 # ── SUT aliases (single edit point if a producing group renames a path) ──────
@@ -15,13 +16,14 @@ from arbiter.control import ControlPlane
 from arbiter.registry import TenantRegistry, Cell
 from arbiter.scheduler import ExpiryScheduler
 from arbiter.auth import resolve_identity
-from arbiter.signing import sign_verdict
+from arbiter.signing import sign_verdict, load_or_create_signer, sign_rotation_record, Signer
 from arbiter.app import create_app
 
 __all__ = ["ControlPlane", "TenantRegistry", "Cell", "ExpiryScheduler",
            "resolve_identity", "sign_verdict", "create_app", "Database",
            "TwoTenant", "TenantHandle", "FakeSender", "mint_into_cell",
-           "bearer_hdr", "pubkey_for", "make_hash_bound"]
+           "bearer_hdr", "pubkey_for", "make_hash_bound",
+           "make_signer", "make_rotation_record", "served_jwks_for"]
 
 
 def bearer_hdr(bearer: str) -> dict:
@@ -62,6 +64,35 @@ def mint_into_cell(control, registry, tenant_id: str, epoch: int,
 def pubkey_for(client: TestClient, hdr: dict):
     """Fetch a tenant's own JWKS via a bearer belonging to that tenant."""
     return jwks_pubkey(client.get("/v1/keys", headers=hdr).json())
+
+
+# ── §16 rotation-trust-anchor helpers (I13) ──────────────────────────────────
+
+def make_signer(tenant_id: str, cell_dir) -> Signer:
+    """Alias for arbiter.signing.load_or_create_signer — a short name for tests
+    that mint a per-tenant Ed25519 signer directly (not through a live cell)."""
+    return load_or_create_signer(tenant_id, cell_dir)
+
+
+def _raw_pub(signer: Signer) -> bytes:
+    return signer.signing_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def make_rotation_record(old_signer: Signer, new_signer: Signer, tenant_id: str,
+                         seq: int, expires_at: int) -> str:
+    """Build a §16 rotation record signed by OLD_SIGNER's key (the local-pin
+    anchor), embedding NEW_SIGNER's kid + raw public bytes, SEQ, and an epoch-
+    seconds EXPIRES_AT — matching arbiter.signing.sign_rotation_record's actual
+    contract (old-key-signed, aud=hma-rotation:{tenant_id})."""
+    new_x = base64.urlsafe_b64encode(_raw_pub(new_signer)).rstrip(b"=").decode()
+    return sign_rotation_record(old_signer, new_kid=new_signer.kid, new_x=new_x,
+                                seq=seq, expires_at=expires_at, tenant_id=tenant_id)
+
+
+def served_jwks_for(*signers: Signer) -> dict:
+    """Build a served-/v1/keys-shaped JWKS from one or more signers. This is
+    candidate material ONLY (§16) — never a trust anchor on its own."""
+    return {"keys": [s.public_jwks()["keys"][0] for s in signers]}
 
 
 @dataclass
