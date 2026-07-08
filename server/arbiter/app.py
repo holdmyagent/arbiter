@@ -50,8 +50,11 @@ def _spawn_publish(app, tenant_id, epoch, event, req):
     it isn't GC'd mid-flight."""
     st = app.state
     async def run():
-        async with st.registry.hold(tenant_id, epoch) as cell:
-            await Outbox(cell.db, cell.dispatcher).publish(event, req)
+        try:
+            async with st.registry.hold(tenant_id, epoch) as cell:
+                await Outbox(cell.db, cell.dispatcher).publish(event, req)
+        except Exception as exc:
+            log.warning("background publish failed for %s: %s", tenant_id, exc)
     t = asyncio.create_task(run())
     st.notify_tasks.add(t)
     t.add_done_callback(st.notify_tasks.discard)
