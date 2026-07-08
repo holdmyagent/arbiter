@@ -92,7 +92,8 @@ def _add_pending(cell, expires_at):
 def _mk(*cells, **kw):
     reg = _Registry(*cells)
     ctl = _Control(*cells)
-    return ExpiryScheduler(reg, ctl, approval_ttl_seconds=900, **kw), reg, ctl
+    kw.setdefault("approval_ttl_seconds", 900)
+    return ExpiryScheduler(reg, ctl, **kw), reg, ctl
 
 # ── F3 ───────────────────────────────────────────────────────────────────
 def test_schedule_orders_by_deadline():
@@ -232,3 +233,39 @@ async def test_rescan_cursor_rolls_over_tenants():
     assert sched._rescan_cursor == 2               # advanced by seed_batch
     await sched._rescan_tick()
     assert sched._rescan_cursor == 4
+
+# ── F7 ───────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_cold_cell_stale_approval_flips_and_emits():
+    cell = _Cell("default", 1)
+    sched, reg, _ = _mk(cell, approval_ttl_seconds=1)
+    r = cell.db.create_request(RequestCreate(title="t", ttl_seconds=300))
+    cell.db.set_decision(r["id"], "approve", "phone")   # approved, unconsumed
+    original_verdict_kid = "kid-before"
+    cell.db.set_verdict(r["id"], "ORIGINAL.APPROVE.JWS", original_verdict_kid)
+    # force decided_at into the past so decided_at+approval_ttl is overdue
+    past = _iso(_now() - timedelta(seconds=10))
+    with cell.db._lock:
+        cell.db.conn.execute("UPDATE requests SET decided_at=? WHERE id=?", (past, r["id"]))
+        cell.db.conn.commit()
+    # the staleness deadline (decided_at+1s) fires
+    staleness = _iso(datetime.fromisoformat(past) + timedelta(seconds=1))
+    await sched._fire_one((_ts(staleness), 0, "default", r["id"]))
+
+    row = cell.db.get_request(r["id"])
+    assert row["status"] == "expired"
+    assert row["verdict_jws"] == "ORIGINAL.APPROVE.JWS"        # decision verdict KEPT
+    assert row["verdict_kid"] == original_verdict_kid
+    assert any(e.get("event") == "request.expired" for e in cell.hub.events)
+    for t in list(sched._bg):
+        await t
+    assert reg.refcount["default"] == 0
+
+@pytest.mark.asyncio
+async def test_seed_schedules_staleness_deadline_for_unconsumed_approved():
+    cell = _Cell("default", 1)
+    sched, _, _ = _mk(cell, approval_ttl_seconds=900)
+    r = cell.db.create_request(RequestCreate(title="t", ttl_seconds=300))
+    cell.db.set_decision(r["id"], "approve", "phone")
+    await sched.seed()
+    assert any(e[3] == r["id"] for e in sched._heap)           # staleness entry seeded
