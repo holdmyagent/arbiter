@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import json
@@ -11,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app
+from arbiter.scheduler import ExpiryScheduler
 
 from tests.conftest import build_registry_env
 
@@ -45,11 +47,15 @@ def mint_token(client, name, role, scopes=None):
 def client(cfg, tmp_path):
     sender = FakeSender()
     env = build_registry_env(cfg, tmp_path, sender=sender)
-    app = create_app(cfg, env.registry, env.control, sender=sender)
+    sched = ExpiryScheduler(env.registry, env.control,
+                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+    app = create_app(cfg, env.registry, env.control, sender=sender, scheduler=sched)
     c = TestClient(app)
     c.db = env.default_db
     c.env = env
     c.app_ref = app
+    c.cfg = cfg
+    c.sched = sched
     return c
 
 
@@ -136,23 +142,28 @@ def test_warden_token_cannot_read_foreign_verdict(client):
     assert client.get(f"/v1/requests/{own}/verdict", headers=wh).status_code == 200
 
 
-# app.state.expire_pass was the shipped single-tenant sweep hook; removed per
-# §15.1 and replaced entirely by the per-cell ExpiryScheduler in task F9
-# (Group F) — this test drives the old hook directly and genuinely awaits that.
-@pytest.mark.xfail(
-    reason="app.state.expire_pass removed; replaced by ExpiryScheduler in task F9 (Group F)",
-    strict=False)
+# The single-tenant sweep hook is gone (§15.1 — nothing tenant-scoped/
+# process-local lives on app.state); expiry is now driven by the per-cell
+# ExpiryScheduler wired into create_app (task F9). Drive the same scheduler
+# instance the app was built with, exactly as the running server would.
 def test_expiry_verdict_signed_by_sweep_pass(client):
     rid = client.post("/v1/requests", headers=AGENT, json={"title": "t"}).json()["id"]
-    future = datetime.now(timezone.utc) + timedelta(seconds=3600)
-    expired = client.app_ref.state.expire_pass(now=future)
-    assert [e["id"] for e in expired] == [rid]
-    assert expired[0]["status"] == "expired"
+    past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    with client.db._lock:
+        client.db.conn.execute("UPDATE requests SET expires_at=? WHERE id=?", (past, rid))
+        client.db.conn.commit()
+
+    async def _run():
+        await client.sched._fire_one((0, 0, "default", rid))
+        for t in list(client.sched._bg):
+            await t
+    asyncio.run(_run())
+
     v = client.get(f"/v1/requests/{rid}/verdict", headers=AGENT)
     assert v.status_code == 200
     _, pub = _pubkey(client)
     claims = jwt.decode(v.json()["verdict"], key=pub, algorithms=["EdDSA"],
-                        audience="hma-verdict")
+                        audience="hma-verdict:default")
     assert claims["hma"]["decision"] == "expired"
     assert claims["hma"]["action_hash"] is None
 

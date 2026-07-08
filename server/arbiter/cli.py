@@ -120,6 +120,7 @@ def serve(config_path, lan, log_json):
     from .app import create_app
     from .control import ControlPlane
     from .registry import TenantRegistry
+    from .scheduler import ExpiryScheduler
     # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one
     # provisioned "default" cell rooted alongside the configured db_path —
     # mirrors arbiter/main.py's boot (task C1).
@@ -132,7 +133,9 @@ def serve(config_path, lan, log_json):
         control.create_tenant("default", str(default_dir.resolve()))
     sender = APNsSender(cfg)
     registry = TenantRegistry(control, cfg=cfg, sender=sender)
-    app = create_app(cfg, registry, control, sender=sender)
+    scheduler = ExpiryScheduler(registry, control,
+                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+    app = create_app(cfg, registry, control, sender=sender, scheduler=scheduler)
     # log_config=None: leave uvicorn's loggers unconfigured so they propagate to
     # the root handler set up above (JSON or plain) instead of uvicorn's own
     # dictConfig (which sets propagate=False with plain formatters).

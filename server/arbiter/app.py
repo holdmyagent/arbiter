@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
@@ -113,8 +114,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         try:
             yield
         finally:
-            if sched_task is not None:
-                sched_task.cancel()
+            if scheduler is not None:
+                scheduler.stop()
+                if sched_task is not None:
+                    await sched_task
+                for t in list(scheduler._bg):
+                    await t
             for t in list(notify_tasks):
                 t.cancel()
 
@@ -284,6 +289,8 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             if existing:
                 return existing
             raise
+        if scheduler is not None:
+            scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
         cell.hub.publish({"event": "request.created", "request": req})
         return req
@@ -355,6 +362,10 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         db.add_audit(updated["id"], "verdict_issued",
                      {"decision": updated["status"], "kid": cell.signer.kid})
         updated = db.get_request(rid)
+        if scheduler is not None and updated["status"] == "approved":
+            deadline = (datetime.fromisoformat(updated["decided_at"])
+                        + timedelta(seconds=cfg.policy.approval_ttl_seconds)).isoformat()
+            scheduler.schedule(deadline, cell.tenant_id, rid)
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", updated)
         cell.hub.publish({"event": "request.decided", "request": updated})
         return updated
