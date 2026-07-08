@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -78,8 +78,15 @@ def _migrate_5_to_6(conn):
       created_at TEXT NOT NULL,
       request_expires_at TEXT NOT NULL)""")
 
+def _migrate_6_to_7(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS pairings(
+      code_hash TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT)""")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
-              _migrate_5_to_6]
+              _migrate_5_to_6, _migrate_6_to_7]
 
 class Database:
     def __init__(self, path: str):
@@ -465,6 +472,40 @@ class Database:
             cur = self.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
             self.conn.commit()
             return cur.rowcount > 0
+
+    # ── device pairing (tenant-bound, single-use, short-expiry) ─────────────
+
+    def mint_pairing(self, code_hash: str, expires_at: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO pairings(code_hash,created_at,expires_at,consumed_at)"
+                " VALUES (?,?,?,NULL)", (code_hash, _iso(_utcnow()), expires_at))
+            self.conn.commit()
+
+    def redeem_pairing(self, code_hash: str,
+                       now: datetime | None = None) -> tuple[int, dict | None]:
+        """Single-use redemption of a pairing credential. Mirrors consume_request:
+        the guarded UPDATE is the atomic core, so concurrent redemptions race on
+        rowcount and exactly one wins. Returns (200, row) redeemed-now;
+        (404, None) unknown; (410, row) expired; (409, row) already-consumed."""
+        now = now or _utcnow()
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM pairings WHERE code_hash=?", (code_hash,)).fetchone()
+            if r is None:
+                return 404, None
+            cur = self.conn.execute(
+                "UPDATE pairings SET consumed_at=? WHERE code_hash=?"
+                " AND consumed_at IS NULL AND expires_at > ?",
+                (_iso(now), code_hash, _iso(now)))
+            self.conn.commit()
+            row = dict(self.conn.execute(
+                "SELECT * FROM pairings WHERE code_hash=?", (code_hash,)).fetchone())
+            if cur.rowcount == 1:
+                return 200, row
+            if row["consumed_at"] is None:   # guard failed but never consumed ⇒ expiry
+                return 410, row
+            return 409, row
 
     # ── tokens (per-identity bearer credentials, hashed at rest) ────────────
 
