@@ -16,11 +16,13 @@ class FakeCell:
 
 class FakeRegistry:
     """acquire() pins (refcount++), release() unpins exactly once. Mirrors the real
-    registry's refcount discipline and exposes stream_cap."""
+    registry's refcount discipline and exposes stream_cap, plus real per-tenant
+    stream-slot accounting mirroring TenantRegistry.acquire_stream_slot/release_stream_slot."""
     def __init__(self, cells: dict[str, FakeCell], stream_cap: int = 5):
         self._cells = cells
         self.stream_cap = stream_cap
         self.refcounts: dict[str, int] = defaultdict(int)
+        self.stream_slots: dict[str, int] = defaultdict(int)
 
     async def acquire(self, tenant_id: str, epoch: int) -> FakeCell:
         self.refcounts[tenant_id] += 1
@@ -28,6 +30,16 @@ class FakeRegistry:
 
     def release(self, cell: FakeCell) -> None:
         self.refcounts[cell.tenant_id] -= 1
+
+    def acquire_stream_slot(self, tenant_id: str) -> bool:
+        if self.stream_slots[tenant_id] >= self.stream_cap:
+            return False
+        self.stream_slots[tenant_id] += 1
+        return True
+
+    def release_stream_slot(self, tenant_id: str) -> None:
+        if self.stream_slots[tenant_id] > 0:
+            self.stream_slots[tenant_id] -= 1
 
 
 class FakeIdentity:
