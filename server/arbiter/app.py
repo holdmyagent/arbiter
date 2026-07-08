@@ -285,7 +285,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 return existing
             raise
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
-        await cell.hub.publish("request.created", "request", req)
+        cell.hub.publish({"event": "request.created", "request": req})
         return req
 
     @app.get("/v1/requests")
@@ -356,7 +356,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                      {"decision": updated["status"], "kid": cell.signer.kid})
         updated = db.get_request(rid)
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", updated)
-        await cell.hub.publish("request.decided", "request", updated)
+        cell.hub.publish({"event": "request.decided", "request": updated})
         return updated
 
     @app.post("/v1/requests/{rid}/consume")
@@ -382,7 +382,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         dev = cell.db.register_device(body.apns_token, body.name, body.min_severity,
                                       body.notifications_enabled, body.sound,
                                       severities=body.severities, badge=body.badge)
-        await cell.hub.publish("device.updated", "device", dev)
+        cell.hub.publish({"event": "device.updated", "device": dev})
         return dev
 
     @app.get("/v1/devices")
