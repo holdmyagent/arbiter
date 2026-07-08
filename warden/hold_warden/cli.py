@@ -276,7 +276,9 @@ def serve(config_path: Path) -> None:
     arbiter = ArbiterClient(cfg.arbiter_url, warden_token)
     try:
         adopted, last_seq = load_rotation_state(data_dir)
-        pinned = {**cfg.pinned(), **adopted}
+        # Config pin always wins a kid collision: it is the stronger trust root,
+        # and adopted keys legitimately only add new kids (never collide).
+        pinned = {**adopted, **cfg.pinned()}
         verifier = VerdictVerifier(pinned, cfg.arbiter_tenant, last_seq=last_seq)
     except (ConfigError, VerdictError) as exc:
         raise click.ClickException(str(exc))
