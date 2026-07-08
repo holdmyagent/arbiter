@@ -1,7 +1,6 @@
 import hashlib
 import re
 
-import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
@@ -10,8 +9,6 @@ from arbiter.app import create_app
 from arbiter.cli import main
 from arbiter.config import Config
 from arbiter.db import Database
-
-from tests.conftest import build_registry_env
 
 TOKEN_RE = r"hma_(agent|warden|app)_[0-9a-f]{48}"
 
@@ -80,23 +77,28 @@ def test_token_audit_events_written_without_secret(tmp_path, monkeypatch):
     joined = " ".join(r["detail"] for r in rows)
     assert value not in joined  # secrets never land in audit rows
 
-# `hma token create` still writes the single-tenant db_path file with no
-# control-plane route (cli.py's token_create is not yet tenant-aware) — a
-# token minted this way is invisible to a registry/control built separately,
-# so it can never authenticate against create_app's per-cell routes. Task H6
-# ("tenant-scoped hma token create | list | revoke", Group H) replaces this.
-@pytest.mark.xfail(
-    reason="hma token create is not tenant-aware (no control-plane route); ported by task H6 (Group H)",
-    strict=False)
+# `hma token create` is now tenant-aware (task H6, Group H): once a control.db
+# exists (a tenant has been provisioned), create/list/revoke go through the H3
+# cross-store ordering (mint_cell_token/revoke_cell_token) so a minted token
+# also gets a control-plane route — it resolves against create_app's per-cell
+# auth, not just the legacy single-tenant db_path file.
 def test_created_token_authenticates_and_revocation_bites(tmp_path, monkeypatch):
+    from arbiter.control import ControlPlane
+    from arbiter.provisioning import control_path_for, tenants_root_for
+    from arbiter.registry import TenantRegistry
+
     _env(tmp_path, monkeypatch)
     CliRunner().invoke(main, ["init"])
+    assert CliRunner().invoke(main, ["tenant", "create", "default"]).exit_code == 0
     out = CliRunner().invoke(main, ["token", "create", "hermes", "--role", "agent"]).output
     value = re.search(TOKEN_RE, out).group(0)
     cfg = Config.load()
-    db = Database(cfg.db_path_expanded())
-    env = build_registry_env(cfg, tmp_path / "registry")
-    app = create_app(cfg, env.registry, env.control, sender=APNsSender(cfg))
+    # Same control.db + cells `hma serve`/`hma tenant create` opened — proves
+    # the CLI wired both the cell row and the control-plane route, not a
+    # separately-constructed environment.
+    control = ControlPlane.open(control_path_for(cfg).parent, tenants_root_for(cfg))
+    registry = TenantRegistry(control, cfg=cfg)
+    app = create_app(cfg, registry, control, sender=APNsSender(cfg))
     client = TestClient(app)
     r = client.post("/v1/requests", headers={"Authorization": f"Bearer {value}"},
                     json={"title": "Deploy", "severity": "high", "ttl_seconds": 300})
