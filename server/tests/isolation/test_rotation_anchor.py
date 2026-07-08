@@ -14,13 +14,14 @@ does not return a bool. The reject-case assertions below use
 """
 import time
 
+import jwt
 import pytest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from hold_warden.verdict import VerdictError, VerdictVerifier
 
 from tests.isolation.conftest import (
-    sign_verdict, make_signer, make_rotation_record, served_jwks_for,
+    make_signer, make_rotation_record, served_jwks_for,
 )
 
 
@@ -99,11 +100,30 @@ def test_served_entry_with_pinned_kid_but_wrong_bytes_rejected(tmp_path):
     adopted_kid = verifier.adopt_rotation(rec, forged_served)
     assert adopted_kid == new.kid
 
-    # A verdict signed by the IMPOSTER under old.kid must still be rejected:
-    # verification uses the local pin's real bytes for old.kid, not whatever
-    # the (forged) served set claimed.
-    bad = sign_verdict(imposter, request_id="r", action_hash=None, decision="approved",
-                       decided_at="2999-01-01T00:00:00+00:00", approval_ttl=600,
-                       tenant_id="alice")
+    # A verdict with header kid=old.kid (the PINNED kid) but SIGNED by the
+    # IMPOSTER's key must still be rejected. sign_verdict always forces the
+    # header kid to the signer's own kid, so it cannot produce this shape —
+    # the forgery has to be built directly with PyJWT, putting the imposter's
+    # signature under old.kid (mirroring sign_verdict's exact claim shape,
+    # arbiter/signing.py). The only discriminator left is the signature: the
+    # warden looks up old.kid, verifies against its LOCAL pin (old's real
+    # bytes, not the forged served entry), and the imposter's signature fails
+    # — proving the warden trusts its local pin, never the served bytes.
+    forged_payload = {
+        "iss": "hma",
+        "aud": "hma-verdict:alice",
+        "jti": "r",
+        "iat": int(time.time()),
+        "hma": {
+            "request_id": "r",
+            "action_hash": None,
+            "decision": "approved",
+            "decided_at": "2999-01-01T00:00:00+00:00",
+            "approval_ttl_seconds": 600,
+            "tenant_id": "alice",
+        },
+    }
+    forged = jwt.encode(forged_payload, imposter.signing_key, algorithm="EdDSA",
+                        headers={"kid": old.kid})
     with pytest.raises(VerdictError):
-        verifier.verify(bad, "r", None)
+        verifier.verify(forged, "r", None)
