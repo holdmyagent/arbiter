@@ -3,15 +3,19 @@ import pytest
 # C1 migration (task-C1-brief): app.state.login_limiter is removed per §15.1
 # (nothing tenant-scoped/process-local on app.state beyond the pinned list),
 # but web/__init__.py's login() route still reads request.app.state.login_limiter
-# — so /dashboard/login (and therefore every test that logs in first) 500s
-# until the dashboard's own per-cell port lands. Also, once logged in, the
-# dashboard's data pages/v1 API creates still read the removed `db`/`hub`
-# closures (§C1 app.py) — same C4-C8 breakage as the rest of the suite.
-# Assertions below are unchanged; xfail(strict=False) documents the expected
-# breakage.
+# — so /dashboard/login (and therefore every test that logs in first) 500s.
+# Also, build_router(cfg, db, hub) is now called as build_router(cfg, registry,
+# control) (app.py) — its own route bodies (requests_page/request_detail/
+# devices_page/etc.) still call the closure param as a bare `db`/`hub`, which is
+# now a TenantRegistry/ControlPlane and has no list_requests()/etc. NO task in
+# plan-groups/{A..I} currently owns rewriting build_router to be per-cell
+# (derive the cell from the session, per Cell.login_limiter/db/hub) — this is a
+# planning gap surfaced by the C8 sweep; flagged in the C8 report for the
+# operator to assign a task/group. Assertions below are unchanged;
+# xfail(strict=False) documents the expected breakage.
 _DASHBOARD_XFAIL = pytest.mark.xfail(
-    reason="dashboard login reads app.state.login_limiter, removed per C1 §15.1; "
-           "pending the dashboard's per-cell port",
+    reason="dashboard build_router still reads process-global login_limiter/db/hub; "
+           "no task in plan-groups/A-I ports it yet (gap flagged in C8 report for operator)",
     strict=False)
 
 

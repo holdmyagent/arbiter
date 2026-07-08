@@ -37,16 +37,6 @@ def _server():
     registry = TenantRegistry(control, cfg=cfg, sender=sender)
     return create_app(cfg, registry, control, sender=sender), db
 
-# C1 migration: require_role reads request.app.state.db, removed per the
-# server's §15.1 (nothing tenant-scoped on app.state) — POST /v1/requests
-# 500s until ported per-cell (arbiter Groups C4-C8), so the SDK's fail-closed
-# path now returns "denied" instead of polling through to "approved". The
-# assertion is unchanged; xfail(strict=False) documents the expected
-# breakage against the arbiter server's own C1 refactor.
-@pytest.mark.xfail(
-    reason="server require_role reads app.state.db, removed per arbiter C1 §15.1; "
-           "ported per-cell in C4-C8",
-    strict=False)
 def test_approved():
     app, db = _server()
     # TestClient is an httpx.Client subclass that properly bridges sync→async ASGI

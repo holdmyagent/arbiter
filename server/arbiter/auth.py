@@ -151,9 +151,11 @@ async def resolve_identity(request: Request, registry, control):
     if bearer and cfg.auth.app_token and secrets.compare_digest(
             bearer.encode(), cfg.auth.app_token.encode()):
         tenant_id, legacy_role = "default", "app"          # strict 'default' (§14)
+        _warn_legacy_once()
     elif bearer and cfg.auth.agent_token and secrets.compare_digest(
             bearer.encode(), cfg.auth.agent_token.encode()):
         tenant_id, legacy_role = "default", "agent"        # hold-sdk 0.2.1 back-compat
+        _warn_legacy_once()
     else:
         resolved = control.resolve(token_hash)             # (tenant_id, epoch) | None; MAC-verified
         if resolved is not None:

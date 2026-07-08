@@ -80,8 +80,13 @@ def test_token_audit_events_written_without_secret(tmp_path, monkeypatch):
     joined = " ".join(r["detail"] for r in rows)
     assert value not in joined  # secrets never land in audit rows
 
+# `hma token create` still writes the single-tenant db_path file with no
+# control-plane route (cli.py's token_create is not yet tenant-aware) — a
+# token minted this way is invisible to a registry/control built separately,
+# so it can never authenticate against create_app's per-cell routes. Task H6
+# ("tenant-scoped hma token create | list | revoke", Group H) replaces this.
 @pytest.mark.xfail(
-    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
+    reason="hma token create is not tenant-aware (no control-plane route); ported by task H6 (Group H)",
     strict=False)
 def test_created_token_authenticates_and_revocation_bites(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)

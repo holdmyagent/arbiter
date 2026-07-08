@@ -17,15 +17,6 @@ from tests.conftest import build_registry_env
 AGENT = {"Authorization": "Bearer test-agent"}
 APP = {"Authorization": "Bearer test-app"}
 
-# C1 migration (task-C1-brief): create_app now takes (cfg, registry, control);
-# require_role reads request.app.state.db, removed per §15.1 — so every route
-# behind it 500s/errors until ported per-cell (Groups C4-C8). Assertions below
-# are unchanged; xfail(strict=False) documents the expected breakage.
-_API_XFAIL = pytest.mark.xfail(
-    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
-    strict=False)
-
-
 class FakeSender:
     def __init__(self): self.calls = []
     async def send(self, token, payload):
@@ -33,16 +24,20 @@ class FakeSender:
         return "sent"
 
 
-def mint_token(db, name, role, scopes=None):
-    """Insert a DB token row straight against the migration-4 DDL and return the bearer."""
+def mint_token(client, name, role, scopes=None):
+    """Insert a DB token row AND register its control-plane route (mirrors
+    conftest.mint_cell_token) — a bare token-row insert is invisible to
+    resolve_identity, which routes through the control plane first."""
     tok = f"hma_{role}_{pysecrets.token_hex(24)}"
-    db.conn.execute(
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    client.db.conn.execute(
         "INSERT INTO tokens(id, name, role, token_hash, scopes, created_at,"
         " expires_at, last_used_at, revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
-        (str(uuid.uuid4()), name, role, hashlib.sha256(tok.encode()).hexdigest(),
+        (str(uuid.uuid4()), name, role, th,
          json.dumps(scopes) if scopes is not None else None,
          datetime.now(timezone.utc).isoformat()))
-    db.conn.commit()
+    client.db.conn.commit()
+    client.env.control.add_route(th, "default")
     return tok
 
 
@@ -53,20 +48,25 @@ def client(cfg, tmp_path):
     app = create_app(cfg, env.registry, env.control, sender=sender)
     c = TestClient(app)
     c.db = env.default_db
+    c.env = env
     c.app_ref = app
     return c
 
 
 def _pubkey(client):
-    jwks = client.get("/v1/keys").json()
+    # /v1/keys now requires a bearer (§7: the JWKS is "that tenant's", derived
+    # from the pinned cell) — AGENT is as good a credential as any for this.
+    jwks = client.get("/v1/keys", headers=AGENT).json()
     k = jwks["keys"][0]
     raw = base64.urlsafe_b64decode(k["x"] + "=" * (-len(k["x"]) % 4))
     return k["kid"], Ed25519PublicKey.from_public_bytes(raw)
 
 
-@_API_XFAIL
-def test_keys_unauthenticated_jwks_shape(client):
-    r = client.get("/v1/keys")
+# /v1/keys now requires a bearer (§7 — see _pubkey above); the pre-multi-tenant
+# unauthenticated-JWKS behavior this test used to pin is superseded.
+def test_keys_requires_token_then_returns_jwks_shape(client):
+    assert client.get("/v1/keys").status_code == 403
+    r = client.get("/v1/keys", headers=AGENT)
     assert r.status_code == 200
     k = r.json()["keys"][0]
     assert k["kty"] == "OKP" and k["crv"] == "Ed25519" and k["kid"] and k["x"]
@@ -85,7 +85,6 @@ def test_verdict_unknown_request_404(client):
     assert r.json()["detail"] == "not found"
 
 
-@_API_XFAIL
 def test_decide_issues_verifiable_verdict(client):
     canonical = ('{"action":"x","adapter":"command","params":{},'
                  '"resolved":{"argv":["echo"]},"v":1,"warden":"w"}')
@@ -100,8 +99,10 @@ def test_decide_issues_verifiable_verdict(client):
     assert v.status_code == 200
     kid, pub = _pubkey(client)
     assert v.json()["kid"] == kid
+    # aud is tenant-bound (aud=f"hma-verdict:{tenant_id}"), not the bare
+    # "hma-verdict" this test used to pin — spec-mandated by C6/D2 (§7, §15.8/9).
     claims = jwt.decode(v.json()["verdict"], key=pub, algorithms=["EdDSA"],
-                        audience="hma-verdict")
+                        audience="hma-verdict:default")
     assert claims["iss"] == "hma" and claims["jti"] == rid
     hma = claims["hma"]
     assert hma["request_id"] == rid and hma["decision"] == "approved"
@@ -109,7 +110,6 @@ def test_decide_issues_verifiable_verdict(client):
     assert hma["decided_at"] and hma["approval_ttl_seconds"] == 600
 
 
-@_API_XFAIL
 def test_unbound_request_verdict_has_null_action_hash(client):
     rid = client.post("/v1/requests", headers=AGENT, json={"title": "plain"}).json()["id"]
     client.post(f"/v1/requests/{rid}/decision", headers=APP, json={"decision": "deny"})
@@ -117,17 +117,16 @@ def test_unbound_request_verdict_has_null_action_hash(client):
     assert v.status_code == 200
     _, pub = _pubkey(client)
     claims = jwt.decode(v.json()["verdict"], key=pub, algorithms=["EdDSA"],
-                        audience="hma-verdict")
+                        audience="hma-verdict:default")  # tenant-bound aud (§7, C6/D2)
     assert claims["hma"]["action_hash"] is None
     assert claims["hma"]["decision"] == "denied"
 
 
-@_API_XFAIL
 def test_warden_token_cannot_read_foreign_verdict(client):
     # foreign row: created by the legacy agent token (requested_by NULL)
     rid = client.post("/v1/requests", headers=AGENT, json={"title": "t"}).json()["id"]
     client.post(f"/v1/requests/{rid}/decision", headers=APP, json={"decision": "approve"})
-    wh = {"Authorization": f"Bearer {mint_token(client.db, 'warden1', 'warden')}"}
+    wh = {"Authorization": f"Bearer {mint_token(client, 'warden1', 'warden')}"}
     r = client.get(f"/v1/requests/{rid}/verdict", headers=wh)
     assert r.status_code == 404
     assert r.json()["detail"] == "not found"
@@ -137,7 +136,12 @@ def test_warden_token_cannot_read_foreign_verdict(client):
     assert client.get(f"/v1/requests/{own}/verdict", headers=wh).status_code == 200
 
 
-@_API_XFAIL
+# app.state.expire_pass was the shipped single-tenant sweep hook; removed per
+# §15.1 and replaced entirely by the per-cell ExpiryScheduler in task F9
+# (Group F) — this test drives the old hook directly and genuinely awaits that.
+@pytest.mark.xfail(
+    reason="app.state.expire_pass removed; replaced by ExpiryScheduler in task F9 (Group F)",
+    strict=False)
 def test_expiry_verdict_signed_by_sweep_pass(client):
     rid = client.post("/v1/requests", headers=AGENT, json={"title": "t"}).json()["id"]
     future = datetime.now(timezone.utc) + timedelta(seconds=3600)

@@ -4,7 +4,6 @@ import secrets as pysecrets
 import uuid
 from datetime import datetime, timezone
 
-import pytest
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app
@@ -16,29 +15,25 @@ from tests.conftest import build_registry_env
 
 AGENT = {"Authorization": "Bearer test-agent"}
 
-# C1 migration (task-C1-brief): create_app now takes (cfg, registry, control);
-# require_role reads request.app.state.db, removed per §15.1 — so every route
-# behind it 500s/errors until ported per-cell (Groups C4-C8). Assertions below
-# are unchanged; xfail(strict=False) documents the expected breakage.
-_API_XFAIL = pytest.mark.xfail(
-    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
-    strict=False)
-
-
 class FakeSender:
     async def send(self, token, payload):
         return "sent"
 
 
-def mint_token(db, name, role, scopes=None):
+def mint_token(client, name, role, scopes=None):
+    """Insert a DB token row AND register its control-plane route (mirrors
+    conftest.mint_cell_token) — a bare token-row insert is invisible to
+    resolve_identity, which routes through the control plane first."""
     tok = f"hma_{role}_{pysecrets.token_hex(24)}"
-    db.conn.execute(
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    client.db.conn.execute(
         "INSERT INTO tokens(id, name, role, token_hash, scopes, created_at,"
         " expires_at, last_used_at, revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
-        (str(uuid.uuid4()), name, role, hashlib.sha256(tok.encode()).hexdigest(),
+        (str(uuid.uuid4()), name, role, th,
          json.dumps(scopes) if scopes is not None else None,
          datetime.now(timezone.utc).isoformat()))
-    db.conn.commit()
+    client.db.conn.commit()
+    client.env.control.add_route(th, "default")
     return tok
 
 
@@ -48,6 +43,7 @@ def _client(cfg, tmp_path):
     app = create_app(cfg, env.registry, env.control, sender=sender)
     c = TestClient(app)
     c.db = env.default_db
+    c.env = env
     c.app_ref = app
     return c
 
@@ -109,10 +105,9 @@ def test_create_floor_raises_stored_severity(cfg, tmp_path):
     assert client.db.get_request(r.json()["id"])["severity"] == "high"
 
 
-@_API_XFAIL
 def test_scoped_token_enforcement_403(cfg, tmp_path):
     client = _client(cfg, tmp_path)
-    tok = mint_token(client.db, "bot", "agent",
+    tok = mint_token(client, "bot", "agent",
                      scopes={"action_types": ["deploy"], "max_severity": "high"})
     h = {"Authorization": f"Bearer {tok}"}
     assert client.post("/v1/requests", headers=h,

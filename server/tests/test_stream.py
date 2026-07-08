@@ -4,10 +4,11 @@ import pytest
 # removed per §15.1 (nothing tenant-scoped on app.state, and the old
 # single-process Hub isn't wired anywhere yet). The stream route accepts the
 # websocket (no `hub` touched) but 500s/errors once it tries `hub.subscribe()`
-# — ported in the stream group (F). test_stream_rejects_without_auth is
-# unaffected: the auth check closes the socket before `hub` is ever touched.
+# — ported by Group E's task E7 ("wire /v1/stream into create_app, drop the
+# process-global Hub, repoint publish sites"). test_stream_rejects_without_auth
+# is unaffected: the auth check closes the socket before `hub` is ever touched.
 _STREAM_XFAIL = pytest.mark.xfail(
-    reason="stream route reads the removed `hub` process-global; ported in the stream group (F)",
+    reason="stream route reads the removed `hub` process-global; ported by task E7 (Group E)",
     strict=False)
 
 
