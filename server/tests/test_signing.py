@@ -151,3 +151,43 @@ def test_tampered_payload_fails_verification(tmp_path):
     with pytest.raises(jwt.InvalidSignatureError):
         jwt.decode(f"{h}.{p2}.{s}", signer.signing_key.public_key(), algorithms=["EdDSA"],
                    audience="hma-verdict:acme")
+
+
+# ── D2 round-trip coverage: tenant-binding in aud and hma.tenant_id ──────
+
+def test_sign_verdict_binds_tenant_in_aud_and_claim(tmp_path):
+    s = load_or_create_signer("acme", tmp_path)
+    jws = sign_verdict(s, request_id="r1", action_hash="ab" * 32, decision="approved",
+                       decided_at="2026-07-07T00:00:00+00:00", approval_ttl=600,
+                       tenant_id="acme")
+    assert jwt.get_unverified_header(jws)["kid"] == s.kid  # "acme:<hash8>"
+    decoded = jwt.decode(jws, s.signing_key.public_key(), algorithms=["EdDSA"],
+                          audience="hma-verdict:acme")
+    assert decoded["iss"] == "hma"
+    assert decoded["aud"] == "hma-verdict:acme"
+    assert decoded["jti"] == "r1" and isinstance(decoded["iat"], int)
+    assert decoded["hma"] == {"tenant_id": "acme", "request_id": "r1",
+                              "action_hash": "ab" * 32, "decision": "approved",
+                              "decided_at": "2026-07-07T00:00:00+00:00",
+                              "approval_ttl_seconds": 600}
+
+
+def test_verdict_from_tenant_a_fails_audience_for_tenant_b(tmp_path):
+    s = load_or_create_signer("acme", tmp_path)
+    jws = sign_verdict(s, request_id="r2", action_hash=None, decision="denied",
+                       decided_at="2026-07-07T00:00:00+00:00", approval_ttl=600,
+                       tenant_id="acme")
+    # Even with the SAME key, decoding as tenant "beta" fails on audience.
+    with pytest.raises(jwt.InvalidAudienceError):
+        jwt.decode(jws, s.signing_key.public_key(), algorithms=["EdDSA"],
+                    audience="hma-verdict:beta")
+
+
+def test_action_hash_none_still_signs(tmp_path):
+    s = load_or_create_signer("acme", tmp_path)
+    jws = sign_verdict(s, request_id="r3", action_hash=None, decision="expired",
+                       decided_at="2026-07-07T00:00:00+00:00", approval_ttl=600,
+                       tenant_id="acme")
+    decoded = jwt.decode(jws, s.signing_key.public_key(), algorithms=["EdDSA"],
+                          audience="hma-verdict:acme")
+    assert decoded["hma"]["action_hash"] is None
