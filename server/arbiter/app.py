@@ -14,33 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from .auth import SlidingWindowLimiter, resolve_identity, trusted_client_id
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
-from .notify.outbox import Outbox
+from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
 from .signing import sign_verdict
 from .stream import run_stream
 from .web import build_router, session_valid
 
 log = logging.getLogger("arbiter.app")
-
-
-async def _drain_all_outboxes(registry, control) -> None:
-    """Process-restart outbox re-drain (§9/§15.11). Transient per tenant: hold,
-    drain, release — one extra cell open at a time (FD-budget friendly).
-
-    NOTE: adapted from the brief's shown snippet (`for tid in
-    control.list_tenants(): ... registry.hold(tid)`), which doesn't compile
-    against the shipped Group A/B APIs — `ControlPlane.list_tenants()` returns
-    dicts with `tenant_id`/`epoch` keys (not bare tenant_id strings), and
-    `TenantRegistry.hold(tenant_id, epoch)` requires the epoch. Adjusted
-    call-by-call to match the merged code, same as the A5 precedent."""
-    from .notify.outbox import Outbox
-    for t in control.list_tenants():
-        tenant_id, epoch = t["tenant_id"], t["epoch"]
-        try:
-            async with registry.hold(tenant_id, epoch) as cell:
-                await Outbox(cell.db, cell.dispatcher).drain_startup()
-        except Exception as exc:
-            log.warning("startup outbox drain failed for %s: %s", tenant_id, exc)
 
 
 def _spawn_publish(app, tenant_id, epoch, event, req):
@@ -109,7 +89,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     @asynccontextmanager
     async def lifespan(app):
         # §9: outbox re-drain is bounded to PROCESS-RESTART only, never cell-open.
-        await _drain_all_outboxes(registry, control)
+        await drain_all_at_startup(registry, control)
         sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
         try:
             yield

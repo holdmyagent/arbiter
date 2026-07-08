@@ -117,7 +117,7 @@ def test_drain_skips_exhausted_rows(db):
 def test_startup_drain_wired_into_lifespan(cfg, tmp_path):
     # C1 migration (task-C1-brief): create_app now takes (cfg, registry,
     # control) and drains EVERY provisioned tenant's outbox on startup
-    # (_drain_all_outboxes), not a single passed-in `db`. Provision the
+    # (drain_all_at_startup, task-G4-brief), not a single passed-in `db`. Provision the
     # "default" tenant cell the same way conftest's `client` fixture does,
     # seed the pending row directly into that cell's on-disk db (the registry
     # opens its OWN connection to the SAME file when it acquires the cell —
