@@ -241,3 +241,44 @@ class ExpiryScheduler:
             except Exception as exc:
                 log.warning("rescan failed tenant=%s: %s", t["tenant_id"], exc)
             await asyncio.sleep(0)
+
+    # ── §16 durability-gate seams (I19): additive, clock-injectable, public ──
+    # These are test/ops entry points that reuse the exact machinery above
+    # (_rescan_tick/_fire_due, _recover) -- they never reimplement firing or
+    # signing, and they never alter run()'s/seed()'s own real-clock, bounded,
+    # discarded-return production behavior.
+
+    async def rescan(self, now: datetime | float | None = None) -> list[dict]:
+        """Level-triggered rescan across EVERY tenant (not just one seed_batch
+        slice), at an injectable clock: re-discovers every open_deadline_rows
+        entry, ignoring the heap entirely, so a dropped heap-push (the row was
+        never scheduled) is still recovered -- then fires whatever is due at
+        `now` and returns the fired rows. `now` may be a tz-aware datetime or
+        epoch-seconds float; None uses the real clock."""
+        n = len(self.control.list_tenants())
+        ticks = max(1, -(-n // self.seed_batch)) if n else 1
+        for _ in range(ticks):
+            await self._rescan_tick()
+        now_ts = now.timestamp() if isinstance(now, datetime) else now
+        return await self._fire_due(now=now_ts)
+
+    async def recover(self, now: datetime | None = None) -> list[dict]:
+        """Crash-recovery pass across every tenant cell: re-signs any row stuck
+        at status='expired' with verdict_jws IS NULL (a crash between the flip
+        commit and the sign commit) with that cell's OWN signer, via the
+        existing _recover. Returns the recovered rows. `now` is accepted for
+        seam-shape symmetry with rescan/scheduler_tick; the underlying re-sign
+        uses the row's own expires_at as decided_at (spec §6), not the wall
+        clock, matching seed()'s real-clock recovery path exactly."""
+        recovered: list[dict] = []
+        for t in self.control.list_tenants():
+            try:
+                async with self.registry.hold(t["tenant_id"], t["epoch"]) as cell:
+                    pending_ids = [row["id"] for row in cell.db.expired_without_verdict()]
+                    if not pending_ids:
+                        continue
+                    await self._recover(cell)
+                    recovered.extend(cell.db.get_request(rid) for rid in pending_ids)
+            except Exception as exc:
+                log.warning("recover seam failed tenant=%s: %s", t["tenant_id"], exc)
+        return recovered
