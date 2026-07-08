@@ -196,10 +196,15 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             elif resolved is not None:
                 st.registry.release(resolved)          # resolved but not app-role: drop the pin
         if cell is None and st.session_check(request.cookies.get("hma_session", "")):
-            # admin dashboard session -> default cell (back-compat, §14)
-            default_epoch = st.control.epoch_of("default")
-            if default_epoch is not None:
-                cell = await st.registry.acquire("default", default_epoch)
+            # admin dashboard session -> default cell (back-compat, §14).
+            # is_disabled is read on EVERY resolution — the same guard
+            # resolve_identity applies on the bearer path (it also fails
+            # closed on an absent live row), so a disabled default tenant
+            # gets the same generic denial on the session path too.
+            if not st.control.is_disabled("default"):
+                default_epoch = st.control.epoch_of("default")
+                if default_epoch is not None:
+                    cell = await st.registry.acquire("default", default_epoch)
         if cell is None:
             st.auth_limiter.record_failure(key)
             reason = "invalid_token" if auth.startswith("Bearer ") else "missing_bearer"
