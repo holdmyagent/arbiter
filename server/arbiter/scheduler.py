@@ -205,5 +205,21 @@ class ExpiryScheduler:
                 await self._rescan_tick()
 
     async def _rescan_tick(self) -> None:
-        # TODO(F6): replaced by the real periodic-rescan body + its own test.
-        return
+        """Bounded level-triggered rescan: a rolling slice of tenants per tick,
+        round-robin across ticks, re-scheduling every open deadline so a dropped
+        heap-push cannot leave a request un-expired forever. Re-scheduling an
+        already-queued row is harmless — every firing is DB-guarded."""
+        tenants = self.control.list_tenants()
+        if not tenants:
+            return
+        start = self._rescan_cursor % len(tenants)
+        slice_ = tenants[start:start + self.seed_batch]
+        self._rescan_cursor = start + self.seed_batch
+        for t in slice_:
+            try:
+                async with self.registry.hold(t["tenant_id"], t["epoch"]) as cell:
+                    for row in cell.db.open_deadline_rows():
+                        self._schedule_row(t["tenant_id"], row)
+            except Exception as exc:
+                log.warning("rescan failed tenant=%s: %s", t["tenant_id"], exc)
+            await asyncio.sleep(0)

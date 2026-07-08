@@ -208,3 +208,27 @@ async def test_run_expires_a_scheduled_request():
     assert cell.db.get_request(r["id"])["status"] == "expired"
     for t in list(sched._bg):
         await t
+
+# ── F6 ───────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_rescan_recovers_dropped_heap_push():
+    cell = _Cell("default", 1)
+    sched, reg, _ = _mk(cell)
+    overdue = _iso(_now() - timedelta(seconds=5))
+    r = _add_pending(cell, overdue)               # overdue, but NEVER scheduled (dropped push)
+    assert sched._heap == []
+    await sched._rescan_tick()                     # level trigger picks it up
+    assert any(e[3] == r["id"] for e in sched._heap)
+    await sched._fire_due()                         # and it actually expires
+    assert cell.db.get_request(r["id"])["status"] == "expired"
+    for t in list(sched._bg):
+        await t
+
+@pytest.mark.asyncio
+async def test_rescan_cursor_rolls_over_tenants():
+    cells = [_Cell(f"t{i}", 1) for i in range(5)]
+    sched, reg, _ = _mk(*cells, seed_batch=2)
+    await sched._rescan_tick()
+    assert sched._rescan_cursor == 2               # advanced by seed_batch
+    await sched._rescan_tick()
+    assert sched._rescan_cursor == 4
