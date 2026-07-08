@@ -10,15 +10,6 @@ class FakeSender:
         self.calls.append((token,payload))
         return "sent"
 
-# C1 migration (task-C1-brief): create_app now takes (cfg, registry, control);
-# require_role/the inline audit-export check read request.app.state.db,
-# removed per §15.1 (no tenant-scoped object on app.state) — so every route
-# behind them 500s/errors until ported per-cell (Groups C4-C8). Assertions
-# below are unchanged; xfail(strict=False) documents the expected breakage.
-_API_XFAIL = pytest.mark.xfail(
-    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
-    strict=False)
-
 @pytest.fixture
 def client(cfg, tmp_path):
     sender = FakeSender()
@@ -56,7 +47,6 @@ def test_list_and_decide(client):
 def test_unknown_404(client):
     assert client.get("/v1/requests/nope", headers={"Authorization":"Bearer test-agent"}).status_code==404
 
-@_API_XFAIL
 def test_device_register(client):
     r = client.post("/v1/devices", headers={"Authorization": "Bearer test-app"},
                     json={"apns_token": "abc123", "name": "My iPhone"})
@@ -173,11 +163,12 @@ def test_root_redirects_into_dashboard(client):
     assert r.headers["location"] == "/dashboard"
 
 
+# require_cell raises one generic 403 for a missing bearer, not 401 (spec §11;
+# see test_security.py::test_request_detail_requires_token for the canonical case).
 def test_notify_policy_requires_app_token(client):
-    assert client.get("/v1/notify/policy").status_code == 401
+    assert client.get("/v1/notify/policy").status_code == 403
 
 
-@_API_XFAIL
 def test_notify_policy_returns_config(client, app_headers, cfg):
     cfg.notify_severities["medium"] = False
     r = client.get("/v1/notify/policy", headers=app_headers)

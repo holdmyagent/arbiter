@@ -6,13 +6,6 @@ import pytest
 from click.testing import CliRunner
 from arbiter.cli import main, _ask
 
-# C1 migration: these CLI helpers hit /v1/requests through require_role(),
-# which reads request.app.state.db — removed per §15.1 — so the routes 500
-# until ported per-cell (Groups C4-C8).
-_API_XFAIL = pytest.mark.xfail(
-    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
-    strict=False)
-
 def test_init_writes_config_and_refuses_overwrite(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.toml"
     monkeypatch.setenv("HMA_CONFIG", str(cfg_path))
@@ -35,7 +28,6 @@ def test_json_formatter_emits_parseable_lines():
     out = json.loads(_JsonFormatter().format(rec))
     assert out["logger"] == "uvicorn.access" and "GET /health" in out["msg"] and out["level"] == "INFO"
 
-@_API_XFAIL
 def test_gather_status_raises_on_bad_token(client):
     import httpx
     import pytest
@@ -43,7 +35,6 @@ def test_gather_status_raises_on_bad_token(client):
     with pytest.raises(httpx.HTTPStatusError):
         _gather_status(client, "wrong-token")
 
-@_API_XFAIL
 def test_gather_status_happy(client, cfg, app_headers):
     from arbiter.cli import _gather_status
     out = _gather_status(client, cfg.auth.app_token)

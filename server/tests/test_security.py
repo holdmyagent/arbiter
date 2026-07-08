@@ -2,18 +2,9 @@ import itertools
 
 import pytest
 
-# C1 migration (task-C1-brief): create_app now takes (cfg, registry, control);
-# require_role's dep reads request.app.state.db (removed — §15.1 bans any
-# tenant-scoped object on app.state), so every route behind require_role() or
-# the dashboard login_limiter 500s/errors until it's ported per-cell (Groups
-# C4-C8 for the v1 API; the dashboard's own port for login). Assertions are
-# unchanged; xfail(strict=False) documents the expected-until-then breakage.
-_API_XFAIL = pytest.mark.xfail(
-    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
-    strict=False)
 _DASHBOARD_XFAIL = pytest.mark.xfail(
-    reason="dashboard login reads app.state.login_limiter, removed per C1 §15.1; "
-           "pending the dashboard's per-cell port",
+    reason="dashboard build_router still reads process-global login_limiter/db/hub; "
+           "no task in plan-groups/A-I ports it yet (gap flagged in C8 report for operator)",
     strict=False)
 
 def test_non_ascii_bearer_is_403_not_500(client):
@@ -35,19 +26,22 @@ def test_non_ascii_bearer_ws_closes_without_exception(client):
             pass
     assert getattr(e.value, "code", None) == 4401
 
-@_API_XFAIL
+# require_cell raises one identical generic 403 for missing/invalid/wrong-role
+# bearers — no 401-vs-403 oracle on whether a credential was supplied at all
+# (spec §11). This supersedes the pre-multi-tenant 401-for-missing-bearer
+# behavior the test used to pin.
 def test_request_detail_requires_token(client, agent_headers, app_headers):
     rid = client.post("/v1/requests", headers=agent_headers, json={"title": "x"}).json()["id"]
-    assert client.get(f"/v1/requests/{rid}").status_code == 401
+    assert client.get(f"/v1/requests/{rid}").status_code == 403
     assert client.get(f"/v1/requests/{rid}", headers=agent_headers).status_code == 200
     assert client.get(f"/v1/requests/{rid}", headers=app_headers).status_code == 200
 
 def test_health_is_minimal(client):
     assert client.get("/health").json() == {"ok": True, "db": True}
 
-@_API_XFAIL
+# §11: generic 403, not 401, on a missing bearer (see test_request_detail_requires_token above).
 def test_devices_list_requires_app_token(client, app_headers):
-    assert client.get("/v1/devices").status_code == 401
+    assert client.get("/v1/devices").status_code == 403
     assert client.get("/v1/devices", headers=app_headers).status_code == 200
 
 def test_security_headers_on_html(client):
