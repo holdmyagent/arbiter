@@ -116,12 +116,23 @@ def serve(config_path, lan, log_json):
     host = "0.0.0.0" if lan else cfg.server.host
     if lan or host == "0.0.0.0":
         click.echo(f"Pair page: http://{local_ip()}:{cfg.server.port}/dashboard/pair")
-    from .db import Database
-    from .notify import Dispatcher, APNsSender
+    from .notify import APNsSender
     from .app import create_app
-    db = Database(cfg.db_path_expanded())
+    from .control import ControlPlane
+    from .registry import TenantRegistry
+    # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one
+    # provisioned "default" cell rooted alongside the configured db_path —
+    # mirrors arbiter/main.py's boot (task C1).
+    db_path = Path(cfg.db_path_expanded())
+    tenants_root = db_path.parent / "cells"
+    control = ControlPlane.open(db_path.parent / "control", tenants_root)
+    default_dir = tenants_root / "default"
+    if control.epoch_of("default") is None:
+        default_dir.mkdir(parents=True, exist_ok=True)
+        control.create_tenant("default", str(default_dir.resolve()))
     sender = APNsSender(cfg)
-    app = create_app(cfg, db, sender, dispatcher=Dispatcher(cfg, db, sender=sender))
+    registry = TenantRegistry(control, cfg=cfg, sender=sender)
+    app = create_app(cfg, registry, control, sender=sender)
     # log_config=None: leave uvicorn's loggers unconfigured so they propagate to
     # the root handler set up above (JSON or plain) instead of uvicorn's own
     # dictConfig (which sets propagate=False with plain formatters).
