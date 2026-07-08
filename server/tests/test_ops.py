@@ -131,7 +131,6 @@ def test_url_pattern_port_matching_both_directions():
 
 # ── create-time enforcement ──────────────────────────────────────────────────
 
-@_API_XFAIL
 def test_create_rejects_disallowed_callback(cfg, tmp_path):
     cfg.callback_allowlist = ["10.0.0.0/8"]
     client = _client(cfg, tmp_path)

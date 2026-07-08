@@ -72,7 +72,6 @@ def test_expiry_verdict_issued_event(cfg, tmp_path):
     assert "expired" in events and "verdict_issued" in events
 
 
-@_API_XFAIL
 def test_policy_denied_and_rate_limited_events(cfg, tmp_path):
     cfg.policy.deny_action_types = ["db.drop"]
     cfg.policy.rate_limit_per_minute = 1

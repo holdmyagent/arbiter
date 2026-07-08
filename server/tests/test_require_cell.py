@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -35,7 +34,6 @@ def test_trusted_proxy_uses_real_client_from_xff():
     assert got == "7.7.7.7"
 
 
-@pytest.mark.xfail(strict=False, reason="/v1/requests app-role listing ported in C4")
 def test_require_cell_releases_on_success_and_failure(client, app_headers):
     reg = client.env.registry
     released = []
@@ -50,7 +48,6 @@ def test_require_cell_releases_on_success_and_failure(client, app_headers):
     assert len(released) == 1
 
 
-@pytest.mark.xfail(strict=False, reason="/v1/requests app-role listing ported in C4")
 def test_bad_token_trips_fleet_limiter(client):
     bad = {"Authorization": "Bearer nope"}
     codes = [client.get("/v1/requests", headers=bad).status_code for _ in range(12)]

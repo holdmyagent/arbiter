@@ -33,11 +33,9 @@ def _create(c, tok="test-agent"):
     return c.post("/v1/requests", headers={"Authorization": f"Bearer {tok}"},
                   json={"title":"Deploy","severity":"high","ttl_seconds":300})
 
-@_API_XFAIL
 def test_create_requires_agent_token(client):
     assert _create(client, tok="test-app").status_code == 403
 
-@_API_XFAIL
 def test_create_and_push(client):
     client.db.register_device("tok1","iPhone")
     r = _create(client)
@@ -77,7 +75,6 @@ def test_decision_records_device_name(client):
                     headers={"Authorization": "Bearer test-app"}, json={"decision": "approve"})
     assert d.status_code == 200 and d.json()["decided_by"] == "Kevins-iPhone"
 
-@_API_XFAIL
 def test_create_invalid_severity_returns_422(client):
     r = client.post("/v1/requests", headers={"Authorization": "Bearer test-agent"},
                     json={"title": "T", "severity": "extreme", "ttl_seconds": 300})
@@ -91,7 +88,6 @@ def test_decide_invalid_decision_value_returns_422(client):
                     json={"decision": "maybe"})
     assert r.status_code == 422
 
-@_API_XFAIL
 def test_severity_filter_medium(client):
     """Device with min_severity=low receives medium push; device with min_severity=high does not."""
     client.db.register_device("tokA", "iPhone A", min_severity="low")
@@ -103,7 +99,6 @@ def test_severity_filter_medium(client):
     assert "tokA" in tokens_called
     assert "tokB" not in tokens_called
 
-@_API_XFAIL
 def test_severity_filter_critical(client):
     """Both devices receive critical push regardless of their threshold."""
     client.db.register_device("tokA", "iPhone A", min_severity="low")
@@ -115,7 +110,6 @@ def test_severity_filter_critical(client):
     assert "tokA" in tokens_called
     assert "tokB" in tokens_called
 
-@_API_XFAIL
 def test_notifications_enabled_filter(client):
     """Push only sent to device with notifications_enabled=True, not to disabled device."""
     client.db.register_device("tokA", "iPhone A", min_severity="low", notifications_enabled=True)
@@ -127,7 +121,6 @@ def test_notifications_enabled_filter(client):
     assert "tokA" in tokens_called
     assert "tokB" not in tokens_called
 
-@_API_XFAIL
 def test_sound_flag_false_omits_sound_key(client):
     """Device with sound=False receives a payload with no 'sound' key in aps."""
     client.db.register_device("tokC", "iPhone C", min_severity="low", sound=False)
@@ -138,7 +131,6 @@ def test_sound_flag_false_omits_sound_key(client):
     _, payload = client.sender.calls[0]
     assert "sound" not in payload["aps"]
 
-@_API_XFAIL
 def test_sound_flag_true_includes_default_sound(client):
     """Device with sound=True receives a payload with 'sound': 'default' in aps."""
     client.db.register_device("tokD", "iPhone D", min_severity="low", sound=True)
@@ -197,7 +189,6 @@ def test_notify_policy_returns_config(client, app_headers, cfg):
     assert r.json() == {"low": True, "medium": False, "high": True, "critical": True}
 
 
-@_API_XFAIL
 def test_target_and_callback_roundtrip(client):
     r = client.post("/v1/requests", headers={"Authorization": "Bearer test-agent"},
                     json={"title": "Deploy", "target": "prod-cluster",

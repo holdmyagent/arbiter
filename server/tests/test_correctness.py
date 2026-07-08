@@ -72,7 +72,6 @@ def test_decide_expired_by_clock_409(client):
     assert "expired" in r.json()["detail"]
 
 
-@_API_XFAIL
 def test_ttl_clamped_low_and_high(client):
     # distinct titles: identical unbound titles would duplicate-collapse
     lo = client.post("/v1/requests", headers=AGENT,
@@ -86,7 +85,6 @@ def test_ttl_clamped_low_and_high(client):
     assert hi["ttl_seconds"] == 86400
 
 
-@_API_XFAIL
 def test_idempotent_create_returns_same_row(client):
     body = {"title": "t", "idempotency_key": "k-1"}
     a = client.post("/v1/requests", headers=AGENT, json=body)
@@ -96,7 +94,6 @@ def test_idempotent_create_returns_same_row(client):
     assert len(client.db.list_requests()) == 1
 
 
-@_API_XFAIL
 def test_idempotency_key_max_length_422(client):
     r = client.post("/v1/requests", headers=AGENT,
                     json={"title": "t", "idempotency_key": "x" * 129})
@@ -119,7 +116,6 @@ def test_duplicate_pending_collapses_on_action_hash(client):
     assert c2.json()["id"] != a.json()["id"]
 
 
-@_API_XFAIL
 def test_duplicate_pending_collapses_unbound_on_title(client):
     # unbound requests (no action_hash) collapse on (requested_by, title)
     a = client.post("/v1/requests", headers=AGENT, json={"title": "restart api"})

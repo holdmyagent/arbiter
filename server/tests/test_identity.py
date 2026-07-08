@@ -90,7 +90,6 @@ def test_warden_role_can_create(client):
     r = client.post("/v1/requests", json={"title": "Act"}, headers=hdr)
     assert r.status_code == 200 and r.json()["requested_by"] == "knossos-warden"
 
-@_API_XFAIL
 def test_app_role_cannot_create(client):
     r = client.post("/v1/requests", json={"title": "x"},
                     headers={"Authorization": "Bearer test-app"})
