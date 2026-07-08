@@ -141,3 +141,27 @@ def sign_verdict(signer: "Signer", *, request_id: str, action_hash: str | None,
     }
     return jwt.encode(payload, signer.signing_key, algorithm="EdDSA",
                       headers={"kid": signer.kid})
+
+
+ROTATION_AUD_PREFIX = "hma-rotation:"
+
+
+def sign_rotation_record(old_signer: Signer, *, new_kid: str, new_x: str, seq: int,
+                         expires_at: int, tenant_id: str) -> str:
+    """Sign a key-rotation record with the OLD key. The warden adopts new_kid ONLY
+    if this record verifies under a LOCAL pin, carries tenant_id==paired, has
+    seq strictly greater than the last adopted, and is not past expires_at (§7)."""
+    payload = {
+        "iss": "hma",
+        "aud": f"{ROTATION_AUD_PREFIX}{tenant_id}",
+        "iat": int(time.time()),
+        "hma": {
+            "tenant_id": tenant_id,
+            "new_kid": new_kid,
+            "new_x": new_x,
+            "seq": seq,
+            "expires_at": expires_at,
+        },
+    }
+    return jwt.encode(payload, old_signer.signing_key, algorithm="EdDSA",
+                      headers={"kid": old_signer.kid})
