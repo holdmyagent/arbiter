@@ -2,6 +2,7 @@
 registry/auth/cell groups. Mirrors the pinned cross-component contract exactly."""
 import asyncio
 from collections import defaultdict
+from contextlib import asynccontextmanager
 
 from fastapi import HTTPException
 
@@ -42,6 +43,20 @@ class FakeRegistry:
             self.stream_slots[tenant_id] -= 1
 
 
+class HoldMixin:
+    @asynccontextmanager
+    async def hold(self, tenant_id: str, epoch: int):
+        cell = await self.acquire(tenant_id, epoch)
+        try:
+            yield cell
+        finally:
+            self.release(cell)
+
+
+class FakeRegistryWithHold(HoldMixin, FakeRegistry):
+    pass
+
+
 class FakeIdentity:
     def __init__(self, tenant_id: str, name: str = "app", role: str = "app"):
         self.tenant_id, self.name, self.role = tenant_id, name, role
@@ -50,7 +65,8 @@ class FakeIdentity:
 def make_resolve(token_to_tenant: dict[str, str], disabled: set[str] | None = None):
     """Build a resolve() with the real contract shape: acquire+pin on success,
     raise HTTPException (having released any pin) on failure."""
-    disabled = disabled or set()
+    if disabled is None:
+        disabled = set()
 
     async def resolve(ws, registry, control):
         bearer = ws.headers.get("authorization", "").removeprefix("Bearer ")
