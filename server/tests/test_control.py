@@ -88,6 +88,33 @@ def test_create_tenant_rejects_overlapping_dir(tmp_path):
         cp.create_tenant("dotdot", str(root / "x" / ".." / "acme"))  # `..` resolves to acme
 
 
+def test_create_tenant_allow_out_of_root_exempts_default_only(tmp_path):
+    cp = _open(tmp_path)
+    legacy = tmp_path / "legacy-data"
+    legacy.mkdir()
+    epoch = cp.create_tenant("default", str(legacy), allow_out_of_root=True)
+    assert epoch == 1
+    assert cp.tenant_dir("default") == legacy.resolve()
+
+
+def test_create_tenant_allow_out_of_root_still_rejects_non_default(tmp_path):
+    # §14 exemption is narrow: a non-"default" tenant_id ignores the flag and
+    # stays under the strict tenants-root layout.
+    cp = _open(tmp_path)
+    with pytest.raises(ValueError):
+        cp.create_tenant("acme", str(tmp_path / "outside"), allow_out_of_root=True)
+
+
+def test_create_tenant_default_out_of_root_still_dir_isolated(tmp_path):
+    # §15.7 non-overlap still applies to the exempt "default" cell: it must not
+    # overlap another LIVE tenant's dir.
+    cp = _open(tmp_path)
+    root = tmp_path / "tenants"
+    cp.create_tenant("acme", str(root / "acme"))
+    with pytest.raises(ValueError):
+        cp.create_tenant("default", str(root / "acme"), allow_out_of_root=True)
+
+
 def test_epoch_of_unknown_is_none(tmp_path):
     cp = _open(tmp_path)
     assert cp.epoch_of("nope") is None
