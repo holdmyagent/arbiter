@@ -51,19 +51,30 @@ def require_cell(*roles: str):
     everything off request.app.state, so it can be imported directly (the
     brief's inline sketch nests it inside create_app, but that would make it
     unimportable as `arbiter.app.require_cell` — module scope is equivalent
-    and matches the require_role precedent in auth.py)."""
+    and matches the require_role precedent in auth.py).
+
+    The fleet auth-failure limiter (§13) is keyed on trusted_client_id, which
+    with no configured trusted proxy IS the bare peer IP — so it is only ever
+    consulted on a FAILED auth (missing/invalid bearer, disabled tenant, wrong
+    role). A bearer that resolves successfully is never pre-blocked by that
+    key's failure count: otherwise a flood of bad tokens from one shared
+    ingress IP would 429 every OTHER tenant's valid traffic sharing that IP —
+    the exact fleet-DoS §13 forbids. Blocked-and-still-failing sources still
+    get a uniform 429 (checked after the failed resolve, not before)."""
     async def dep(request: Request):
         st = request.app.state
         key = trusted_client_id(request, st.cfg)
-        if st.auth_limiter.blocked(key):
-            raise HTTPException(429, "too many failed auth attempts")
         try:
             identity, cell = await resolve_identity(request, st.registry, st.control)
         except HTTPException:
+            if st.auth_limiter.blocked(key):
+                raise HTTPException(429, "too many failed auth attempts")
             st.auth_limiter.record_failure(key)   # count the failed auth
             raise
         try:
             if roles and identity.role not in roles:
+                if st.auth_limiter.blocked(key):
+                    raise HTTPException(429, "too many failed auth attempts")
                 st.auth_limiter.record_failure(key)
                 raise HTTPException(403, "forbidden")   # generic (§11)
             yield (identity, cell)
