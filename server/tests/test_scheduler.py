@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import time
 from contextlib import asynccontextmanager
@@ -156,3 +157,54 @@ async def test_fire_one_skips_tombstoned_tenant():
     await sched._fire_one((_ts(overdue), 0, "gone", r["id"]))
     assert reg.opens == 0                              # never opened a dead cell
     assert cell.db.get_request(r["id"])["status"] == "pending"
+
+# ── F5 ───────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_fire_due_round_robin_does_not_starve(monkeypatch):
+    cellA = _Cell("acme", 1)
+    cellB = _Cell("beta", 1)
+    sched, reg, _ = _mk(cellA, cellB, per_tenant_batch=2)
+    overdue = _iso(_now() - timedelta(seconds=5))
+    a_ids = [_add_pending(cellA, overdue)["id"] for _ in range(5)]   # A floods
+    b_ids = [_add_pending(cellB, overdue)["id"] for _ in range(2)]   # B is small
+    for rid in a_ids:
+        sched.schedule(overdue, "acme", rid)
+    for rid in b_ids:
+        sched.schedule(overdue, "beta", rid)
+
+    await sched._fire_due()          # one pass: <=2 per tenant, B fully served
+    assert all(cellB.db.get_request(r)["status"] == "expired" for r in b_ids)
+    expired_a = sum(cellA.db.get_request(r)["status"] == "expired" for r in a_ids)
+    assert expired_a == 2            # A capped this pass; overflow deferred, not lost
+    assert len(sched._heap) == 3     # 3 of A's re-pushed
+    for t in list(sched._bg):
+        await t
+
+@pytest.mark.asyncio
+async def test_seed_schedules_pending_from_cold_cells():
+    cell = _Cell("default", 1)
+    overdue = _iso(_now() - timedelta(seconds=5))
+    r = _add_pending(cell, overdue)
+    sched, reg, _ = _mk(cell)
+    await sched.seed()
+    assert any(e[3] == r["id"] for e in sched._heap)
+
+@pytest.mark.asyncio
+async def test_run_expires_a_scheduled_request():
+    cell = _Cell("default", 1)
+    sched, reg, _ = _mk(cell, rescan_interval=0.05)
+    overdue = _iso(_now() - timedelta(seconds=1))
+    r = _add_pending(cell, overdue)
+    sched.schedule(overdue, "default", r["id"])
+    task = asyncio.create_task(sched.run())
+    try:
+        for _ in range(50):
+            if cell.db.get_request(r["id"])["status"] == "expired":
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        sched.stop()
+        await task
+    assert cell.db.get_request(r["id"])["status"] == "expired"
+    for t in list(sched._bg):
+        await t
