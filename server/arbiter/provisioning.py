@@ -10,8 +10,14 @@ from here — no import cycle). Keep the two bodies in lock-step per §15.7.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
+from dataclasses import dataclass
 from pathlib import Path
+
+from .db import Database
+from .signing import load_or_create_signer
 
 _TENANT_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
@@ -38,3 +44,61 @@ def assert_dir_isolated(candidate: Path, existing: list[Path]) -> None:
         o = Path(other).resolve()
         if c == o or c.is_relative_to(o) or o.is_relative_to(c):
             raise TenantDirError(f"tenant dir overlaps existing dir: {c} vs {o}")
+
+
+def _hash_token(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _mint_first_token(control, cell_db: Database, tenant_id: str, name: str, role: str) -> str:
+    """Mint one of a fresh cell's first tokens: CELL row first, ROUTER row second
+    (§12 — a cell row without a route is unusable, so a crash between the two
+    fails closed rather than handing out a ghost credential). This is the same
+    cell-first/router-second discipline Task H3's `mint_cell_token` formalizes
+    into a standalone, reusable function; provision_tenant inlines it here so H2
+    does not depend on H3 landing first."""
+    value = f"hma_{role}_{secrets.token_hex(24)}"
+    token_hash = _hash_token(value)
+    cell_db.create_token(name, role, token_hash)
+    control.add_route(token_hash, tenant_id)
+    cell_db.add_audit("-", "token_created", {"name": name, "role": role})
+    return value
+
+
+@dataclass
+class ProvisionResult:
+    tenant_id: str
+    epoch: int
+    dir: Path
+    app_token: str
+    warden_token: str
+
+
+def provision_tenant(control, root: Path, tenant_id: str) -> ProvisionResult:
+    """Mint a fresh, isolated, key-distinct tenant cell (§14). Canonicalizes and
+    isolation-checks the dir, creates a fresh migrated cell DB, mints this cell's
+    OWN Ed25519 signing key (§15.7: no two cells ever load identical key bytes),
+    registers the tenant with control for a fresh monotonic epoch, and mints the
+    first app + warden tokens.
+
+    Ordering matters for fail-closed behavior on a partial failure: the dir is
+    created (and the cell DB/key minted) BEFORE control.create_tenant runs, so a
+    crash before registration leaves an orphaned, unregistered directory (inert —
+    never routable, never claims a live tenant_id) rather than a control-registered
+    tenant with no working cell. control.create_tenant re-applies the identical
+    §15.7 non-overlap check against the persisted roster (the authoritative
+    mint-time rejection); the check here is a redundant early guard that must stay
+    logic-identical to it.
+    """
+    root = Path(root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    canon = canonicalize_tenant_dir(tenant_id, root)
+    existing = [Path(t["dir"]) for t in control.list_tenants()]
+    assert_dir_isolated(canon, existing)          # redundant early guard, see docstring
+    canon.mkdir(parents=True, exist_ok=False)     # fresh dir; a collision fails closed
+    cell_db = Database(str(canon / "arbiter.sqlite3"))   # runs the migration ladder
+    load_or_create_signer(tenant_id, canon)       # mint this cell's OWN Ed25519 key
+    epoch = control.create_tenant(tenant_id, str(canon))  # fresh monotonic epoch, MAC'd row
+    app_token = _mint_first_token(control, cell_db, tenant_id, "app", "app")
+    warden_token = _mint_first_token(control, cell_db, tenant_id, "warden", "warden")
+    return ProvisionResult(tenant_id, epoch, canon, app_token, warden_token)
