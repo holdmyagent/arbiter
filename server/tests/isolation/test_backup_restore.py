@@ -75,7 +75,7 @@ def test_restore_pre_revoke_snapshot_keeps_token_invalid(tmp_path, cfg):
 
     control2 = ControlPlane.open(root / "control", root)
     registry2 = TenantRegistry(control2, cfg=cfg, sender=None)
-    assert control2.resolve(th) is None or _no_live_cell_token(registry2, tid, epoch, th)
+    assert control2.resolve(th) is None
 
 
 def test_restore_pre_consume_snapshot_consume_fails_closed(tmp_path, cfg):
