@@ -26,6 +26,19 @@ from tests.isolation.conftest import (ControlPlane, TenantRegistry, create_app,
 HEARTBEAT = 0.05  # short recheck interval so disable teardown fires in-test
 
 
+def _next_event(ws):
+    """Return the next real stream frame, skipping heartbeat pings.
+
+    run_stream emits a `{"event": "ping"}` keepalive every heartbeat tick, so
+    with a 0.05s heartbeat a ping can land in the socket between real frames.
+    A test that reads exactly one frame is racy; drain pings and return the
+    first non-ping frame instead."""
+    while True:
+        frame = ws.receive_json()
+        if frame.get("event") != "ping":
+            return frame
+
+
 def _fast_two_tenant(cfg, tmp_path) -> TwoTenant:
     """Same construction as the shared `two_tenant` fixture (conftest.py), but
     with a short ws_heartbeat — the default 30s would make this test hang."""
@@ -50,12 +63,18 @@ def test_disable_closes_live_stream_and_403s_next_request(cfg, tmp_path):
             # BASELINE: the socket is live (an event flows)
             rid = tt.client.post("/v1/requests", headers=a.agent_hdr,
                                  json={"title": "live"}).json()["id"]
-            assert ws.receive_json()["request"]["id"] == rid
+            assert _next_event(ws)["request"]["id"] == rid
             # disable alice on a HOT, busy cell (it is pinned by the open socket)
             tt.control.disable_tenant("alice")
-            # the open socket is actively torn down (close sentinel on the hub)
+            # The open socket is actively torn down (close sentinel on the hub).
+            # Once disabled, the heartbeat stops queueing pings and closes instead,
+            # so any pings already queued drain in a bounded number of reads before
+            # the disconnect arrives; exhausting the bound means teardown never fired.
             with pytest.raises(WebSocketDisconnect):
-                ws.receive_json()
+                for _ in range(200):
+                    frame = ws.receive_json()
+                    assert frame.get("event") == "ping", \
+                        f"unexpected non-ping frame after disable: {frame}"
         # the very next HTTP request on alice 403s immediately (disabled read on resolve)
         r = tt.client.post("/v1/requests", headers=a.agent_hdr, json={"title": "after"})
         assert r.status_code == 403
