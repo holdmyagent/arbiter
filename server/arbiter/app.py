@@ -4,7 +4,7 @@ import json
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
@@ -93,6 +93,39 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         # §9: outbox re-drain is bounded to PROCESS-RESTART only, never cell-open.
         await drain_all_at_startup(registry, control)
         sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
+        if scheduler is not None:
+            # §16 test/ops seam: a SYNCHRONOUS, clock-injectable one-shot that
+            # drains every entry due at `now` across ALL cells, reusing the
+            # scheduler's real firing path (_fire_due/_fire_one -> registry.hold
+            # -> cell.signer/db) so the signed verdict lands under the firing
+            # cell's own key, exactly like a real background firing. Additive:
+            # the async run() loop above stays the only production path.
+            #
+            # The registry's own locks (e.g. _map_lock) bind to whichever event
+            # loop first uses them -- THIS lifespan's loop, via seed() above --
+            # so the drain must execute on that same loop, never a fresh one in
+            # the calling thread (that would raise "bound to a different event
+            # loop"). run_coroutine_threadsafe + a blocking result() does that;
+            # safe because scheduler_tick is called from OUTSIDE this loop's
+            # thread (a test's main thread, an ops script), never from a live
+            # request or from code already running on this loop (that would
+            # deadlock on the blocking .result()).
+            loop = asyncio.get_running_loop()
+
+            def scheduler_tick(now: datetime | None = None) -> list[dict]:
+                now_ts = (now or datetime.now(timezone.utc)).timestamp()
+
+                async def _drain():
+                    fired: list[dict] = []
+                    while True:
+                        batch = await scheduler._fire_due(now=now_ts)
+                        if not batch:
+                            return fired
+                        fired.extend(batch)
+
+                return asyncio.run_coroutine_threadsafe(_drain(), loop).result()
+
+            app.state.scheduler_tick = scheduler_tick
         try:
             yield
         finally:
