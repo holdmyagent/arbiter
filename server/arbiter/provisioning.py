@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -113,6 +114,57 @@ def provision_tenant(control, root: Path, tenant_id: str) -> ProvisionResult:
     app_token = mint_cell_token(control, cell_db, tenant_id, "app", "app")
     warden_token = mint_cell_token(control, cell_db, tenant_id, "warden", "warden")
     return ProvisionResult(tenant_id, epoch, canon, app_token, warden_token)
+
+
+def snapshot_db(src: Path, dest: Path) -> None:
+    """Online consistent snapshot of a SQLite file via VACUUM INTO on a fresh
+    read connection (safe while the server holds its own WAL connection open)."""
+    src, dest = Path(src), Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    conn = sqlite3.connect(str(src))
+    try:
+        conn.execute("VACUUM INTO ?", (str(dest),))
+    finally:
+        conn.close()
+
+
+def backup_fleet(control, out_dir: Path) -> None:
+    """Snapshot every cell FIRST, then control.db LAST (§12): the ordering makes
+    a mint/revoke that smears across the run fail closed on restore."""
+    out = Path(out_dir).expanduser().resolve()
+    (out / "tenants").mkdir(parents=True, exist_ok=True)
+    for t in control.list_tenants():  # list[dict]: {epoch, tenant_id, dir, ...}
+        tenant_id = t["tenant_id"]
+        src = Path(control.tenant_dir(tenant_id)) / "arbiter.sqlite3"
+        snapshot_db(src, out / "tenants" / f"{tenant_id}.sqlite3")
+    snapshot_db(Path(control.db_path), out / "control.sqlite3")
+
+
+def reconcile_routes(control_db_path: Path) -> int:
+    """Drop router routes whose token_hash is not a live (present + unrevoked)
+    token in its tenant's cell (§12 credential fail-closed). Reads the pinned
+    tenants.dir / token_route columns; returns the number of routes dropped.
+    Safe to run at startup and inside restore."""
+    conn = sqlite3.connect(str(control_db_path))
+    try:
+        dirs = {tid: d for tid, d in conn.execute("SELECT tenant_id, dir FROM tenants")}
+        routes = conn.execute("SELECT token_hash, tenant_id FROM token_route").fetchall()
+        dropped = 0
+        for token_hash, tenant_id in routes:
+            d = dirs.get(tenant_id)
+            live: set[str] = set()
+            cell_path = Path(d) / "arbiter.sqlite3" if d else None
+            if cell_path and cell_path.exists():
+                live = Database(str(cell_path)).active_token_hashes()
+            if token_hash not in live:
+                conn.execute("DELETE FROM token_route WHERE token_hash=?", (token_hash,))
+                dropped += 1
+        conn.commit()
+        return dropped
+    finally:
+        conn.close()
 
 
 def control_path_for(cfg) -> Path:

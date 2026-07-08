@@ -504,6 +504,23 @@ def tenant_pair_code(tenant_id, minutes, host_url, config_path):
 
 
 @main.group()
+def admin():
+    """Fleet backup / restore / migrate (admin = local filesystem access)."""
+
+
+@admin.command("backup")
+@click.option("--out", "out_dir", required=True, help="Directory to write the snapshot into.")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def admin_backup(out_dir, config_path):
+    """Online snapshot every cell (then control.db LAST) — fail-closed ordering."""
+    from .provisioning import backup_fleet
+    cfg = Config.load(config_path)
+    backup_fleet(_control(cfg), Path(out_dir))
+    click.echo(f"backup written to {out_dir}")
+    click.echo("Restore is fail-closed: in-flight approvals are re-minted (see `hma admin restore`).")
+
+
+@main.group()
 def audit():
     """Audit-log utilities."""
 
