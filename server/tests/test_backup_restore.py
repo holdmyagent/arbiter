@@ -1,8 +1,13 @@
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+from arbiter.control import ControlPlane
 from arbiter.db import Database
+from arbiter.provisioning import (provision_tenant, backup_fleet, reconcile_routes,
+                                  revoke_cell_token)
 
 def _now(): return datetime.now(timezone.utc).isoformat()
+def _h(v): return hashlib.sha256(v.encode()).hexdigest()
 
 def _insert(db, rid, status, *, decided=None, consumed=None):
     db.conn.execute(
@@ -36,3 +41,20 @@ def test_backup_to_produces_readable_snapshot(tmp_path):
     dest = tmp_path / "snap.sqlite3"
     src.backup_to(str(dest))
     assert Database(str(dest)).active_token_hashes() == {"h_x"}
+
+def test_backup_fleet_writes_control_last_and_per_cell(tmp_path):
+    control = ControlPlane.open(tmp_path / "control", tmp_path / "tenants")
+    provision_tenant(control, tmp_path / "tenants", "acme")
+    out = tmp_path / "bk"
+    backup_fleet(control, out)
+    assert (out / "control.sqlite3").is_file()
+    assert (out / "tenants" / "acme.sqlite3").is_file()
+
+def test_reconcile_drops_route_without_live_cell_token(tmp_path):
+    control = ControlPlane.open(tmp_path / "control", tmp_path / "tenants")
+    res = provision_tenant(control, tmp_path / "tenants", "acme")
+    cell = Database(str(res.dir / "arbiter.sqlite3"))
+    cell.revoke_token("app")                  # cell no longer has a live token for that hash
+    dropped = reconcile_routes(tmp_path / "control" / "control.db")
+    assert dropped >= 1
+    assert control.resolve(_h(res.app_token)) is None   # orphan route removed → fail closed

@@ -93,6 +93,7 @@ _CONTROL_MIGRATIONS = [_control_migrate_0_to_1]
 
 class ControlPlane:
     def __init__(self, db_path: str, mac_key: bytes, tenants_root: Path):
+        self.db_path = db_path  # the live control.db file (backup_fleet snapshots this LAST, §12)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
