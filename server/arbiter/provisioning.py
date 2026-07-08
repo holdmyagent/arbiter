@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,6 +166,38 @@ def reconcile_routes(control_db_path: Path) -> int:
         return dropped
     finally:
         conn.close()
+
+
+def restore_fleet(control_db_path: Path, backup_dir: Path) -> None:
+    """Restore control.db + per-cell snapshots, then fail closed:
+    - credentials: reconcile_routes drops router rows lacking a live cell token;
+    - consumption: every restored cell force re-mints (invalidate_in_flight) so a
+      rolled-back approved-unconsumed action cannot re-execute.
+    The server MUST be stopped during restore (control.db is replaced on disk)."""
+    control_db_path = Path(control_db_path)
+    backup = Path(backup_dir).expanduser().resolve()
+    # 1) control.db first, so we know the tenant roster + dirs as of the backup
+    shutil.copyfile(backup / "control.sqlite3", control_db_path)
+    conn = sqlite3.connect(str(control_db_path))
+    try:
+        dirs = {tid: d for tid, d in conn.execute("SELECT tenant_id, dir FROM tenants")}
+    finally:
+        conn.close()
+    # 2) each cell snapshot into its tenant dir; drop stale WAL/SHM sidecars first
+    for tenant_id, d in dirs.items():
+        snap = backup / "tenants" / f"{tenant_id}.sqlite3"
+        if not snap.exists():
+            continue
+        dest = Path(d) / "arbiter.sqlite3"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(dest) + suffix)
+            if p.exists():
+                p.unlink()
+        shutil.copyfile(snap, dest)
+        Database(str(dest)).invalidate_in_flight()   # consumption fail-closed
+    # 3) credential fail-closed reconcile
+    reconcile_routes(control_db_path)
 
 
 def control_path_for(cfg) -> Path:
