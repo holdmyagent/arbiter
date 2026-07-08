@@ -39,4 +39,4 @@ def test_each_gate_file_collects_at_least_one_test():
         out = subprocess.run(
             [sys.executable, "-m", "pytest", str(ISO / f), "--collect-only", "-q"],
             capture_output=True, text=True)
-        assert "test" in out.stdout, f"{f} collected no tests:\n{out.stdout}\n{out.stderr}"
+        assert out.returncode == 0, f"{f} collected no tests (returncode={out.returncode}):\n{out.stdout}\n{out.stderr}"
