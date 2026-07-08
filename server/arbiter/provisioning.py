@@ -217,16 +217,59 @@ def migrate_to_multitenant(cfg, control, root: Path) -> None:
     `hma tenant create` stays strictly under-root) — and backfills a router
     route for every unrevoked cell token. Legacy `cfg.auth.app_token` then
     resolves strictly to 'default' (auth already does this, spec §4); existing
-    devices already live in that DB, so they map to 'default' unchanged."""
-    if any(t["tenant_id"] == "default" for t in control.list_tenants()):
-        return
+    devices already live in that DB, so they map to 'default' unchanged.
+
+    Idempotency is dir-aware, not just tenant_id-aware: a no-op is only correct
+    if 'default' is ALREADY registered at this legacy DB's own dir. If it's
+    registered somewhere else — the empty-bootstrap-before-migrate race
+    (`ensure_default_cell` normally prevents this, but an old build or a
+    hand-rolled bootstrap could still hit it) — silently returning would
+    permanently strand the legacy tokens/devices with no route. Raise loud
+    instead so the operator gets an actionable failure."""
     legacy_path = Path(cfg.db_path_expanded())
     legacy_dir = legacy_path.parent.resolve()
+    existing = next((t for t in control.list_tenants() if t["tenant_id"] == "default"), None)
+    if existing is not None:
+        if Path(existing["dir"]).resolve() == legacy_dir:
+            return  # already correctly wrapping the legacy dir — true no-op
+        raise RuntimeError(
+            f"default cell already registered at {existing['dir']!r}; cannot migrate "
+            f"legacy DB at {legacy_dir!r} — an empty default was bootstrapped before "
+            "migrate ran"
+        )
     control.create_tenant("default", str(legacy_dir), allow_out_of_root=True)
     cell_db = Database(str(legacy_path))
     for t in cell_db.list_tokens():
         if t["revoked_at"] is None:
             control.add_route(t["token_hash"], "default")
+
+
+def ensure_default_cell(cfg, control, tenants_root: Path) -> None:
+    """Startup bootstrap for the 'default' cell (§14/C1 back-compat), shared by
+    `main.py` and `hma serve`.
+
+    Fresh install: no legacy single-tenant DB (or one with zero tokens) —
+    provision an empty 'default' cell rooted at <tenants_root>/default, same
+    as before.
+
+    Upgraded install that hasn't run `hma admin migrate` yet: a legacy
+    single-tenant DB already sits at `cfg.db_path_expanded()` with at least one
+    token (the live app_token, devices, etc). Minting an empty 'default' here
+    would register it at the WRONG dir and permanently strand the legacy data
+    (migrate's idempotency check would then see 'default' already registered
+    and no-op forever — the exact C1 back-compat break this closes). Instead,
+    wrap the legacy DB as 'default' via `migrate_to_multitenant`, so `hma
+    serve` does the right thing regardless of whether the operator ran migrate
+    first."""
+    if control.epoch_of("default") is not None:
+        return
+    legacy_path = Path(cfg.db_path_expanded())
+    if legacy_path.exists() and Database(str(legacy_path)).list_tokens():
+        migrate_to_multitenant(cfg, control, tenants_root)
+        return
+    default_dir = Path(tenants_root) / "default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    control.create_tenant("default", str(default_dir.resolve()))
 
 
 def control_path_for(cfg) -> Path:

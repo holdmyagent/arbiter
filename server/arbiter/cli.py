@@ -119,7 +119,7 @@ def serve(config_path, lan, log_json):
     from .notify import APNsSender
     from .app import create_app
     from .control import ControlPlane
-    from .provisioning import control_path_for, tenants_root_for
+    from .provisioning import control_path_for, ensure_default_cell, tenants_root_for
     from .registry import TenantRegistry
     from .scheduler import ExpiryScheduler
     # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one
@@ -128,12 +128,12 @@ def serve(config_path, lan, log_json):
     # control_path_for/tenants_root_for are the single source of truth for
     # this layout — the tenant CLI resolves through the same helpers, so
     # `hma tenant create` and `hma serve` always agree on one control.db.
+    # ensure_default_cell auto-migrates a legacy single-tenant DB instead of
+    # minting an empty default, so serve-before-migrate on an upgraded install
+    # stays back-compat safe (§14/C1) regardless of operator ordering.
     tenants_root = tenants_root_for(cfg)
     control = ControlPlane.open(control_path_for(cfg).parent, tenants_root)
-    default_dir = tenants_root / "default"
-    if control.epoch_of("default") is None:
-        default_dir.mkdir(parents=True, exist_ok=True)
-        control.create_tenant("default", str(default_dir.resolve()))
+    ensure_default_cell(cfg, control, tenants_root)
     sender = APNsSender(cfg)
     registry = TenantRegistry(control, cfg=cfg, sender=sender)
     scheduler = ExpiryScheduler(registry, control,
