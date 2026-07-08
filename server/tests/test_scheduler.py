@@ -269,3 +269,26 @@ async def test_seed_schedules_staleness_deadline_for_unconsumed_approved():
     cell.db.set_decision(r["id"], "approve", "phone")
     await sched.seed()
     assert any(e[3] == r["id"] for e in sched._heap)           # staleness entry seeded
+
+# ── F8 ───────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_seed_recovers_expired_without_verdict():
+    cell = _Cell("default", 1)
+    r = cell.db.create_request(RequestCreate(title="t", ttl_seconds=300))
+    # crash simulation: flip committed, verdict never did
+    with cell.db._lock:
+        cell.db.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+        cell.db.conn.commit()
+    assert cell.db.get_request(r["id"])["verdict_jws"] is None   # permanent 404 today
+
+    sched, reg, _ = _mk(cell)
+    await sched.seed()                                            # recovery re-signs
+
+    row = cell.db.get_request(r["id"])
+    assert row["status"] == "expired"
+    assert row["verdict_jws"]                                     # no longer a 404
+    claims = _verify(row["verdict_jws"], cell.signer, "default")
+    assert claims["hma"]["decision"] == "expired"
+    assert cell.db.expired_without_verdict() == []               # nothing left stranded
+    for t in list(sched._bg):
+        await t
