@@ -109,3 +109,25 @@ def test_expire_request_with_verdict_loses_to_decision():
     assert out is None                      # guard refused: not pending
     assert db.get_request(req["id"])["status"] == "approved"
     assert db.get_request(req["id"])["verdict_jws"] is None
+
+def test_open_deadline_rows_covers_pending_and_unconsumed_approved():
+    db = Database(":memory:")
+    p = db.create_request(RequestCreate(title="pending", ttl_seconds=300))
+    a = db.create_request(RequestCreate(title="approved", ttl_seconds=300))
+    db.set_decision(a["id"], "approve", "phone")               # approved, unconsumed
+    d = db.create_request(RequestCreate(title="denied", ttl_seconds=300))
+    db.set_decision(d["id"], "deny", "phone")                  # terminal, excluded
+    ids = {r["id"] for r in db.open_deadline_rows()}
+    assert p["id"] in ids and a["id"] in ids
+    assert d["id"] not in ids
+
+def test_expired_without_verdict():
+    db = Database(":memory:")
+    r = db.create_request(RequestCreate(title="t", ttl_seconds=300))
+    with db._lock:                                             # simulate crash after flip, before verdict
+        db.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+        db.conn.commit()
+    rows = db.expired_without_verdict()
+    assert [x["id"] for x in rows] == [r["id"]]
+    db.set_verdict(r["id"], "JWS", "kid")                      # once signed, no longer returned
+    assert db.expired_without_verdict() == []

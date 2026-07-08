@@ -313,6 +313,27 @@ class Database:
             self.conn.commit()
             return self.get_request(rid)
 
+    def open_deadline_rows(self) -> list[dict]:
+        """Rows that still carry a live deadline: pending (expiry deadline =
+        expires_at) and approved-unconsumed (staleness deadline =
+        decided_at + approval_ttl). Used to seed/rescan the ExpiryScheduler heap
+        so a dropped heap-push cannot leave a request un-expired forever."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM requests WHERE status='pending'"
+                " OR (status='approved' AND consumed_at IS NULL)").fetchall()
+            return [self._row_to_request(r) for r in rows]
+
+    def expired_without_verdict(self) -> list[dict]:
+        """Recovery scan: rows flipped to 'expired' whose verdict never committed
+        (a crash between the flip and the sign in any non-atomic path). The
+        scheduler re-signs these at startup so no expired request is a
+        permanent verdict-404."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM requests WHERE status='expired' AND verdict_jws IS NULL").fetchall()
+            return [self._row_to_request(r) for r in rows]
+
     def expire_due(self, now: datetime | None = None) -> list[dict]:
         now = now or _utcnow()
         with self._lock:
