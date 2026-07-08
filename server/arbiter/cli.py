@@ -349,6 +349,88 @@ def tenant():
     """Manage tenants (admin-credentialed provisioning)."""
 
 
+def _control(cfg):
+    from .control import ControlPlane
+    from .provisioning import control_path_for, tenants_root_for
+    # 3-arg real class via its B1 factory: control_dir = control.db's parent,
+    # tenants_root so create_tenant's under-root + §15.7 checks resolve correctly.
+    return ControlPlane.open(control_path_for(cfg).parent, tenants_root_for(cfg))
+
+
+@tenant.command("create")
+@click.argument("tenant_id")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def tenant_create(tenant_id, config_path):
+    """Provision a fresh isolated cell for TENANT_ID; print its first app + warden tokens."""
+    from .provisioning import provision_tenant, tenants_root_for, TenantDirError
+    cfg = Config.load(config_path)
+    try:
+        res = provision_tenant(_control(cfg), tenants_root_for(cfg), tenant_id)
+    except TenantDirError as exc:
+        raise click.ClickException(str(exc))
+    except (FileExistsError, sqlite3.IntegrityError, ValueError) as exc:
+        raise click.ClickException(f"cannot create tenant '{tenant_id}': {exc}")
+    click.echo(f"tenant '{res.tenant_id}' created (epoch {res.epoch})")
+    click.echo(f"  dir:          {res.dir}")
+    click.echo(f"  app token:    {res.app_token}")
+    click.echo(f"  warden token: {res.warden_token}")
+    click.echo("Shown once — only sha256 hashes are stored.")
+
+
+@tenant.command("list")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def tenant_list(config_path):
+    """List tenants with epoch and disabled state."""
+    from .provisioning import control_path_for
+    cfg = Config.load(config_path)
+    path = control_path_for(cfg)
+    if not path.exists():
+        click.echo("no tenants (single-tenant install — run `hma admin migrate`)")
+        return
+    conn = sqlite3.connect(str(path))
+    try:
+        rows = conn.execute(
+            "SELECT tenant_id, epoch, disabled_at, dir FROM tenants ORDER BY tenant_id").fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        click.echo("no tenants")
+        return
+    for tid, epoch, disabled_at, d in rows:
+        state = "disabled" if disabled_at else "active"
+        click.echo(f"{tid}  epoch={epoch}  {state}  dir={d}")
+
+
+@tenant.command("disable")
+@click.argument("tenant_id")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def tenant_disable(tenant_id, config_path):
+    """Disable TENANT_ID; the server drops its live sessions on the next heartbeat."""
+    cfg = Config.load(config_path)
+    control = _control(cfg)
+    # disable_tenant is a 0-row no-op UPDATE on an absent/typo'd tenant_id — check
+    # existence first so a typo fails loudly instead of printing a false "disabled".
+    if control.epoch_of(tenant_id) is None:
+        raise click.ClickException(f"no such tenant '{tenant_id}'")
+    control.disable_tenant(tenant_id)
+    click.echo(f"disabled {tenant_id} (running streams close on next heartbeat; next HTTP 403s)")
+
+
+@tenant.command("delete")
+@click.argument("tenant_id")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def tenant_delete(tenant_id, config_path):
+    """Tombstone TENANT_ID — its epoch and dir are never recycled."""
+    cfg = Config.load(config_path)
+    control = _control(cfg)
+    # Same existence check as disable: tombstone_tenant is a 0-row no-op UPDATE
+    # on an absent (or already-tombstoned) tenant_id.
+    if control.epoch_of(tenant_id) is None:
+        raise click.ClickException(f"no such tenant '{tenant_id}'")
+    control.tombstone_tenant(tenant_id)
+    click.echo(f"tombstoned {tenant_id} (epoch + dir permanently retired)")
+
+
 @tenant.command("pair-code")
 @click.argument("tenant_id")
 @click.option("--minutes", type=int, default=15, help="Credential lifetime (default 15).")

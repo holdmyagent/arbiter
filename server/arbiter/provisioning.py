@@ -113,3 +113,15 @@ def provision_tenant(control, root: Path, tenant_id: str) -> ProvisionResult:
     app_token = mint_cell_token(control, cell_db, tenant_id, "app", "app")
     warden_token = mint_cell_token(control, cell_db, tenant_id, "warden", "warden")
     return ProvisionResult(tenant_id, epoch, canon, app_token, warden_token)
+
+
+def control_path_for(cfg) -> Path:
+    # The live control DB file. Its parent is the `control_dir` passed to
+    # `ControlPlane.open(...)`, and the filename matches B1's CONTROL_DB_FILENAME
+    # ("control.db") so the raw-read paths (`hma tenant list`, `hma admin restore`)
+    # point at exactly the file `.open()` creates.
+    return Path(cfg.db_path_expanded()).parent / "control.db"
+
+
+def tenants_root_for(cfg) -> Path:
+    return Path(cfg.db_path_expanded()).parent / "tenants"
