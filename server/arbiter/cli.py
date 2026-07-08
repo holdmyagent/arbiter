@@ -257,6 +257,26 @@ _RESERVED_TOKEN_NAMES = {"agent", "app"}  # fixed identity names of the legacy c
 def _hash_token(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
+def _build_scopes(action_types, max_severity):
+    if not (action_types or max_severity):
+        return None
+    scopes = {}
+    if action_types:
+        scopes["action_types"] = [a.strip() for a in action_types.split(",") if a.strip()]
+    if max_severity:
+        scopes["max_severity"] = max_severity
+    return scopes
+
+def _expiry_iso(expires_days):
+    if expires_days is None:
+        return None
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
+
+def _cell_db_for(control, tenant_id):
+    from .db import Database
+    return Database(str(Path(control.tenant_dir(tenant_id)) / "arbiter.sqlite3"))
+
 @main.group()
 def token():
     """Manage per-identity API tokens (secrets shown once, stored as sha256)."""
@@ -265,48 +285,57 @@ def token():
 @click.argument("name")
 @click.option("--role", type=click.Choice(["agent", "warden", "app"]), required=True,
               help="agent: create+read own · warden: create/read-own/consume · app: decide/list.")
+@click.option("--tenant", "tenant_id", default=None,
+              help="Tenant cell to mint into (multi-tenant installs; defaults to 'default').")
 @click.option("--action-types", default=None,
               help="Comma-separated action_type allowlist scope (e.g. deploy,restart).")
 @click.option("--max-severity", type=click.Choice(["low", "medium", "high", "critical"]),
               default=None, help="Severity cap scope.")
 @click.option("--expires-days", type=int, default=None, help="Expire the token after N days.")
 @click.option("--config", "config_path", default=None, help="Path to config.toml")
-def token_create(name, role, action_types, max_severity, expires_days, config_path):
+def token_create(name, role, tenant_id, action_types, max_severity, expires_days, config_path):
     """Mint a token for NAME. The secret is printed ONCE and never stored."""
-    from datetime import datetime, timedelta, timezone
     from .db import Database
+    from .provisioning import control_path_for, mint_cell_token
     if name in _RESERVED_TOKEN_NAMES:
         raise click.ClickException(
             f"'{name}' is reserved for the legacy config-token identity")
     cfg = Config.load(config_path)
-    db = Database(cfg.db_path_expanded())
-    scopes = None
-    if action_types or max_severity:
-        scopes = {}
-        if action_types:
-            scopes["action_types"] = [a.strip() for a in action_types.split(",") if a.strip()]
-        if max_severity:
-            scopes["max_severity"] = max_severity
-    expires_at = None
-    if expires_days is not None:
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
-    value = f"hma_{role}_{pysecrets.token_hex(24)}"
-    try:
-        db.create_token(name, role, _hash_token(value), scopes, expires_at)
-    except sqlite3.IntegrityError:
-        raise click.ClickException(f"token name '{name}' already exists")
-    db.add_audit("-", "token_created",
-                 {"name": name, "role": role, "scopes": scopes, "expires_at": expires_at})
+    scopes, expires_at = _build_scopes(action_types, max_severity), _expiry_iso(expires_days)
+    control_path = control_path_for(cfg)
+    if tenant_id or control_path.exists():
+        tid = tenant_id or "default"
+        control = _control(cfg)
+        cell = _cell_db_for(control, tid)
+        try:
+            value = mint_cell_token(control, cell, tid, name, role, scopes, expires_at)
+        except sqlite3.IntegrityError:
+            raise click.ClickException(f"token name '{name}' already exists in tenant '{tid}'")
+    else:
+        db = Database(cfg.db_path_expanded())
+        value = f"hma_{role}_{pysecrets.token_hex(24)}"
+        try:
+            db.create_token(name, role, _hash_token(value), scopes, expires_at)
+        except sqlite3.IntegrityError:
+            raise click.ClickException(f"token name '{name}' already exists")
+        db.add_audit("-", "token_created",
+                     {"name": name, "role": role, "scopes": scopes, "expires_at": expires_at})
     click.echo(f"token: {value}")
     click.echo("Shown once — only its sha256 hash is stored.")
 
 @token.command("list")
+@click.option("--tenant", "tenant_id", default=None, help="Tenant cell to list (default 'default').")
 @click.option("--config", "config_path", default=None, help="Path to config.toml")
-def token_list(config_path):
+def token_list(tenant_id, config_path):
     """List tokens (never shows secrets or hashes)."""
     from .db import Database
+    from .provisioning import control_path_for
     cfg = Config.load(config_path)
-    db = Database(cfg.db_path_expanded())
+    control_path = control_path_for(cfg)
+    if tenant_id or control_path.exists():
+        db = _cell_db_for(_control(cfg), tenant_id or "default")
+    else:
+        db = Database(cfg.db_path_expanded())
     rows = db.list_tokens()
     if not rows:
         click.echo("no tokens")
@@ -318,15 +347,26 @@ def token_list(config_path):
 
 @token.command("revoke")
 @click.argument("name")
+@click.option("--tenant", "tenant_id", default=None, help="Tenant cell (default 'default').")
 @click.option("--config", "config_path", default=None, help="Path to config.toml")
-def token_revoke(name, config_path):
+def token_revoke(name, tenant_id, config_path):
     """Revoke the token named NAME (takes effect on its next request)."""
     from .db import Database
+    from .provisioning import control_path_for, revoke_cell_token
     cfg = Config.load(config_path)
-    db = Database(cfg.db_path_expanded())
-    if db.revoke_token(name) is None:
-        raise click.ClickException(f"no token named '{name}'")
-    db.add_audit("-", "token_revoked", {"name": name})
+    control_path = control_path_for(cfg)
+    if tenant_id or control_path.exists():
+        control = _control(cfg)
+        cell = _cell_db_for(control, tenant_id or "default")
+        try:
+            revoke_cell_token(control, cell, name)
+        except KeyError:
+            raise click.ClickException(f"no token named '{name}'")
+    else:
+        db = Database(cfg.db_path_expanded())
+        if db.revoke_token(name) is None:
+            raise click.ClickException(f"no token named '{name}'")
+        db.add_audit("-", "token_revoked", {"name": name})
     click.echo(f"revoked {name}")
 
 def _mint_pair_code(control, tenant_id: str, minutes: int, secret: str | None = None) -> tuple[str, str]:
