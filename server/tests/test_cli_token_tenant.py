@@ -33,3 +33,34 @@ def test_token_create_into_tenant_routes_to_that_cell(tmp_path, monkeypatch):
     # revoke drops both cell row + route
     CliRunner().invoke(main, ["token", "revoke", "hermes", "--tenant", "acme"])
     assert control.resolve(_h(value)) is None
+
+
+def test_token_create_nonexistent_tenant_fails_cleanly(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    CliRunner().invoke(main, ["init"])
+    r = CliRunner().invoke(main, ["token", "create", "ghost-token", "--role", "agent",
+                                  "--tenant", "bogus"])
+    assert r.exit_code != 0
+    assert "no such tenant 'bogus'" in r.output
+    assert "Traceback" not in r.output
+    assert "KeyError" not in r.output
+
+
+def test_token_list_nonexistent_tenant_fails_cleanly(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    CliRunner().invoke(main, ["init"])
+    r = CliRunner().invoke(main, ["token", "list", "--tenant", "bogus"])
+    assert r.exit_code != 0
+    assert "no such tenant 'bogus'" in r.output
+    assert "Traceback" not in r.output
+    assert "KeyError" not in r.output
+
+
+def test_token_revoke_nonexistent_tenant_fails_cleanly(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    CliRunner().invoke(main, ["init"])
+    r = CliRunner().invoke(main, ["token", "revoke", "ghost-token", "--tenant", "bogus"])
+    assert r.exit_code != 0
+    assert "no such tenant 'bogus'" in r.output
+    assert "Traceback" not in r.output
+    assert "KeyError" not in r.output

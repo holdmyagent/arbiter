@@ -306,6 +306,8 @@ def token_create(name, role, tenant_id, action_types, max_severity, expires_days
     if tenant_id or control_path.exists():
         tid = tenant_id or "default"
         control = _control(cfg)
+        if control.epoch_of(tid) is None:
+            raise click.ClickException(f"no such tenant '{tid}'")
         cell = _cell_db_for(control, tid)
         try:
             value = mint_cell_token(control, cell, tid, name, role, scopes, expires_at)
@@ -333,7 +335,11 @@ def token_list(tenant_id, config_path):
     cfg = Config.load(config_path)
     control_path = control_path_for(cfg)
     if tenant_id or control_path.exists():
-        db = _cell_db_for(_control(cfg), tenant_id or "default")
+        tid = tenant_id or "default"
+        control = _control(cfg)
+        if control.epoch_of(tid) is None:
+            raise click.ClickException(f"no such tenant '{tid}'")
+        db = _cell_db_for(control, tid)
     else:
         db = Database(cfg.db_path_expanded())
     rows = db.list_tokens()
@@ -357,7 +363,10 @@ def token_revoke(name, tenant_id, config_path):
     control_path = control_path_for(cfg)
     if tenant_id or control_path.exists():
         control = _control(cfg)
-        cell = _cell_db_for(control, tenant_id or "default")
+        tid = tenant_id or "default"
+        if control.epoch_of(tid) is None:
+            raise click.ClickException(f"no such tenant '{tid}'")
+        cell = _cell_db_for(control, tid)
         try:
             revoke_cell_token(control, cell, name)
         except KeyError:
