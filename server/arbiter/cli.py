@@ -520,6 +520,18 @@ def admin_backup(out_dir, config_path):
     click.echo("Restore is fail-closed: in-flight approvals are re-minted (see `hma admin restore`).")
 
 
+@admin.command("restore")
+@click.option("--backup-dir", required=True, help="Snapshot dir produced by `hma admin backup`.")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def admin_restore(backup_dir, config_path):
+    """Restore a fleet snapshot (stop the server first). Fail-closed: in-flight
+    approvals are re-minted and credential routes are reconciled."""
+    from .provisioning import restore_fleet, control_path_for
+    cfg = Config.load(config_path)
+    restore_fleet(control_path_for(cfg), Path(backup_dir))
+    click.echo("restore complete — in-flight approvals invalidated; agents must re-propose")
+
+
 @main.group()
 def audit():
     """Audit-log utilities."""
