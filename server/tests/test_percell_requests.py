@@ -85,27 +85,32 @@ async def test_spawn_publish_logs_and_swallows_epoch_changed(caplog):
         actual_epoch = control.epoch_of("test")
         assert actual_epoch is not None, "Tenant should be provisioned"
         
-        # Use a bogus epoch (current + 1000) that will cause EpochChanged
-        bogus_epoch = actual_epoch + 1000
-        
-        # Spawn a publish task with the bogus epoch
-        req = {"id": "req-123", "title": "test"}
-        task = _spawn_publish(app, "test", bogus_epoch, "request.created", req)
-        
-        # Let the task run by yielding to the event loop
-        # The task should complete quickly with an exception that gets logged
-        await asyncio.sleep(0.1)
-        
-        # Verify the task completed
-        assert task.done(), f"Task should be done but state is: {task._state}"
-        
-        # Task should not have raised an exception (it was caught and logged)
+        # Pin the cell hot at the REAL epoch and keep it pinned: EpochChanged
+        # only fires against a pinned hot entry whose epoch differs (a cold
+        # registry would just open a fresh cell stamped with whatever epoch
+        # we supply, and the task would fail for an unrelated reason).
+        pinned = await registry.acquire("test", actual_epoch)
         try:
-            task.result()
-        except Exception as e:
-            pytest.fail(f"Task raised unhandled exception: {e}")
-        
-        # Check that the warning was logged
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any("background publish failed" in r.message for r in warnings), \
-            f"Expected 'background publish failed' warning, got warnings: {[r.message for r in warnings]}"
+            # Spawn a publish task with a mismatched epoch -> genuine EpochChanged
+            req = {"id": "req-123", "title": "test"}
+            task = _spawn_publish(app, "test", actual_epoch + 1, "request.created", req)
+            
+            # Let the task run by yielding to the event loop
+            # The task should complete quickly with an exception that gets logged
+            await asyncio.sleep(0.1)
+            
+            # Verify the task completed
+            assert task.done(), f"Task should be done: {task}"
+            
+            # Task should not have raised an exception (it was caught and logged)
+            try:
+                task.result()
+            except Exception as e:
+                pytest.fail(f"Task raised unhandled exception: {e}")
+            
+            # Check that the warning was logged
+            warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+            assert any("background publish failed" in r.message for r in warnings), \
+                f"Expected 'background publish failed' warning, got warnings: {[r.message for r in warnings]}"
+        finally:
+            registry.release(pinned)
