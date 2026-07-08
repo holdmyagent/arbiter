@@ -9,9 +9,11 @@ crash mid-write never leaves a truncated file), and a load treats ANY
 problem - missing file, invalid JSON, bad base64, or a pin whose bytes are
 not a shape-valid Ed25519 public key (eager validation, not deferred to the
 first `verify()`) - as "no rotation state yet" rather than raising or
-smuggling in bad material. Worst case on a tampered file: the adopted pins
-and seq are forgotten and the warden falls back to its initial config pin,
-never a forged trust anchor.
+smuggling in bad material. The file is written 0600 as an integrity signal
+(a same-privilege FS writer could still tamper, but that privilege can also
+rewrite warden.toml). Worst case on a tampered file: the adopted pins and seq
+are forgotten and the warden falls back to its initial config pin, which always
+wins on kid collision.
 """
 from __future__ import annotations
 
@@ -50,3 +52,4 @@ def save_rotation_state(data_dir: Path, pinned: dict[str, bytes], last_seq: int)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(doc))
     os.replace(tmp, p)
+    os.chmod(p, 0o600)
