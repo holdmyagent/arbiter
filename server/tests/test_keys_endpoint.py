@@ -116,10 +116,11 @@ def test_keys_rejects_tenant_cell_mismatch(keys_app, tmp_path, monkeypatch):
         return identity, cell
 
     monkeypatch.setattr(app_mod, "resolve_identity", _mismatched_resolve_identity)
-    # Swap registry to use token "tok-b" which returns a "beta" cell
-    app.state.registry = FakeRegistry({"tok-test": FakeCell("beta", sb)})
+    # Swap registry to use token "tok-test" which returns a "beta" cell
+    reg2 = FakeRegistry({"tok-test": FakeCell("beta", sb)})
+    app.state.registry = reg2
 
     with TestClient(app) as c:
         r = c.get("/v1/keys", headers={"Authorization": "Bearer tok-test"})
     assert r.status_code == 500
-    assert reg.acquired == reg.released  # release still happened
+    assert reg2.acquired == reg2.released == 1  # release still happened on the registry this request used
