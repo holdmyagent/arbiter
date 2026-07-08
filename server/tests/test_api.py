@@ -54,7 +54,6 @@ def test_list_and_decide(client):
                    json={"decision":"deny"})
     assert d2.status_code==409
 
-@_API_XFAIL
 def test_unknown_404(client):
     assert client.get("/v1/requests/nope", headers={"Authorization":"Bearer test-agent"}).status_code==404
 

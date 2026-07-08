@@ -60,7 +60,6 @@ def test_ask_approved(client, cfg, app_headers):
                           severity="high", target="prod", ttl=30, description="")
     assert code == 0 and decision["status"] == "approved" and decision["target"] == "prod"
 
-@_API_XFAIL
 def test_ask_expired_is_exit_1(client, cfg):
     code, decision = _ask(client, cfg.auth.agent_token, title="x",
                           severity="low", target=None, ttl=1, description="")

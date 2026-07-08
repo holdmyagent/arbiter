@@ -72,7 +72,6 @@ def test_keys_unauthenticated_jwks_shape(client):
     assert k["kty"] == "OKP" and k["crv"] == "Ed25519" and k["kid"] and k["x"]
 
 
-@_API_XFAIL
 def test_verdict_404_while_pending(client):
     rid = client.post("/v1/requests", headers=AGENT, json={"title": "t"}).json()["id"]
     r = client.get(f"/v1/requests/{rid}/verdict", headers=AGENT)
@@ -80,7 +79,6 @@ def test_verdict_404_while_pending(client):
     assert r.json()["detail"] == "no verdict yet"
 
 
-@_API_XFAIL
 def test_verdict_unknown_request_404(client):
     r = client.get("/v1/requests/nope/verdict", headers=AGENT)
     assert r.status_code == 404

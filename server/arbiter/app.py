@@ -265,9 +265,9 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         return cell.db.list_requests(status)
 
     @app.get("/v1/requests/{rid}")
-    def get_(rid: str,
-             identity: Identity = Depends(require_role("agent", "warden", "app"))):
-        r = db.get_request(rid)
+    def get_(rid: str, ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        identity, cell = ctx
+        r = cell.db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
         if identity.role in ("agent", "warden"):
@@ -282,9 +282,9 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         return r
 
     @app.get("/v1/requests/{rid}/verdict")
-    def get_verdict(rid: str,
-                    identity: Identity = Depends(require_role("agent", "warden", "app"))):
-        r = db.get_request(rid)
+    def get_verdict(rid: str, ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        identity, cell = ctx
+        r = cell.db.get_request(rid)
         if r and identity.role in ("agent", "warden"):   # app tokens: unrestricted
             rb = r.get("requested_by")
             if identity.legacy:                 # legacy config token: unstamped rows only
