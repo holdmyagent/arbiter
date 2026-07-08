@@ -92,6 +92,16 @@ async def run_stream(ws, registry, control, *, resolve,
             async def _heartbeat():
                 while True:
                     await asyncio.sleep(heartbeat)
+                    # §15.5: disabled_at is read fresh here, never cached — a pinned/hot
+                    # cell does not exempt its live sessions. Nothing wires disable_tenant
+                    # to a live cell's hub directly (control.py stays registry-agnostic,
+                    # a leaf module), so each open session re-checks on its own heartbeat
+                    # and pushes the close sentinel to the WHOLE hub (tearing down every
+                    # sibling session on this cell too, not just this one) the first time
+                    # any of them notices.
+                    if control is not None and control.is_disabled(cell.tenant_id):
+                        cell.hub.close()
+                        return
                     try:
                         q.put_nowait({"event": "ping", "data": {}})
                     except asyncio.QueueFull:
