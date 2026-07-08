@@ -105,3 +105,49 @@ def test_reject_new_x_absent_from_served_set():
     rec = _record(ok, okid, new_kid=nkid, new_x=nx, seq=1, expires_at=int(time.time()) + 3600)
     with pytest.raises(Exception):
         v.adopt_rotation(rec, _served(_jwk(okid, ox)))  # new kid not served
+
+
+def test_reject_wrong_aud_with_correct_tenant_claim():
+    # Isolates the aud check from the hma.tenant_id claim check: aud is wrong
+    # while hma.tenant_id still says the correct paired tenant. jwt.decode's
+    # audience check must reject this on its own, before the tenant_id claim
+    # is even inspected (unlike test_reject_tenant_mismatch_record, which
+    # corrupts aud AND tenant_id together and so doesn't isolate the gate).
+    ok, okid, oraw, ox = _keypair()
+    _, nkid, _, nx = _keypair()
+    v = VerdictVerifier({okid: oraw}, TENANT)
+    rec = _record(ok, okid, new_kid=nkid, new_x=nx, seq=1,
+                  expires_at=int(time.time()) + 3600,
+                  tenant=TENANT, aud="hma-rotation:wrong-tenant")
+    with pytest.raises(Exception):
+        v.adopt_rotation(rec, _served(_jwk(okid, ox), _jwk(nkid, nx)))
+
+
+def test_reject_replay_of_identical_already_adopted_record():
+    # Explicit replay: the literal SAME jws that was already adopted once,
+    # resubmitted verbatim — not merely "a different record with an equal
+    # seq" (that's test_reject_older_or_equal_seq_replay).
+    ok, okid, oraw, ox = _keypair()
+    _, nkid, _, nx = _keypair()
+    v = VerdictVerifier({okid: oraw}, TENANT)
+    rec = _record(ok, okid, new_kid=nkid, new_x=nx, seq=1, expires_at=int(time.time()) + 3600)
+    served = _served(_jwk(okid, ox), _jwk(nkid, nx))
+    assert v.adopt_rotation(rec, served) == nkid
+    with pytest.raises(Exception):
+        v.adopt_rotation(rec, served)
+
+
+def test_reject_new_key_bytes_invalid_shape():
+    # Eager Ed25519 shape validation: a candidate new key that isn't a
+    # 32-byte Ed25519 public key is rejected with a VerdictError at
+    # adopt-time, never left to surface as a bare ValueError the first time
+    # something tries to verify against it.
+    from hold_warden.verdict import VerdictError
+    ok, okid, oraw, ox = _keypair()
+    nkid = f"{TENANT}:deadbeef"
+    bad_x = base64.urlsafe_b64encode(b"too-short").rstrip(b"=").decode()
+    rec = _record(ok, okid, new_kid=nkid, new_x=bad_x, seq=1,
+                  expires_at=int(time.time()) + 3600)
+    v = VerdictVerifier({okid: oraw}, TENANT)
+    with pytest.raises(VerdictError):
+        v.adopt_rotation(rec, _served(_jwk(okid, ox), _jwk(nkid, bad_x)))

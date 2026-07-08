@@ -87,12 +87,14 @@ def test_unpinned_kid_rejected():
 
 def test_cross_tenant_rejected_even_with_forced_identical_key():
     # THE §16 gate: tenant A's verdict, verified by tenant B's warden that has
-    # FORCED the identical key bytes, still fails on aud/tenant_id.
+    # FORCED the identical key bytes under ITS OWN kid namespace, still fails
+    # on aud/tenant_id — genuinely at that gate, not at kid lookup (the kid
+    # IS a valid local pin for warden B, so _pubkey() succeeds first).
     key, hash8_kid_a, raw = _keypair(tenant="acme")
     # Warden B pins the SAME raw bytes but under a beta-namespaced kid & tenant.
     kid_b = f"beta:{hash8_kid_a.split(':', 1)[1]}"
     vb = VerdictVerifier({kid_b: raw}, "beta")
-    token = _sign(key, hash8_kid_a, request_id="rid-5", action_hash=None, tenant="acme")
+    token = _sign(key, kid_b, request_id="rid-5", action_hash=None, tenant="acme")
     with pytest.raises(VerdictError):
         vb.verify(token, "rid-5", None)
 

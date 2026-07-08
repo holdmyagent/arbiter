@@ -9,11 +9,14 @@ never resolved here.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -125,7 +128,8 @@ def _substitute(template: str, params: dict[str, str]) -> str:
 class WardenConfig:
     arbiter_url: str
     arbiter_token_ref: str
-    arbiter_pubkey: str  # pinned "kid:b64url"
+    arbiter_pubkey: str  # initial pinned "kid:b64url"
+    arbiter_tenant: str  # paired tenant_id; the verifier's trust boundary
     warden_name: str
     bind: str
     port: int
@@ -150,7 +154,7 @@ class WardenConfig:
         warden = doc.get("warden")
         if not isinstance(warden, dict):
             raise ConfigError(f"{path}: missing [warden] table")
-        for key in ("arbiter_url", "arbiter_token", "arbiter_pubkey", "name"):
+        for key in ("arbiter_url", "arbiter_token", "arbiter_pubkey", "arbiter_tenant", "name"):
             if not warden.get(key):
                 raise ConfigError(f"{path}: [warden] requires {key} = \"...\"")
 
@@ -173,6 +177,7 @@ class WardenConfig:
             arbiter_url=warden["arbiter_url"],
             arbiter_token_ref=warden["arbiter_token"],
             arbiter_pubkey=warden["arbiter_pubkey"],
+            arbiter_tenant=warden["arbiter_tenant"],
             warden_name=warden["name"],
             bind=warden.get("bind", "127.0.0.1"),
             port=int(warden.get("port", 8646)),
@@ -181,6 +186,27 @@ class WardenConfig:
             actions=actions,
             secrets=secrets,
         )
+
+    def pinned(self) -> dict[str, bytes]:
+        """The initial locally-pinned key set from arbiter_pubkey ('kid:b64url').
+
+        kid itself may contain colons (kid = f"{tenant}:{hash8}"), so the
+        split is on the LAST colon, not the first. Key bytes are validated
+        eagerly as a shape-valid Ed25519 public key here - at config load /
+        CLI startup - so a malformed pin is a loud ConfigError, never a bare
+        ValueError deferred to the first verdict verification.
+        """
+        kid, sep, x = self.arbiter_pubkey.rpartition(":")
+        if not sep or not kid or not x:
+            raise ConfigError(
+                f"invalid arbiter_pubkey (expected 'kid:b64url'): "
+                f"{self.arbiter_pubkey!r}")
+        try:
+            raw = base64.urlsafe_b64decode(x + "=" * (-len(x) % 4))
+            Ed25519PublicKey.from_public_bytes(raw)
+        except ValueError as exc:
+            raise ConfigError(f"invalid arbiter_pubkey key bytes: {exc}") from exc
+        return {kid: raw}
 
 
 def _parse_action(path: Path, name: str, tbl: object) -> ActionSpec:
