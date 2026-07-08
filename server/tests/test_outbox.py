@@ -45,7 +45,9 @@ def test_migration_6_creates_outbox_table(db):
     names = {r[0] for r in db.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "outbox" in names
-    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 6
+    # SCHEMA_VERSION bumped to 7 by G1 (pairings table); this test only asserts
+    # migration 6 (outbox) landed, not the exact version.
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_publish_success_deletes_row(db):
