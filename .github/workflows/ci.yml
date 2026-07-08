@@ -13,10 +13,12 @@ jobs:
         with: { python-version: "${{ matrix.python }}" }
       - run: pip install ruff && ruff check server sdk warden
       - run: pip install -e 'server[dev]' && pytest server/tests
+      - run: pytest server/tests/isolation -q
       - run: pip install -e 'sdk[dev]' && pytest sdk/tests
       - run: pip install -e warden && pytest warden/tests
       - run: bash scripts/smoke.sh
       - run: bash scripts/smoke-warden.sh
+      - run: bash scripts/smoke-multitenant.sh
   docker:
     runs-on: ubuntu-latest
     steps:
