@@ -104,7 +104,8 @@ def _write_rotation(cell_dir: Path, rec: dict) -> None:
 
 
 def _load_rotation(cell_dir: Path):
-    """Return the staged rotation dict, or None if absent, unreadable, or expired."""
+    """Return the staged rotation dict, or None if absent, unreadable, structurally
+    wrong (valid JSON that isn't an object — e.g. a list or scalar), or expired."""
     p = Path(cell_dir) / ROTATION_FILENAME
     if not p.is_file():
         return None
@@ -112,9 +113,34 @@ def _load_rotation(cell_dir: Path):
         rec = json.loads(p.read_text())
     except (OSError, ValueError):
         return None
+    if not isinstance(rec, dict):
+        return None
     if int(rec.get("expires_at", 0)) < int(time.time()):
         return None
     return rec
+
+
+def rotate_signing_key(tenant_id: str, cell_dir, *, ttl_seconds: int, seq: int) -> Signer:
+    """Rotate this cell's signing key. Archives the current PEM to
+    verdict_signing_key.retired.pem, mints a fresh current key, signs a rotation
+    record with the OLD key, and stages verdict_rotation.json so public_jwks()
+    serves both keys + the record until expires_at. seq must be strictly greater
+    than any previously staged seq (the caller supplies the next value)."""
+    cell_dir = Path(cell_dir).expanduser()
+    old = load_or_create_signer(tenant_id, cell_dir)
+    pem_path = cell_dir / KEY_FILENAME
+    os.replace(pem_path, cell_dir / RETIRED_FILENAME)
+    new_key = _mint_key(pem_path)
+    new = Signer(tenant_id=tenant_id, kid=f"{tenant_id}:{_hash8(new_key)}",
+                 signing_key=new_key, dir=cell_dir)
+    expires_at = int(time.time()) + ttl_seconds
+    record = sign_rotation_record(old, new_kid=new.kid, new_x=_b64u(_raw_public_bytes(new_key)),
+                                  seq=seq, expires_at=expires_at, tenant_id=tenant_id)
+    _write_rotation(cell_dir, {
+        "record": record, "seq": seq, "expires_at": expires_at,
+        "prev_kid": old.kid, "prev_x": _b64u(_raw_public_bytes(old.signing_key)),
+    })
+    return new
 
 
 def sign_verdict(signer: "Signer", *, request_id: str, action_hash: str | None,
