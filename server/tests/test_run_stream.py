@@ -27,3 +27,16 @@ async def test_happy_path_pins_delivers_and_releases_exactly_once():
     await asyncio.wait_for(task, timeout=1.0)
     assert reg.refcounts["A"] == 0                # released exactly once
     assert cell.hub.active == 0                   # unsubscribed
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_closes_4401_without_accept_or_pin():
+    reg = FakeRegistry({"A": FakeCell("A")})
+    resolve = make_resolve({"tokA": "A"})            # tokB is unknown
+    ws = FakeWS({"authorization": "Bearer tokB"})
+
+    await run_stream(ws, reg, None, resolve=resolve, heartbeat=1e9, send_timeout=5.0)
+
+    assert ws.accepted is False
+    assert ws.closed == 4401
+    assert reg.refcounts["A"] == 0                   # never acquired → never released
