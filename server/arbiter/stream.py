@@ -78,34 +78,44 @@ async def run_stream(ws, registry, control, *, resolve,
         return
     # From here `cell` is pinned; the outer finally is the single release site.
     try:
-        if cell.hub.active >= registry.stream_cap:
+        # Atomic, FD-budget-aware per-tenant cap: acquire the registry's stream
+        # slot BEFORE accept so two racing streams can't both read a stale
+        # active count and both squeak in over cap (TOCTOU). False => shed;
+        # nothing was acquired, so there is nothing to release on this path.
+        if not registry.acquire_stream_slot(cell.tenant_id):
             await ws.close(code=4429)   # per-tenant stream cap
             return
-        await ws.accept()
-        q = cell.hub.subscribe()
-
-        async def _heartbeat():
-            while True:
-                await asyncio.sleep(heartbeat)
-                try:
-                    q.put_nowait({"event": "ping", "data": {}})
-                except asyncio.QueueFull:
-                    pass  # peer is already backed up; the send loop will time out
-
-        hb = asyncio.create_task(_heartbeat())
         try:
-            while True:
-                item = await q.get()
-                if item is Hub.CLOSE:               # disable/revoke teardown
-                    await ws.close(code=4403)
-                    break
-                # Bound every send: a blackholed peer's send blocks forever, so
-                # wait_for hard-closes it instead of pinning the cell indefinitely.
-                await asyncio.wait_for(ws.send_json(item), timeout=send_timeout)
-        except (WebSocketDisconnect, asyncio.TimeoutError):
-            pass
+            await ws.accept()
+            q = cell.hub.subscribe()
+
+            async def _heartbeat():
+                while True:
+                    await asyncio.sleep(heartbeat)
+                    try:
+                        q.put_nowait({"event": "ping", "data": {}})
+                    except asyncio.QueueFull:
+                        pass  # peer is already backed up; the send loop will time out
+
+            hb = asyncio.create_task(_heartbeat())
+            try:
+                while True:
+                    item = await q.get()
+                    if item is Hub.CLOSE:               # disable/revoke teardown
+                        await ws.close(code=4403)
+                        break
+                    # Bound every send: a blackholed peer's send blocks forever, so
+                    # wait_for hard-closes it instead of pinning the cell indefinitely.
+                    await asyncio.wait_for(ws.send_json(item), timeout=send_timeout)
+            except (WebSocketDisconnect, asyncio.TimeoutError):
+                pass
+            finally:
+                hb.cancel()
+                cell.hub.unsubscribe(q)
         finally:
-            hb.cancel()
-            cell.hub.unsubscribe(q)
+            # Acquired above => always released here, on every exit from the
+            # accept/subscribe/heartbeat/send path (normal, disconnect, timeout,
+            # sentinel close, or any other exception).
+            registry.release_stream_slot(cell.tenant_id)
     finally:
         registry.release(cell)
