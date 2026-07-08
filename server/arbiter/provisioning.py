@@ -248,9 +248,10 @@ def ensure_default_cell(cfg, control, tenants_root: Path) -> None:
     """Startup bootstrap for the 'default' cell (§14/C1 back-compat), shared by
     `main.py` and `hma serve`.
 
-    Fresh install: no legacy single-tenant DB (or one with zero tokens) —
+    Fresh install: no legacy single-tenant DB at `cfg.db_path_expanded()` —
     provision an empty 'default' cell rooted at <tenants_root>/default, same
-    as before.
+    as before. (A fresh multi-tenant install never creates that db_path file;
+    all data lands under <tenants_root>/.)
 
     Upgraded install that hasn't run `hma admin migrate` yet: a legacy
     single-tenant DB already sits at `cfg.db_path_expanded()` (the live
