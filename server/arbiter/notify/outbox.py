@@ -18,11 +18,10 @@ Channel-level failures inside the Dispatcher are still swallowed and
 audited there (``notify_failed``) — the outbox guards against the process
 dying, not against a receiver being down.
 
-Because the row is deleted AFTER a successful dispatch, a crash between
-dispatch-success and that delete leaves the row for the startup drain, which
-re-delivers it — so overall delivery is at-least-once across a crash: a
-push/webhook may be sent twice, and channels (APNs, ntfy, webhook, callback)
-are not idempotent.
+Because the `(request,event)` dedupe key is reserved in the cell db BEFORE
+dispatch, overall delivery is at most once per dedupe key across process
+restart and cell churn: a re-drained row whose key is already reserved is
+dropped without re-firing.
 """
 import asyncio
 import logging
@@ -55,6 +54,13 @@ class Outbox:
 
     async def _deliver(self, oid: str, event: str, req: dict,
                        attempts_done: int) -> None:
+        # Dedupe guard (§9,§15.11): if this (request,event) was already claimed
+        # by a prior delivery — including one interrupted by a crash before its
+        # outbox_delete, or a cell reopened after churn — do NOT re-fire. The
+        # marker is persisted in the cell db, so it survives eviction/reopen.
+        if not self.db.notify_reserve(req["id"], event):
+            self.db.outbox_delete(oid)
+            return
         for i in range(attempts_done, MAX_ATTEMPTS):
             try:
                 await self._dispatch(event, req)
