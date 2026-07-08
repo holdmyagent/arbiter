@@ -145,7 +145,6 @@ def test_db_app_token_stamps_decided_by_with_identity_name(client):
                     headers=approver)
     assert d.status_code == 200 and d.json()["decided_by"] == "kevin-phone"
 
-@_API_XFAIL
 def test_legacy_app_token_keeps_device_heuristic(client):
     client.db.register_device("tokX", "Kevins-iPhone")
     rid = client.post("/v1/requests", json={"title": "t"},

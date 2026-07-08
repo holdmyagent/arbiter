@@ -61,14 +61,17 @@ def load_or_create_keypair(config_dir: Path) -> tuple[str, Ed25519PrivateKey]:
     return kid, key
 
 
-def sign_verdict(kid: str, key: Ed25519PrivateKey, *, request_id: str,
-                 action_hash: str | None, decision: str, decided_at: str,
-                 approval_ttl_seconds: int) -> str:
-    """Sign a verdict as an EdDSA JWS. action_hash=None means the request was
-    created without a canonical action (cooperative tier) — verifiably unbound."""
+def sign_verdict(signer: "Signer", *, request_id: str, action_hash: str | None,
+                 decision: str, decided_at: str, approval_ttl: int,
+                 tenant_id: str) -> str:
+    """Sign a verdict as an EdDSA JWS with SIGNER's (cell-scoped) key, bound to
+    TENANT_ID: aud=f"hma-verdict:{tenant_id}" and an hma.tenant_id claim (§7/
+    §15.8), so a verdict minted by one tenant's cell can never verify as
+    belonging to another. action_hash=None means the request was created
+    without a canonical action (cooperative tier) — verifiably unbound."""
     payload = {
         "iss": "hma",
-        "aud": "hma-verdict",
+        "aud": f"hma-verdict:{tenant_id}",
         "jti": request_id,
         "iat": int(time.time()),
         "hma": {
@@ -76,10 +79,12 @@ def sign_verdict(kid: str, key: Ed25519PrivateKey, *, request_id: str,
             "action_hash": action_hash,
             "decision": decision,
             "decided_at": decided_at,
-            "approval_ttl_seconds": approval_ttl_seconds,
+            "approval_ttl_seconds": approval_ttl,
+            "tenant_id": tenant_id,
         },
     }
-    return jwt.encode(payload, key, algorithm="EdDSA", headers={"kid": kid})
+    return jwt.encode(payload, signer.signing_key, algorithm="EdDSA",
+                      headers={"kid": signer.kid})
 
 
 def public_jwks(kid: str, key: Ed25519PrivateKey) -> dict:

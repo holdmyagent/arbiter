@@ -81,7 +81,6 @@ def test_consume_happy_path(client, warden_headers):
     assert row["consumed_at"] == r.json()["consumed_at"]
 
 
-@_API_XFAIL
 def test_consume_requires_warden_role(client, warden_headers):
     rid = _approved_request(client)
     assert client.post(f"/v1/requests/{rid}/consume", headers=AGENT).status_code == 403

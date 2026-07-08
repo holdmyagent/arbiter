@@ -17,7 +17,7 @@ from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .notify.outbox import Outbox
 from .policy import evaluate_create
-from .signing import public_jwks, sign_verdict
+from .signing import sign_verdict
 from .web import build_router, session_valid
 
 log = logging.getLogger("arbiter.app")
@@ -299,8 +299,9 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         return {"verdict": r["verdict_jws"], "kid": r["verdict_kid"]}
 
     @app.post("/v1/requests/{rid}/decision")
-    async def decide(rid: str, body: Decision,
-                     identity: Identity = Depends(require_role("app"))):
+    async def decide(rid: str, body: Decision, ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        db = cell.db
         r = db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
@@ -315,24 +316,26 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             # a pending row that refused the guarded UPDATE is expired-by-clock
             shown = "expired" if cur["status"] == "pending" else cur["status"]
             raise HTTPException(409, f"not pending (status={shown})")
-        jws = sign_verdict(kid, signing_key, request_id=updated["id"],
+        jws = sign_verdict(cell.signer, request_id=updated["id"],
                            action_hash=updated["action_hash"],
                            decision=updated["status"],
                            decided_at=updated["decided_at"],
-                           approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
-        db.set_verdict(updated["id"], jws, kid)
+                           approval_ttl=cfg.policy.approval_ttl_seconds,
+                           tenant_id=cell.tenant_id)
+        db.set_verdict(updated["id"], jws, cell.signer.kid)
         db.add_audit(updated["id"], "verdict_issued",
-                     {"decision": updated["status"], "kid": kid})
+                     {"decision": updated["status"], "kid": cell.signer.kid})
         updated = db.get_request(rid)
-        _spawn(outbox.publish("request.decided", updated))
-        await hub.publish("request.decided", "request", updated)
+        _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", updated)
+        await cell.hub.publish("request.decided", "request", updated)
         return updated
 
     @app.post("/v1/requests/{rid}/consume")
-    def consume(rid: str, identity: Identity = Depends(require_role("warden"))):
+    def consume(rid: str, ctx: tuple = Depends(require_cell("warden"))):
         # Sync (not async) on purpose: it runs in the threadpool, so concurrent
         # consumes genuinely race and the guarded UPDATE decides the winner.
-        code, row = db.consume_request(
+        identity, cell = ctx
+        code, row = cell.db.consume_request(
             rid, approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
         if code == 404:
             raise HTTPException(404, "not found")
@@ -341,7 +344,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         if code == 409:
             raise HTTPException(
                 409, f"not consumable (status={row['status']}, consumed_at={row['consumed_at']})")
-        db.add_audit(rid, "consumed", {"by": identity.name})
+        cell.db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
 
     @app.post("/v1/devices", dependencies=[Depends(require_role("app"))])
