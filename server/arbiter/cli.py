@@ -326,6 +326,49 @@ def token_revoke(name, config_path):
     db.add_audit("-", "token_revoked", {"name": name})
     click.echo(f"revoked {name}")
 
+def _mint_pair_code(control, tenant_id: str, minutes: int, secret: str | None = None) -> tuple[str, str]:
+    """Mint a single-use, short-expiry pairing credential for TENANT.
+
+    Writes the pairing row into the tenant's OWN cell db (single-use authority)
+    and registers the routing hash in control.db (admin path) so the phone can
+    reach the tenant with the credential alone. Returns (code, code_hash)."""
+    from datetime import datetime, timedelta, timezone
+    from .db import Database
+    code = secret or f"hma_pair_{pysecrets.token_hex(24)}"
+    code_hash = _hash_token(code)
+    cell_db_path = str(Path(control.tenant_dir(tenant_id)) / "arbiter.sqlite3")
+    db = Database(cell_db_path)
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    db.mint_pairing(code_hash, expires_at)
+    control.add_route(code_hash, tenant_id)
+    return code, code_hash
+
+
+@main.group()
+def tenant():
+    """Manage tenants (admin-credentialed provisioning)."""
+
+
+@tenant.command("pair-code")
+@click.argument("tenant_id")
+@click.option("--minutes", type=int, default=15, help="Credential lifetime (default 15).")
+@click.option("--host", "host_url", default=None, help="Server base URL for the QR payload.")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def tenant_pair_code(tenant_id, minutes, host_url, config_path):
+    """Mint a single-use pairing credential for TENANT_ID and print its deep-link."""
+    from .control import ControlPlane
+    from .pair import build_pairing_payload, local_ip
+    cfg = Config.load(config_path)
+    db_path = Path(cfg.db_path_expanded())
+    tenants_root = db_path.parent / "cells"
+    control = ControlPlane.open(db_path.parent / "control", tenants_root)
+    code, _ = _mint_pair_code(control, tenant_id, minutes)
+    base = host_url or f"http://{local_ip()}:{cfg.server.port}"
+    click.echo(f"pairing code: {code}")
+    click.echo(f"deep-link:    {build_pairing_payload(base, code)}")
+    click.echo(f"Single-use, expires in {minutes} min. Shown once.")
+
+
 @main.group()
 def audit():
     """Audit-log utilities."""
