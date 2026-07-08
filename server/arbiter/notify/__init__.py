@@ -1,14 +1,65 @@
 import fnmatch
 import ipaddress
 import logging
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlparse
 
 from .apns import APNsSender, build_payload, send_with_retry
 from .ntfy import NtfyNotifier
 from .webhook import WebhookNotifier
+from ..config import WebhookCfg, NtfyCfg, SEVERITIES
 from ..models import severity_rank
 
 log = logging.getLogger("arbiter.notify")
+
+@dataclass
+class CellDelivery:
+    """Per-cell egress config. Exposes exactly the attributes Dispatcher reads
+    off its first arg (.webhook/.ntfy/.callback_allowlist/.notify_severities),
+    so build_cell_dispatcher can hand it straight to the shipped Dispatcher."""
+    webhook: WebhookCfg = field(default_factory=WebhookCfg)
+    ntfy: NtfyCfg = field(default_factory=NtfyCfg)
+    callback_allowlist: list[str] = field(default_factory=list)
+    notify_severities: dict[str, bool] = field(
+        default_factory=lambda: {s: True for s in SEVERITIES})
+
+    @classmethod
+    def from_process(cls, cfg) -> "CellDelivery":
+        return cls(webhook=cfg.webhook, ntfy=cfg.ntfy,
+                   callback_allowlist=list(cfg.callback_allowlist),
+                   notify_severities=dict(cfg.notify_severities))
+
+def cell_delivery(process_cfg, tenant_id: str, cell_dir) -> "CellDelivery":
+    """default cell inherits the process delivery config (back-compat, §14);
+    every other tenant reads ONLY <cell_dir>/notify.toml — the process cfg's
+    sinks NEVER leak into another tenant (§9). Absent file = no egress."""
+    if tenant_id == "default":
+        return CellDelivery.from_process(process_cfg)
+    d = CellDelivery()
+    p = Path(cell_dir) / "notify.toml"
+    if p.is_file():
+        doc = tomllib.loads(p.read_text())
+        wh = doc.get("webhook", {})
+        if "url" in wh: d.webhook.url = str(wh["url"])
+        if "secret" in wh: d.webhook.secret = str(wh["secret"])
+        nt = doc.get("ntfy", {})
+        for k in ("url", "topic", "token"):
+            if k in nt: setattr(d.ntfy, k, str(nt[k]))
+        n = doc.get("notify", {})
+        if "callback_allowlist" in n:
+            d.callback_allowlist = [str(x) for x in n["callback_allowlist"]]
+        for k, v in n.get("severities", {}).items():
+            if k in d.notify_severities and isinstance(v, bool):
+                d.notify_severities[k] = v
+    return d
+
+def build_cell_dispatcher(delivery: "CellDelivery", db, sender, transport=None) -> "Dispatcher":
+    """The cell's own Dispatcher: shipped Dispatcher fed the per-cell delivery
+    config + the shared APNs sender + the cell db. sender is ALWAYS passed so
+    Dispatcher never falls back to APNsSender(delivery)."""
+    return Dispatcher(delivery, db, sender=sender, transport=transport)
 
 def _wants(dev: dict, req: dict) -> bool:
     """Decide whether a device should receive a push for this request.
