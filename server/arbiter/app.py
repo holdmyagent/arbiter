@@ -2,12 +2,11 @@ import asyncio
 import hashlib
 import json
 import logging
-import secrets
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -17,6 +16,7 @@ from .notify import callback_allowed
 from .notify.outbox import Outbox
 from .policy import evaluate_create
 from .signing import sign_verdict
+from .stream import run_stream
 from .web import build_router, session_valid
 
 log = logging.getLogger("arbiter.app")
@@ -397,27 +397,8 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
-        auth = ws.headers.get("authorization", "")
-        cookie = ws.cookies.get("hma_session", "")
-        token_ok = auth.startswith("Bearer ") and secrets.compare_digest(
-            auth.removeprefix("Bearer ").encode(), cfg.auth.app_token.encode())
-        if not (token_ok or app.state.session_check(cookie)):
-            await ws.close(code=4401)
-            return
-        await ws.accept()
-        q = hub.subscribe()
-        async def heartbeat():
-            while True:
-                await asyncio.sleep(ws_heartbeat)
-                await hub.publish("ping", "data", {})
-        hb = asyncio.create_task(heartbeat())
-        try:
-            while True:
-                await ws.send_json(await q.get())
-        except WebSocketDisconnect:
-            pass
-        finally:
-            hb.cancel()
-            hub.unsubscribe(q)
+        await run_stream(ws, ws.app.state.registry, ws.app.state.control,
+                         resolve=resolve_identity,
+                         heartbeat=ws_heartbeat, send_timeout=ws_send_timeout)
 
     return app
