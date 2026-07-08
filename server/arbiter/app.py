@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import SlidingWindowLimiter, resolve_identity, trusted_client_id
+from .enroll import resolve_pairing
+from .errors import generic_403
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
@@ -375,6 +377,25 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                                       severities=body.severities, badge=body.badge)
         cell.hub.publish({"event": "device.updated", "device": dev})
         return dev
+
+    @app.post("/v1/devices/enroll")
+    async def enroll(body: DeviceRegister, request: Request):
+        # Phone-facing enrollment (§10). Tenant is derived SOLELY from the
+        # single-use pairing credential — no caller hint. The device row is
+        # written only to the credential's cell (no global device table), so
+        # push tokens are namespaced per tenant by construction.
+        auth = request.headers.get("authorization", "")
+        if not auth.startswith("Bearer "):
+            raise generic_403()
+        code = auth.removeprefix("Bearer ")
+        async with resolve_pairing(code, request.app.state.registry,
+                                   request.app.state.control) as cell:
+            dev = cell.db.register_device(
+                body.apns_token, body.name, body.min_severity,
+                body.notifications_enabled, body.sound,
+                severities=body.severities, badge=body.badge)
+            cell.hub.publish({"event": "device.updated", "device": dev})
+            return {**dev, "tenant_id": cell.tenant_id}
 
     @app.get("/v1/devices")
     def devices(ctx: tuple = Depends(require_cell("app"))):
