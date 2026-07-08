@@ -176,7 +176,16 @@ def restore_fleet(control_db_path: Path, backup_dir: Path) -> None:
     The server MUST be stopped during restore (control.db is replaced on disk)."""
     control_db_path = Path(control_db_path)
     backup = Path(backup_dir).expanduser().resolve()
-    # 1) control.db first, so we know the tenant roster + dirs as of the backup
+    # 1) control.db first, so we know the tenant roster + dirs as of the backup;
+    # drop stale WAL/SHM sidecars first (mirrors the cell path below) — a live
+    # control.db-wal from a crashed server carries committed-but-uncheckpointed
+    # frames that WOULD replay onto the restored file, silently reintroducing
+    # post-snapshot state. Removing the sidecars before the copy ensures the
+    # restore is a clean point-in-time rollback.
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(control_db_path) + suffix)
+        if p.exists():
+            p.unlink()
     shutil.copyfile(backup / "control.sqlite3", control_db_path)
     conn = sqlite3.connect(str(control_db_path))
     try:
