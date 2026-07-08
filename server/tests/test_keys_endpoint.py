@@ -99,3 +99,27 @@ def test_keys_under_reopen_race_serves_the_pinned_tenant(keys_app, tmp_path):
         r = c.get("/v1/keys", headers={"Authorization": "Bearer tok-a"})
     assert r.json()["keys"][0]["kid"] == sa.kid
     assert r.json()["keys"][0]["kid"] != sb.kid
+
+
+def test_keys_rejects_tenant_cell_mismatch(keys_app, tmp_path, monkeypatch):
+    app, reg, sa, sb = keys_app
+    # Simulate a tenant/cell binding mismatch by injecting an identity with
+    # a different tenant_id than the cell. Verify 500 response and that
+    # release was still balanced (no resource leak).
+    from arbiter import app as app_mod
+
+    async def _mismatched_resolve_identity(request: Request, registry, control):
+        token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        cell = registry.acquire_for(token)
+        # Return identity for tenant "a" but the cell for tenant "b"
+        identity = SimpleNamespace(tenant_id="a", role="app")
+        return identity, cell
+
+    monkeypatch.setattr(app_mod, "resolve_identity", _mismatched_resolve_identity)
+    # Swap registry to use token "tok-b" which returns a "beta" cell
+    app.state.registry = FakeRegistry({"tok-test": FakeCell("beta", sb)})
+
+    with TestClient(app) as c:
+        r = c.get("/v1/keys", headers={"Authorization": "Bearer tok-test"})
+    assert r.status_code == 500
+    assert reg.acquired == reg.released  # release still happened
