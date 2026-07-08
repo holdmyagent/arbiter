@@ -20,7 +20,8 @@ def test_decision_signs_with_cell_signer_and_tenant_binds(client):
 
 def test_cross_tenant_decision_is_404(client):
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     atok = env.mint("a", "agentA", "agent")
     bapp = env.mint("b", "appB", "app")
     rid = client.post("/v1/requests", headers={"Authorization": f"Bearer {atok}"},

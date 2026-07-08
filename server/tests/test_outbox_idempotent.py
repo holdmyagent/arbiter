@@ -34,7 +34,7 @@ def test_crash_between_dispatch_and_delete_then_redrain_fires_once():
 
     # First delivery succeeds (fires once) but we simulate a crash BEFORE the
     # outbox row is deleted: enqueue + dispatch manually, skip the delete.
-    oid = db.outbox_add(REQ["id"], "request.decided", REQ, REQ["expires_at"])
+    db.outbox_add(REQ["id"], "request.decided", REQ, REQ["expires_at"])
     assert db.notify_reserve(REQ["id"], "request.decided") is True
     asyncio.run(disp.request_decided(REQ))   # the one real fire
     assert disp.fires == 1

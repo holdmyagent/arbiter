@@ -7,10 +7,12 @@ from fastapi.testclient import TestClient
 
 
 def _one_tenant_low_cap(cfg, tmp_path, cap=2):
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
     registry = TenantRegistry(control, stream_cap=cap, cfg=cfg, sender=None)
-    d = root / "alice"; d.mkdir(parents=True)
+    d = root / "alice"
+    d.mkdir(parents=True)
     epoch = control.create_tenant("alice", d)
     app_b = mint_into_cell(control, registry, "alice", epoch, "alice-app", "app")
     app = create_app(cfg, registry, control, sender=None)

@@ -5,9 +5,11 @@ from arbiter.db import SCHEMA_VERSION
 
 
 def _build(cfg, tmp_path):
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
-    d = root / "solo"; d.mkdir(parents=True)
+    d = root / "solo"
+    d.mkdir(parents=True)
     epoch = control.create_tenant("solo", d)
     return TenantRegistry(control, cfg=cfg, sender=None), "solo", epoch
 

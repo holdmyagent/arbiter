@@ -25,7 +25,8 @@ def test_nondefault_cell_reads_own_notify_toml(tmp_path):
 def test_nondefault_cell_no_config_has_no_egress(tmp_path):
     cfg = Config.load(str(tmp_path / "absent.toml"))
     cfg.webhook.url = "https://proc.example/hook"
-    cdir = tmp_path / "cells" / "c"; cdir.mkdir(parents=True)
+    cdir = tmp_path / "cells" / "c"
+    cdir.mkdir(parents=True)
     d = cell_delivery(cfg, "c", cdir)
     assert d.webhook.enabled is False and d.callback_allowlist == []
 

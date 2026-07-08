@@ -35,12 +35,14 @@ async def test_open_does_not_hold_db_rlock_of_another_cell(tmp_path):
                 held.set()
                 release.wait(5.0)  # strictly longer than acquire's 2.0s wait_for below
 
-        t = threading.Thread(target=hog); t.start()
+        t = threading.Thread(target=hog)
+        t.start()
         assert held.wait(1.0)
         eb = control.create_tenant("b", tmp_path / "b")
         b = await asyncio.wait_for(reg.acquire("b", eb), timeout=2.0)  # not blocked
         reg.release(b)
-        release.set(); t.join()
+        release.set()
+        t.join()
     finally:
         reg.release(a)
 

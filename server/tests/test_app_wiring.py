@@ -1,5 +1,3 @@
-from arbiter.app import create_app
-from arbiter.apns import APNsSender
 
 
 def test_no_tenant_scoped_object_on_app_state(client):

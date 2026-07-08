@@ -27,6 +27,7 @@ async def test_event_on_A_never_reaches_a_B_socket():
     assert any(m.get("request", {}).get("id") == "rA" for m in ws_a.sent)
     assert ws_b.sent == []            # B's socket saw nothing — structural isolation
 
-    cell_a.hub.close(); cell_b.hub.close()
+    cell_a.hub.close()
+    cell_b.hub.close()
     await asyncio.wait_for(asyncio.gather(ta, tb), timeout=1.0)
     assert reg.refcounts["A"] == 0 and reg.refcounts["B"] == 0

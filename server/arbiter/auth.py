@@ -6,6 +6,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import NoReturn
 
 from fastapi import Header, HTTPException, Request
 

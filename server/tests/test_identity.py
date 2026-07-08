@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from arbiter import auth as arbiter_auth
 from arbiter.app import create_app
 from arbiter.auth import Identity, _resolve_identity_legacy as resolve_identity
-from arbiter.db import Database
 from arbiter.models import RequestCreate
 
 from tests.conftest import build_registry_env

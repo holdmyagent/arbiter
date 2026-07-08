@@ -26,8 +26,8 @@ def test_b_body_egresses_only_to_b_sink(client, tmp_path):
     a_rec, b_rec = Recorder(), Recorder()
     a_del = CellDelivery(webhook=WebhookCfg(url="https://a.example/hook"))
     b_del = CellDelivery(webhook=WebhookCfg(url="https://b.example/hook"))
-    a_disp = build_cell_dispatcher(a_del, Database(":memory:"), sender=None,
-                                   transport=a_rec.transport())
+    build_cell_dispatcher(a_del, Database(":memory:"), sender=None,
+                          transport=a_rec.transport())
     b_disp = build_cell_dispatcher(b_del, Database(":memory:"), sender=None,
                                    transport=b_rec.transport())
     req_b = {"id": "r-b", "title": "B-SECRET", "severity": "high", "status": "approved",
@@ -39,7 +39,8 @@ def test_b_body_egresses_only_to_b_sink(client, tmp_path):
 
 def test_cross_tenant_list_is_empty(client):
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     atok = env.mint("a", "agentA", "agent")
     bapp = env.mint("b", "appB", "app")
     client.post("/v1/requests", headers={"Authorization": f"Bearer {atok}"}, json={"title": "A"})
@@ -47,17 +48,20 @@ def test_cross_tenant_list_is_empty(client):
 
 def test_keys_returns_callers_cell_jwks(client):
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     aapp = env.mint("a", "appA", "app")
     bapp = env.mint("b", "appB", "app")
     ka = client.get("/v1/keys", headers={"Authorization": f"Bearer {aapp}"}).json()
     kb = client.get("/v1/keys", headers={"Authorization": f"Bearer {bapp}"}).json()
-    akid = ka["keys"][0]["kid"]; bkid = kb["keys"][0]["kid"]
+    akid = ka["keys"][0]["kid"]
+    bkid = kb["keys"][0]["kid"]
     assert akid.startswith("a:") and bkid.startswith("b:") and akid != bkid
 
 def test_devices_scoped_to_cell(client):
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     aapp = env.mint("a", "appA", "app")
     bapp = env.mint("b", "appB", "app")
     client.post("/v1/devices", headers={"Authorization": f"Bearer {aapp}"},

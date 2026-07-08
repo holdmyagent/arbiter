@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from arbiter.db import Database, SCHEMA_VERSION
+from arbiter.db import SCHEMA_VERSION
 from arbiter.notify.outbox import Outbox, MAX_ATTEMPTS
 
 

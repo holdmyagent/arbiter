@@ -6,7 +6,8 @@ from pathlib import Path
 
 def test_create_and_list_scoped_to_caller_cell(client):
     env = client.env
-    env.provision("b"); env.provision("a")
+    env.provision("b")
+    env.provision("a")
     atok = env.mint("a", "agentA", "agent")
     btok = env.mint("b", "agentB", "agent")
     aapp = env.mint("a", "appA", "app")
@@ -26,7 +27,8 @@ def test_create_and_list_scoped_to_caller_cell(client):
 def test_create_rate_limit_is_per_cell(client, cfg):
     # B's agent burst must NEVER throttle A's agent (§13 — separate buckets)
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     atok = env.mint("a", "agent", "agent")     # SAME name in both cells
     btok = env.mint("b", "agent", "agent")
     # drive B's 'agent' bucket to the limit
@@ -70,8 +72,8 @@ async def test_spawn_publish_logs_and_swallows_epoch_changed(caplog):
         # Provision a tenant using the same method as conftest
         cell_dir = tmp_path / "cells" / "test"
         cell_dir.mkdir(parents=True, exist_ok=True)
-        epoch = control.create_tenant("test", str(cell_dir))
-        db = Database(str(cell_dir / "arbiter.sqlite3"))
+        control.create_tenant("test", str(cell_dir))
+        Database(str(cell_dir / "arbiter.sqlite3"))
         
         app = SimpleNamespace()
         app.state = SimpleNamespace(

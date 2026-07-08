@@ -1,5 +1,3 @@
-import asyncio
-import pytest
 from arbiter.stream import Hub
 
 
@@ -21,7 +19,8 @@ def test_two_hubs_are_isolated():
 def test_active_counts_live_subscribers():
     hub = Hub()
     assert hub.active == 0
-    q1, q2 = hub.subscribe(), hub.subscribe()
+    q1 = hub.subscribe()
+    hub.subscribe()
     assert hub.active == 2
     hub.unsubscribe(q1)
     assert hub.active == 1

@@ -1,6 +1,6 @@
 import logging
 
-from arbiter.obslog import scoped_log, tenant_logger, SAFE_KEYS
+from arbiter.obslog import scoped_log, SAFE_KEYS
 
 
 def test_scoped_log_goes_to_tenant_logger(caplog):

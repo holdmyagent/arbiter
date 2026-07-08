@@ -1,10 +1,7 @@
 from types import SimpleNamespace
 
-from fastapi import Depends, FastAPI
-from fastapi.testclient import TestClient
 
 from arbiter.auth import trusted_client_id
-from arbiter.app import require_cell
 
 
 def _req(peer, xff=None):

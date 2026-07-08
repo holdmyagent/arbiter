@@ -42,11 +42,14 @@ def cell_delivery(process_cfg, tenant_id: str, cell_dir) -> "CellDelivery":
     if p.is_file():
         doc = tomllib.loads(p.read_text())
         wh = doc.get("webhook", {})
-        if "url" in wh: d.webhook.url = str(wh["url"])
-        if "secret" in wh: d.webhook.secret = str(wh["secret"])
+        if "url" in wh:
+            d.webhook.url = str(wh["url"])
+        if "secret" in wh:
+            d.webhook.secret = str(wh["secret"])
         nt = doc.get("ntfy", {})
         for k in ("url", "topic", "token"):
-            if k in nt: setattr(d.ntfy, k, str(nt[k]))
+            if k in nt:
+                setattr(d.ntfy, k, str(nt[k]))
         n = doc.get("notify", {})
         if "callback_allowlist" in n:
             d.callback_allowlist = [str(x) for x in n["callback_allowlist"]]
