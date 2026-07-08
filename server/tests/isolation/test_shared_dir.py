@@ -16,9 +16,11 @@ def _raw_pub(cell):
 def test_overlapping_dirs_rejected_at_mint(tmp_path):
     # MINT side (§15.7): control.create_tenant itself rejects a dir that overlaps an
     # existing tenant (its own assert_dir_isolated guard), so each call RAISES.
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
-    a = root / "alice"; a.mkdir()
+    a = root / "alice"
+    a.mkdir()
     control.create_tenant("alice", a)
     # exact duplicate
     with pytest.raises(ValueError):
@@ -37,12 +39,17 @@ def test_overlapping_dirs_rejected_at_mint(tmp_path):
 
 
 def test_two_live_cells_never_load_identical_key_bytes(cfg, tmp_path):
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
     registry = TenantRegistry(control, cfg=cfg, sender=None)
     import asyncio
-    da = root / "alice"; da.mkdir(); ea = control.create_tenant("alice", da)
-    db = root / "bob"; db.mkdir(); eb = control.create_tenant("bob", db)
+    da = root / "alice"
+    da.mkdir()
+    ea = control.create_tenant("alice", da)
+    db = root / "bob"
+    db.mkdir()
+    eb = control.create_tenant("bob", db)
 
     async def run():
         ca = await registry.acquire("alice", ea)
@@ -51,7 +58,8 @@ def test_two_live_cells_never_load_identical_key_bytes(cfg, tmp_path):
             assert _raw_pub(ca) != _raw_pub(cb), "two cells loaded identical key bytes"
             assert ca.signer.kid != cb.signer.kid
         finally:
-            registry.release(ca); registry.release(cb)
+            registry.release(ca)
+            registry.release(cb)
 
     asyncio.run(run())
 
@@ -62,7 +70,9 @@ def test_overlapping_dir_rejected_at_open(tmp_path):
     # assert_dir_isolated guard mint uses — defense-in-depth against a control.db that
     # was symlink/`..`-swapped AFTER mint so two live tenants resolve to one dir.
     cfg = Config.load(str(tmp_path / "absent.toml"))
-    x = (tmp_path / "fleet" / "alice"); x.mkdir(parents=True); x = x.resolve()
+    x = (tmp_path / "fleet" / "alice")
+    x.mkdir(parents=True)
+    x = x.resolve()
     open_cell("alice", x, 1, cfg)                                    # A opens fine
     with pytest.raises(ValueError):
         open_cell("intruder", x, 1, cfg, other_open_dirs=[x])        # exact overlap

@@ -21,12 +21,15 @@ def test_legacy_app_token_resolves_strictly_to_default(cfg, tmp_path):
     from tests.isolation.conftest import (ControlPlane, TenantRegistry, create_app,
                                           mint_into_cell)
     from fastapi.testclient import TestClient
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
     registry = TenantRegistry(control, cfg=cfg, sender=None)
-    d_def = root / "default"; d_def.mkdir(parents=True)
-    ep = control.create_tenant("default", d_def)
-    d_other = root / "alice"; d_other.mkdir(parents=True)
+    d_def = root / "default"
+    d_def.mkdir(parents=True)
+    control.create_tenant("default", d_def)
+    d_other = root / "alice"
+    d_other.mkdir(parents=True)
     ep2 = control.create_tenant("alice", d_other)
     alice_agent = mint_into_cell(control, registry, "alice", ep2, "alice-agent", "agent")
     app = create_app(cfg, registry, control, sender=None)

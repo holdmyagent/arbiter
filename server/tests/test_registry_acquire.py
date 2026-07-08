@@ -79,7 +79,7 @@ async def test_release_is_by_object(tmp_path):
 async def test_hold_releases_on_normal_and_exception(tmp_path):
     control, reg = _reg(tmp_path)
     epoch = control.create_tenant("acme", tmp_path / "acme")
-    async with reg.hold("acme", epoch) as cell:
+    async with reg.hold("acme", epoch):
         assert reg._map["acme"].refcount == 1
     assert reg._map["acme"].refcount == 0
     with pytest.raises(ValueError):

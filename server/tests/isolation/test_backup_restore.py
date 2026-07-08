@@ -74,7 +74,7 @@ def test_restore_pre_revoke_snapshot_keeps_token_invalid(tmp_path, cfg):
     restore_fleet(control.db_path, dest)
 
     control2 = ControlPlane.open(root / "control", root)
-    registry2 = TenantRegistry(control2, cfg=cfg, sender=None)
+    TenantRegistry(control2, cfg=cfg, sender=None)
     assert control2.resolve(th) is None
 
 

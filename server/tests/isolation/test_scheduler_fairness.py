@@ -18,12 +18,14 @@ from tests.isolation.conftest import ControlPlane, TenantRegistry
 
 
 def _two(cfg, tmp_path):
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
     registry = TenantRegistry(control, cfg=cfg, sender=None)
     epochs = {}
     for n in ("alice", "bob"):
-        d = root / n; d.mkdir(parents=True)
+        d = root / n
+        d.mkdir(parents=True)
         epochs[n] = control.create_tenant(n, str(d))
     return control, registry, epochs
 

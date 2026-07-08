@@ -3,7 +3,7 @@ import logging
 import resource
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .control import assert_dir_isolated   # §15.7 shared mint/open non-overlap guard (leaf module)

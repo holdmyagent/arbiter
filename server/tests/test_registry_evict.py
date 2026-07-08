@@ -1,4 +1,3 @@
-import asyncio
 import sqlite3
 import pytest
 from arbiter.config import Config
@@ -29,10 +28,12 @@ async def _acquire_release(reg, control, tmp_path, name):
 async def test_lru_evicts_idle_cell_over_cap(tmp_path):
     control, reg = _reg(tmp_path, max_hot_cells=2, clock=lambda: _acquire_release.t)
     _acquire_release.t = 0
-    a = await _acquire_release(reg, control, tmp_path, "a"); _acquire_release.t = 1
-    b = await _acquire_release(reg, control, tmp_path, "b"); _acquire_release.t = 2
+    a = await _acquire_release(reg, control, tmp_path, "a")
+    _acquire_release.t = 1
+    await _acquire_release(reg, control, tmp_path, "b")
+    _acquire_release.t = 2
     # opening c over cap -> LRU (a) evicted; its connection is closed
-    c = await _acquire_release(reg, control, tmp_path, "c")
+    await _acquire_release(reg, control, tmp_path, "c")
     assert "a" not in reg._map and "b" in reg._map and "c" in reg._map
     with pytest.raises(sqlite3.ProgrammingError):
         a.db.ping()      # a's connection was checkpoint_and_close'd

@@ -1,7 +1,5 @@
-import time
 
 import jwt
-import pytest
 from cryptography.hazmat.primitives import serialization
 
 from arbiter.signing import (RETIRED_FILENAME, ROTATION_FILENAME,

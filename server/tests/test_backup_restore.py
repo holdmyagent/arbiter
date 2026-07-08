@@ -66,7 +66,8 @@ def test_restore_prerevoke_smear_keeps_token_invalid(tmp_path):
     res = provision_tenant(control, tmp_path / "tenants", "acme")
     cell_path = res.dir / "arbiter.sqlite3"
     control_db_path = tmp_path / "control" / "control.db"
-    backup = tmp_path / "bk"; (backup / "tenants").mkdir(parents=True)
+    backup = tmp_path / "bk"
+    (backup / "tenants").mkdir(parents=True)
     # (1) cell snapshot FIRST — pre-revoke: token present + unrevoked
     snapshot_db(cell_path, backup / "tenants" / "acme.sqlite3")
     # (2) revoke happens between the two snapshots (cell revoked_at + route removed)
@@ -88,8 +89,10 @@ def test_restore_preconsume_snapshot_forces_remint_no_second_execution(tmp_path)
     cell.conn.execute(
         "INSERT INTO requests(id,created_at,title,severity,status,ttl_seconds,"
         "expires_at,decided_at,payload) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("r1", now, "pay", "high", "approved", 300, now, now, "{}")); cell.conn.commit()
-    backup = tmp_path / "bk"; (backup / "tenants").mkdir(parents=True)
+        ("r1", now, "pay", "high", "approved", 300, now, now, "{}"))
+    cell.conn.commit()
+    backup = tmp_path / "bk"
+    (backup / "tenants").mkdir(parents=True)
     snapshot_db(cell_path, backup / "tenants" / "acme.sqlite3")     # pre-consume
     snapshot_db(control_db_path, backup / "control.sqlite3")
     # the approval is consumed + executed
@@ -117,7 +120,8 @@ def test_restore_strips_stale_control_wal_no_post_backup_replay(tmp_path):
     control_db_path = tmp_path / "control" / "control.db"
     control_wal = Path(str(control_db_path) + "-wal")
 
-    backup = tmp_path / "bk"; (backup / "tenants").mkdir(parents=True)
+    backup = tmp_path / "bk"
+    (backup / "tenants").mkdir(parents=True)
     backup_fleet(control, backup)                                    # clean, pre-"evil" snapshot
 
     # POST-backup disaster: a whole new tenant is minted (real cell dir, real

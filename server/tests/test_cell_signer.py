@@ -1,5 +1,4 @@
-from pathlib import Path
-from arbiter.signing import Signer, load_or_create_signer, KEY_FILENAME
+from arbiter.signing import load_or_create_signer, KEY_FILENAME
 
 
 def test_kid_is_tenant_namespaced(tmp_path):

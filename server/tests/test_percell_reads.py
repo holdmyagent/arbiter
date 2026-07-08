@@ -1,6 +1,7 @@
 def test_cross_tenant_get_is_404(client):
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     atok = env.mint("a", "agentA", "agent")
     bapp = env.mint("b", "appB", "app")
     aapp = env.mint("a", "appA", "app")
@@ -16,7 +17,8 @@ def test_cross_tenant_get_is_404(client):
 
 def test_cross_tenant_verdict_is_404(client):
     env = client.env
-    env.provision("a"); env.provision("b")
+    env.provision("a")
+    env.provision("b")
     atok = env.mint("a", "agentA", "agent")
     bapp = env.mint("b", "appB", "app")
     rid = client.post("/v1/requests", headers={"Authorization": f"Bearer {atok}"},

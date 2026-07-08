@@ -1,7 +1,6 @@
 import hashlib
 
 import pytest
-from pathlib import Path
 
 from arbiter.db import Database
 from arbiter.provisioning import canonicalize_tenant_dir, assert_dir_isolated, TenantDirError
@@ -37,15 +36,18 @@ def test_canonicalize_returns_abs_realpath_under_root(tmp_path):
 
 
 def test_canonicalize_rejects_symlink_escape(tmp_path):
-    root = tmp_path / "tenants"; root.mkdir()
-    outside = tmp_path / "outside"; outside.mkdir()
+    root = tmp_path / "tenants"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
     (root / "evil").symlink_to(outside, target_is_directory=True)
     with pytest.raises(TenantDirError):
         canonicalize_tenant_dir("evil", root)
 
 
 def test_assert_dir_isolated_rejects_overlap_both_directions(tmp_path):
-    a = tmp_path / "a"; a.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
     with pytest.raises(TenantDirError):
         assert_dir_isolated(a, [a])                 # exact duplicate
     with pytest.raises(TenantDirError):
@@ -56,7 +58,8 @@ def test_assert_dir_isolated_rejects_overlap_both_directions(tmp_path):
 
 
 def test_assert_dir_isolated_rejects_symlink_into_existing(tmp_path):
-    a = tmp_path / "a"; a.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
     link = tmp_path / "link-to-a"
     link.symlink_to(a, target_is_directory=True)
     with pytest.raises(TenantDirError):
@@ -66,8 +69,10 @@ def test_assert_dir_isolated_rejects_symlink_into_existing(tmp_path):
 
 
 def test_assert_dir_isolated_rejects_dotdot_resolving_into_existing(tmp_path):
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     dotdot_candidate = b / ".." / "a"
     with pytest.raises(TenantDirError):
         assert_dir_isolated(dotdot_candidate, [a])
@@ -78,7 +83,8 @@ def test_provisioning_and_control_isolation_logic_agree(tmp_path):
     lock-step. Exercise both on the identical set of inputs and assert they agree on
     every verdict (raise vs. no-raise) even though they raise different exception
     types (TenantDirError vs. ValueError)."""
-    a = tmp_path / "a"; a.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
     link = tmp_path / "link-to-a"
     link.symlink_to(a, target_is_directory=True)
     cases = [

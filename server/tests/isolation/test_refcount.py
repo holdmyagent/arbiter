@@ -4,9 +4,11 @@ from tests.isolation.conftest import ControlPlane, TenantRegistry
 
 
 def _reg(cfg, tmp_path):
-    root = tmp_path / "fleet"; root.mkdir()
+    root = tmp_path / "fleet"
+    root.mkdir()
     control = ControlPlane.open(root / "control", root)
-    d = root / "t"; d.mkdir(parents=True)
+    d = root / "t"
+    d.mkdir(parents=True)
     epoch = control.create_tenant("t", d)
     return TenantRegistry(control, cfg=cfg, sender=None), "t", epoch
 

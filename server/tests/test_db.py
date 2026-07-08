@@ -1,3 +1,10 @@
+from datetime import timedelta, timezone
+from datetime import datetime as _dt
+
+from arbiter.db import Database
+from arbiter.models import RequestCreate
+
+
 def test_create_and_get(db, make):
     r = db.create_request(make(payload={"k":1}, severity="high"))
     got = db.get_request(r["id"])
@@ -75,11 +82,6 @@ def test_ping_takes_the_lock_and_raises_when_closed(db):
     db.conn.close()
     with pytest.raises(sqlite3.ProgrammingError):
         db.ping()
-
-from datetime import timedelta, timezone
-from datetime import datetime as _dt
-from arbiter.db import Database
-from arbiter.models import RequestCreate
 
 def _past_iso(seconds=60):
     return (_dt.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
