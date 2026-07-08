@@ -50,19 +50,30 @@ def _hash_token(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _mint_first_token(control, cell_db: Database, tenant_id: str, name: str, role: str) -> str:
-    """Mint one of a fresh cell's first tokens: CELL row first, ROUTER row second
-    (§12 — a cell row without a route is unusable, so a crash between the two
-    fails closed rather than handing out a ghost credential). This is the same
-    cell-first/router-second discipline Task H3's `mint_cell_token` formalizes
-    into a standalone, reusable function; provision_tenant inlines it here so H2
-    does not depend on H3 landing first."""
+def mint_cell_token(control, cell_db: Database, tenant_id: str, name: str, role: str,
+                     scopes: dict | None = None, expires_at: str | None = None) -> str:
+    """Mint a token: CELL row first, ROUTER row second (§12 — a cell row without
+    a route is unusable, so a crash between the two fails closed rather than
+    handing out a ghost credential). Returns the clear token; shown once, never
+    stored (only its hash is persisted)."""
     value = f"hma_{role}_{secrets.token_hex(24)}"
     token_hash = _hash_token(value)
-    cell_db.create_token(name, role, token_hash)
-    control.add_route(token_hash, tenant_id)
+    cell_db.create_token(name, role, token_hash, scopes, expires_at)  # CELL ROW FIRST
+    control.add_route(token_hash, tenant_id)                          # router row SECOND
     cell_db.add_audit("-", "token_created", {"name": name, "role": role})
     return value
+
+
+def revoke_cell_token(control, cell_db: Database, name: str) -> str:
+    """Revoke a token: in-cell `revoked_at` first, router row removed second, so
+    a cells-first/control-last backup that smears across the revoke sees the
+    route already gone (§12 fail-closed). Raises KeyError if no such token."""
+    row = cell_db.revoke_token(name)          # in-cell revoked_at FIRST
+    if row is None:
+        raise KeyError(name)
+    control.remove_route(row["token_hash"])   # remove route SECOND
+    cell_db.add_audit("-", "token_revoked", {"name": name})
+    return name
 
 
 @dataclass
@@ -99,6 +110,6 @@ def provision_tenant(control, root: Path, tenant_id: str) -> ProvisionResult:
     cell_db = Database(str(canon / "arbiter.sqlite3"))   # runs the migration ladder
     load_or_create_signer(tenant_id, canon)       # mint this cell's OWN Ed25519 key
     epoch = control.create_tenant(tenant_id, str(canon))  # fresh monotonic epoch, MAC'd row
-    app_token = _mint_first_token(control, cell_db, tenant_id, "app", "app")
-    warden_token = _mint_first_token(control, cell_db, tenant_id, "warden", "warden")
+    app_token = mint_cell_token(control, cell_db, tenant_id, "app", "app")
+    warden_token = mint_cell_token(control, cell_db, tenant_id, "warden", "warden")
     return ProvisionResult(tenant_id, epoch, canon, app_token, warden_token)

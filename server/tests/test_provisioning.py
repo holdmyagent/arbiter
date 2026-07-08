@@ -3,11 +3,12 @@ import hashlib
 import pytest
 from pathlib import Path
 
+from arbiter.db import Database
 from arbiter.provisioning import canonicalize_tenant_dir, assert_dir_isolated, TenantDirError
 from arbiter import control as control_mod
 from arbiter.control import ControlPlane
 from arbiter.signing import KEY_FILENAME
-from arbiter.provisioning import provision_tenant
+from arbiter.provisioning import provision_tenant, mint_cell_token, revoke_cell_token
 
 
 def _h(v):
@@ -120,3 +121,27 @@ def test_provision_duplicate_tenant_id_rejected(tmp_path):
     provision_tenant(control, root, "acme")
     with pytest.raises(Exception):
         provision_tenant(control, root, "acme")   # dir already exists / tenant exists
+
+
+def test_mint_writes_cell_row_then_route_and_revoke_reverses(tmp_path):
+    # NOTE: the H3 brief's illustrative `ControlPlane(tmp_path / "control.sqlite3")`
+    # doesn't match the shipped constructor — same drift noted in `_control` above.
+    # Use the real API + the already-provisioned tenant's cell DB.
+    control, root = _control(tmp_path)
+    a = provision_tenant(control, root, "acme")
+    cell = Database(str(a.dir / "arbiter.sqlite3"))
+    tok = mint_cell_token(control, cell, "acme", "hermes", "agent")
+    h = _h(tok)
+    assert cell.get_token_by_hash(h)["name"] == "hermes"   # cell row present
+    assert control.resolve(h)[0] == "acme"                 # route present
+    revoke_cell_token(control, cell, "hermes")
+    assert cell.get_token_by_hash(h)["revoked_at"] is not None  # cell revoked
+    assert control.resolve(h) is None                          # route removed
+
+
+def test_revoke_cell_token_missing_name_raises_keyerror(tmp_path):
+    control, root = _control(tmp_path)
+    a = provision_tenant(control, root, "acme")
+    cell = Database(str(a.dir / "arbiter.sqlite3"))
+    with pytest.raises(KeyError):
+        revoke_cell_token(control, cell, "nonexistent")
