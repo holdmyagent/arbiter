@@ -1,6 +1,8 @@
 import os
 import threading
 import time
+
+import pytest
 from click.testing import CliRunner
 from arbiter.cli import main, _ask
 
@@ -28,7 +30,6 @@ def test_json_formatter_emits_parseable_lines():
 
 def test_gather_status_raises_on_bad_token(client):
     import httpx
-    import pytest
     from arbiter.cli import _gather_status
     with pytest.raises(httpx.HTTPStatusError):
         _gather_status(client, "wrong-token")

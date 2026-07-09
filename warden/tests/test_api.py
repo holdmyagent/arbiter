@@ -81,6 +81,7 @@ def make_cfg() -> WardenConfig:
         arbiter_url="http://127.0.0.1:9",
         arbiter_token_ref="env:HMA_WARDEN_TOKEN",
         arbiter_pubkey="deadbeef:QUFBQQ",
+        arbiter_tenant="test-tenant",
         warden_name="test-warden",
         bind="127.0.0.1", port=8646, retention_days=7,
         agents={"hermes": "env:WARDEN_TEST_HERMES",

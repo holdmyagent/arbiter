@@ -2,53 +2,94 @@ import asyncio
 import hashlib
 import json
 import logging
-import secrets
 import sqlite3
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import Identity, SlidingWindowLimiter, _client_ip, require_role, resolve_identity
+from .auth import SlidingWindowLimiter, resolve_identity, trusted_client_id
+from .enroll import resolve_pairing
+from .errors import generic_403
 from .models import RequestCreate, Decision, DeviceRegister
-from .notify import Dispatcher, callback_allowed
-from .notify.outbox import Outbox
+from .notify import callback_allowed
+from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
-from .signing import load_or_create_keypair, public_jwks, sign_verdict
-from .stream import Hub
+from .signing import sign_verdict
+from .stream import run_stream
 from .web import build_router, session_valid
 
 log = logging.getLogger("arbiter.app")
 
 
-def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30.0, dispatcher=None):
-    hub = hub or Hub()
-    dispatcher = dispatcher or Dispatcher(cfg, db, sender=sender)
-    outbox = Outbox(db, dispatcher)
+def _spawn_publish(app, tenant_id, epoch, event, req):
+    """Background outbox publish that pins ITS OWN cell for its lifetime (§15.4):
+    the HTTP request's pin is gone by the time this runs, so re-acquire by object
+    via registry.hold and release exactly once. Held strongly in notify_tasks so
+    it isn't GC'd mid-flight."""
+    st = app.state
+    async def run():
+        try:
+            async with st.registry.hold(tenant_id, epoch) as cell:
+                await Outbox(cell.db, cell.dispatcher).publish(event, req)
+        except Exception as exc:
+            log.warning("background publish failed for %s: %s", tenant_id, exc)
+    t = asyncio.create_task(run())
+    st.notify_tasks.add(t)
+    t.add_done_callback(st.notify_tasks.discard)
+    return t
+
+
+def require_cell(*roles: str):
+    """Authenticate the bearer → (Identity, Cell); pin the cell for the whole
+    request; release exactly once on EVERY exit path; enforce role. All
+    tenant state comes from the returned cell — never app.state. Module-level
+    (not nested in create_app): it closes over nothing tenant-scoped, reading
+    everything off request.app.state, so it can be imported directly (the
+    brief's inline sketch nests it inside create_app, but that would make it
+    unimportable as `arbiter.app.require_cell` — module scope is equivalent
+    and matches the require_role precedent in auth.py).
+
+    The fleet auth-failure limiter (§13) is keyed on trusted_client_id, which
+    with no configured trusted proxy IS the bare peer IP — so it is only ever
+    consulted on a FAILED auth (missing/invalid bearer, disabled tenant, wrong
+    role). A bearer that resolves successfully is never pre-blocked by that
+    key's failure count: otherwise a flood of bad tokens from one shared
+    ingress IP would 429 every OTHER tenant's valid traffic sharing that IP —
+    the exact fleet-DoS §13 forbids. Blocked-and-still-failing sources still
+    get a uniform 429 (checked after the failed resolve, not before)."""
+    async def dep(request: Request):
+        st = request.app.state
+        key = trusted_client_id(request, st.cfg)
+        try:
+            identity, cell = await resolve_identity(request, st.registry, st.control)
+        except HTTPException:
+            if st.auth_limiter.blocked(key):
+                raise HTTPException(429, "too many failed auth attempts")
+            st.auth_limiter.record_failure(key)   # count the failed auth
+            raise
+        try:
+            if roles and identity.role not in roles:
+                if st.auth_limiter.blocked(key):
+                    raise HTTPException(429, "too many failed auth attempts")
+                st.auth_limiter.record_failure(key)
+                raise HTTPException(403, "forbidden")   # generic (§11)
+            yield (identity, cell)
+        finally:
+            st.registry.release(cell)                  # exactly once (§15.4)
+    return dep
+
+
+def create_app(cfg, registry, control, *, sender=None, scheduler=None,
+                ws_heartbeat: float = 30.0, ws_send_timeout: float = 10.0):
+    # sender/ws_send_timeout: accepted-and-stored for later groups (per-cell
+    # dispatch already flows through TenantRegistry(sender=...); ws_send_timeout
+    # is unused until the stream group (F) wires bounded sends) — pinned here
+    # so the signature is stable across Groups C-F (reconciliation ledger #7).
     notify_tasks: set = set()
-
-    config_dir = Path(cfg.loaded_path).expanduser().parent if cfg.loaded_path \
-        else Path("~/.config/holdmyagent").expanduser()
-    kid, signing_key = load_or_create_keypair(config_dir)
-
-    def _expire_pass(now=None) -> list[dict]:
-        """One sweep: (1) flip overdue pending rows to expired and sign an
-        'expired' verdict for each; (2) flip stale unconsumed approvals to
-        expired, KEEPING the original decision verdict. Sync + clock-injectable
-        so tests drive it directly (no sleeping on the 1s loop)."""
-        out = []
-        for req in db.expire_due(now):
-            jws = sign_verdict(kid, signing_key, request_id=req["id"],
-                               action_hash=req["action_hash"], decision="expired",
-                               decided_at=req["expires_at"],
-                               approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
-            db.set_verdict(req["id"], jws, kid)
-            db.add_audit(req["id"], "verdict_issued", {"decision": "expired", "kid": kid})
-            out.append(db.get_request(req["id"]))
-        out.extend(db.expire_stale_approvals(cfg.policy.approval_ttl_seconds, now))
-        return out
 
     def _spawn(coro):
         # Hold a strong reference until done — a bare create_task() result is
@@ -60,37 +101,78 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
 
     @asynccontextmanager
     async def lifespan(app):
-        await outbox.drain_startup()
-        async def sweep():
-            while True:
-                try:
-                    for req in _expire_pass():
-                        _spawn(outbox.publish("request.expired", req))
-                        await hub.publish("request.expired", "request", req)
-                except Exception as exc:
-                    log.warning("sweep iteration failed: %s", exc)
-                await asyncio.sleep(1)
-        task = asyncio.create_task(sweep())
-        yield
-        task.cancel()
+        # §9: outbox re-drain is bounded to PROCESS-RESTART only, never cell-open.
+        await drain_all_at_startup(registry, control)
+        # §16 eviction-race test/ops seam: TenantRegistry.try_evict_idle() is
+        # async and its locks bind to whichever loop first uses them -- THIS
+        # lifespan's loop. A plain thread (e.g. a test's churn loop) cannot
+        # await it directly, so expose a synchronous driver that hops onto
+        # this loop via run_coroutine_threadsafe, mirroring scheduler_tick
+        # below.
+        _loop = asyncio.get_running_loop()
+
+        def evict_tick(timeout: float = 5.0) -> int:
+            return asyncio.run_coroutine_threadsafe(
+                registry.try_evict_idle(), _loop).result(timeout=timeout)
+
+        app.state.evict_tick = evict_tick
+        sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
+        if scheduler is not None:
+            # §16 test/ops seam: a SYNCHRONOUS, clock-injectable one-shot that
+            # drains every entry due at `now` across ALL cells, reusing the
+            # scheduler's real firing path (_fire_due/_fire_one -> registry.hold
+            # -> cell.signer/db) so the signed verdict lands under the firing
+            # cell's own key, exactly like a real background firing. Additive:
+            # the async run() loop above stays the only production path.
+            #
+            # The registry's own locks (e.g. _map_lock) bind to whichever event
+            # loop first uses them -- THIS lifespan's loop, via seed() above --
+            # so the drain must execute on that same loop, never a fresh one in
+            # the calling thread (that would raise "bound to a different event
+            # loop"). run_coroutine_threadsafe + a blocking result() does that;
+            # safe because scheduler_tick is called from OUTSIDE this loop's
+            # thread (a test's main thread, an ops script), never from a live
+            # request or from code already running on this loop (that would
+            # deadlock on the blocking .result()).
+            loop = asyncio.get_running_loop()
+
+            def scheduler_tick(now: datetime | None = None) -> list[dict]:
+                now_ts = (now or datetime.now(timezone.utc)).timestamp()
+
+                async def _drain():
+                    fired: list[dict] = []
+                    while True:
+                        batch = await scheduler._fire_due(now=now_ts)
+                        if not batch:
+                            return fired
+                        fired.extend(batch)
+
+                return asyncio.run_coroutine_threadsafe(_drain(), loop).result()
+
+            app.state.scheduler_tick = scheduler_tick
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
+                if sched_task is not None:
+                    await sched_task
+                for t in list(scheduler._bg):
+                    await t
+            for t in list(notify_tasks):
+                t.cancel()
+
     app = FastAPI(title="Arbiter", lifespan=lifespan)
-    app.state.hub = hub
+    # app.state holds NOTHING tenant-scoped (§15.1):
+    app.state.registry = registry
+    app.state.control = control
+    app.state.cfg = cfg                         # process-global policy/server/auth(session) ONLY
+    app.state.auth_limiter = SlidingWindowLimiter(10, 60.0)   # fleet auth-failure limiter (§13)
     app.state.notify_tasks = notify_tasks
-    limiter = SlidingWindowLimiter(10, 60.0)
-    app.state.login_limiter = SlidingWindowLimiter(5, 60.0)
-    create_limiter = SlidingWindowLimiter(cfg.policy.rate_limit_per_minute, 60.0)
-    app.state.create_limiter = create_limiter
-    app.state.expire_pass = _expire_pass
-    app.state.verdict_kid = kid
-    # require_role deps read these three off request.app.state:
-    app.state.auth_limiter = limiter
-    app.state.cfg = cfg
-    app.state.db = db
-    appdep = Depends(require_role("app"))
+    app.state.session_check = lambda v: session_valid(cfg, v)
 
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
-    app.include_router(build_router(cfg, db, hub))
-    app.state.session_check = lambda v: session_valid(cfg, v)
+    app.include_router(build_router(cfg, registry, control))   # dashboard group re-signs build_router
 
     @app.middleware("http")
     async def security_headers(request, call_next):
@@ -118,55 +200,91 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         return RedirectResponse("/dashboard/pair", status_code=302)
 
     @app.get("/health")
-    def health():
+    async def health():
         try:
-            db.ping()
+            epoch = control.epoch_of("default")
+            if epoch is None:
+                raise RuntimeError("default tenant not provisioned")
+            async with registry.hold("default", epoch) as cell:
+                cell.db.ping()
         except Exception:
             return JSONResponse(status_code=503, content={"ok": False, "db": False})
         return {"ok": True, "db": True}
 
     @app.get("/v1/keys")
-    def keys():
-        return public_jwks(kid, signing_key)
+    def keys(ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        # Tenant is derived from the credential only, and require_cell already
+        # pins the resolved cell for this handler's whole lifetime and releases
+        # it exactly once (§15.4). This explicit check is the last-line invariant
+        # check before serving JWKS: it fails CLOSED (500) rather than ever
+        # handing a pairing fetch a neighbour's keys (§7, §15.2, §16
+        # eviction-race row). Explicit raise survives python -O (asserts strip).
+        identity, cell = ctx
+        if identity.tenant_id != cell.tenant_id:
+            raise HTTPException(status_code=500, detail="tenant/cell binding mismatch")
+        return cell.signer.public_jwks()
 
     @app.get("/v1/audit/export")
-    def audit_export(request: Request, format: str = "jsonl"):
-        # app-role bearer OR a valid admin dashboard session. Inline (not
-        # require_role) because of the bearer-OR-cookie split, but with the
-        # same limiter + auth_failure discipline as require_role (auth.py):
-        # blocked-check first, record_failure + log on any failed attempt.
-        ip = _client_ip(request)
-        if limiter.blocked(ip):
+    async def audit_export(request: Request, format: str = "jsonl"):
+        # app-role bearer -> its own cell, OR a valid admin dashboard session ->
+        # the 'default' cell (back-compat, §14/§16). Inline (not require_cell)
+        # because of the bearer-OR-cookie split, but with the same limiter +
+        # auth_failure discipline (§13): blocked-check first, record_failure +
+        # log on any failed attempt. Tenant is derived from the credential ONLY
+        # (§15.2) -- never a query/header hint.
+        st = app.state
+        key = trusted_client_id(request, st.cfg)
+        if st.auth_limiter.blocked(key):
             raise HTTPException(429, "too many failed auth attempts")
-        authorized = False
+        cell = None
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
-            ident = resolve_identity(db, cfg, auth.removeprefix("Bearer "))
-            authorized = ident is not None and ident.role == "app"
-        if not authorized and app.state.session_check(request.cookies.get("hma_session", "")):
-            authorized = True
-        if not authorized:
-            limiter.record_failure(ip)
+            try:
+                identity, resolved = await resolve_identity(request, st.registry, st.control)
+            except HTTPException:
+                identity, resolved = None, None
+            if identity is not None and identity.role == "app":
+                cell = resolved
+            elif resolved is not None:
+                st.registry.release(resolved)          # resolved but not app-role: drop the pin
+        if cell is None and st.session_check(request.cookies.get("hma_session", "")):
+            # admin dashboard session -> default cell (back-compat, §14).
+            # is_disabled is read on EVERY resolution — the same guard
+            # resolve_identity applies on the bearer path (it also fails
+            # closed on an absent live row), so a disabled default tenant
+            # gets the same generic denial on the session path too.
+            if not st.control.is_disabled("default"):
+                default_epoch = st.control.epoch_of("default")
+                if default_epoch is not None:
+                    cell = await st.registry.acquire("default", default_epoch)
+        if cell is None:
+            st.auth_limiter.record_failure(key)
             reason = "invalid_token" if auth.startswith("Bearer ") else "missing_bearer"
-            log.warning("auth_failure ip=%s reason=%s", ip, reason)  # never log the supplied value
+            log.warning("auth_failure key=%s reason=%s", key, reason)  # never log the supplied value
             raise HTTPException(403, "app token or admin session required")
         if format != "jsonl":
+            st.registry.release(cell)
             raise HTTPException(422, "unsupported format (only jsonl)")
         def gen():
-            for row in db.iter_audit():
-                yield json.dumps(row) + "\n"
+            try:
+                for row in cell.db.iter_audit():
+                    yield json.dumps(row) + "\n"
+            finally:
+                st.registry.release(cell)               # release after the stream drains (§15.4)
         return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
     # ── API v1 ───────────────────────────────────────────────────────────────
 
     @app.post("/v1/requests")
     async def create(body: RequestCreate,
-                     identity: Identity = Depends(require_role("agent", "warden"))):
+                     ctx: tuple = Depends(require_cell("agent", "warden"))):
+        identity, cell = ctx
+        db = cell.db
         # Legacy config tokens (identity.legacy, set by resolve_identity only
         # for config tokens) stay unstamped (requested_by NULL) for
         # back-compat reads; DB tokens are stamped with their name.
         requested_by = None if identity.legacy else identity.name
-        scopes = db.get_token_scopes(identity.name) if requested_by else None
+        scopes = None if identity.legacy else identity.scopes
         result = evaluate_create(cfg, identity, body, scopes=scopes)
         if not result.allowed:
             db.add_audit("-", "policy_denied",
@@ -174,12 +292,12 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
                           "reason": result.reason})
             raise HTTPException(403, f"policy: {result.reason}")
         body.severity = result.effective_severity   # stored severity = effective
-        if create_limiter.blocked(identity.name):
+        if cell.create_limiter.blocked(identity.name):
             db.add_audit("-", "rate_limited", {"identity": identity.name})
             raise HTTPException(429, "rate limited")
-        create_limiter.record_failure(identity.name)  # count this create in the window
-        if body.callback_url and not callback_allowed(cfg.callback_allowlist,
-                                                      body.callback_url):
+        cell.create_limiter.record_failure(identity.name)  # count this create in the window
+        if body.callback_url and not callback_allowed(
+                cell.dispatcher.cfg.callback_allowlist, body.callback_url):
             raise HTTPException(422, "callback_url not in allowlist")
         # ttl clamp: out-of-range values are clamped, never rejected
         body.ttl_seconds = max(cfg.policy.ttl_min_seconds,
@@ -210,18 +328,21 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
             if existing:
                 return existing
             raise
-        _spawn(outbox.publish("request.created", req))
-        await hub.publish("request.created", "request", req)
+        if scheduler is not None:
+            scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])
+        _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
+        cell.hub.publish({"event": "request.created", "request": req})
         return req
 
-    @app.get("/v1/requests", dependencies=[appdep])
-    def list_(status: str | None = None):
-        return db.list_requests(status)
+    @app.get("/v1/requests")
+    def list_(status: str | None = None, ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        return cell.db.list_requests(status)
 
     @app.get("/v1/requests/{rid}")
-    def get_(rid: str,
-             identity: Identity = Depends(require_role("agent", "warden", "app"))):
-        r = db.get_request(rid)
+    def get_(rid: str, ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        identity, cell = ctx
+        r = cell.db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
         if identity.role in ("agent", "warden"):
@@ -236,9 +357,9 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         return r
 
     @app.get("/v1/requests/{rid}/verdict")
-    def get_verdict(rid: str,
-                    identity: Identity = Depends(require_role("agent", "warden", "app"))):
-        r = db.get_request(rid)
+    def get_verdict(rid: str, ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        identity, cell = ctx
+        r = cell.db.get_request(rid)
         if r and identity.role in ("agent", "warden"):   # app tokens: unrestricted
             rb = r.get("requested_by")
             if identity.legacy:                 # legacy config token: unstamped rows only
@@ -253,8 +374,9 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         return {"verdict": r["verdict_jws"], "kid": r["verdict_kid"]}
 
     @app.post("/v1/requests/{rid}/decision")
-    async def decide(rid: str, body: Decision,
-                     identity: Identity = Depends(require_role("app"))):
+    async def decide(rid: str, body: Decision, ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        db = cell.db
         r = db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
@@ -269,24 +391,30 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
             # a pending row that refused the guarded UPDATE is expired-by-clock
             shown = "expired" if cur["status"] == "pending" else cur["status"]
             raise HTTPException(409, f"not pending (status={shown})")
-        jws = sign_verdict(kid, signing_key, request_id=updated["id"],
+        jws = sign_verdict(cell.signer, request_id=updated["id"],
                            action_hash=updated["action_hash"],
                            decision=updated["status"],
                            decided_at=updated["decided_at"],
-                           approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
-        db.set_verdict(updated["id"], jws, kid)
+                           approval_ttl=cfg.policy.approval_ttl_seconds,
+                           tenant_id=cell.tenant_id)
+        db.set_verdict(updated["id"], jws, cell.signer.kid)
         db.add_audit(updated["id"], "verdict_issued",
-                     {"decision": updated["status"], "kid": kid})
+                     {"decision": updated["status"], "kid": cell.signer.kid})
         updated = db.get_request(rid)
-        _spawn(outbox.publish("request.decided", updated))
-        await hub.publish("request.decided", "request", updated)
+        if scheduler is not None and updated["status"] == "approved":
+            deadline = (datetime.fromisoformat(updated["decided_at"])
+                        + timedelta(seconds=cfg.policy.approval_ttl_seconds)).isoformat()
+            scheduler.schedule(deadline, cell.tenant_id, rid)
+        _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", updated)
+        cell.hub.publish({"event": "request.decided", "request": updated})
         return updated
 
     @app.post("/v1/requests/{rid}/consume")
-    def consume(rid: str, identity: Identity = Depends(require_role("warden"))):
+    def consume(rid: str, ctx: tuple = Depends(require_cell("warden"))):
         # Sync (not async) on purpose: it runs in the threadpool, so concurrent
         # consumes genuinely race and the guarded UPDATE decides the winner.
-        code, row = db.consume_request(
+        identity, cell = ctx
+        code, row = cell.db.consume_request(
             rid, approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
         if code == 404:
             raise HTTPException(404, "not found")
@@ -295,48 +423,51 @@ def create_app(cfg, db, sender, hub: Hub | None = None, ws_heartbeat: float = 30
         if code == 409:
             raise HTTPException(
                 409, f"not consumable (status={row['status']}, consumed_at={row['consumed_at']})")
-        db.add_audit(rid, "consumed", {"by": identity.name})
+        cell.db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
 
-    @app.post("/v1/devices", dependencies=[appdep])
-    async def register(body: DeviceRegister):
-        dev = db.register_device(body.apns_token, body.name, body.min_severity,
-                                  body.notifications_enabled, body.sound,
-                                  severities=body.severities, badge=body.badge)
-        await hub.publish("device.updated", "device", dev)
+    @app.post("/v1/devices")
+    async def register(body: DeviceRegister, ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        dev = cell.db.register_device(body.apns_token, body.name, body.min_severity,
+                                      body.notifications_enabled, body.sound,
+                                      severities=body.severities, badge=body.badge)
+        cell.hub.publish({"event": "device.updated", "device": dev})
         return dev
 
-    @app.get("/v1/devices", dependencies=[appdep])
-    def devices():
-        return db.list_devices()
+    @app.post("/v1/devices/enroll")
+    async def enroll(body: DeviceRegister, request: Request):
+        # Phone-facing enrollment (§10). Tenant is derived SOLELY from the
+        # single-use pairing credential — no caller hint. The device row is
+        # written only to the credential's cell (no global device table), so
+        # push tokens are namespaced per tenant by construction.
+        auth = request.headers.get("authorization", "")
+        if not auth.startswith("Bearer "):
+            raise generic_403()
+        code = auth.removeprefix("Bearer ")
+        async with resolve_pairing(code, request.app.state.registry,
+                                   request.app.state.control) as cell:
+            dev = cell.db.register_device(
+                body.apns_token, body.name, body.min_severity,
+                body.notifications_enabled, body.sound,
+                severities=body.severities, badge=body.badge)
+            cell.hub.publish({"event": "device.updated", "device": dev})
+            return {**dev, "tenant_id": cell.tenant_id}
 
-    @app.get("/v1/notify/policy", dependencies=[appdep])
-    def notify_policy():
-        return dict(cfg.notify_severities)
+    @app.get("/v1/devices")
+    def devices(ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        return cell.db.list_devices()
+
+    @app.get("/v1/notify/policy")
+    def notify_policy(ctx: tuple = Depends(require_cell("app"))):
+        _identity, cell = ctx
+        return dict(cell.dispatcher.cfg.notify_severities)
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
-        auth = ws.headers.get("authorization", "")
-        cookie = ws.cookies.get("hma_session", "")
-        token_ok = auth.startswith("Bearer ") and secrets.compare_digest(
-            auth.removeprefix("Bearer ").encode(), cfg.auth.app_token.encode())
-        if not (token_ok or app.state.session_check(cookie)):
-            await ws.close(code=4401)
-            return
-        await ws.accept()
-        q = hub.subscribe()
-        async def heartbeat():
-            while True:
-                await asyncio.sleep(ws_heartbeat)
-                await hub.publish("ping", "data", {})
-        hb = asyncio.create_task(heartbeat())
-        try:
-            while True:
-                await ws.send_json(await q.get())
-        except WebSocketDisconnect:
-            pass
-        finally:
-            hb.cancel()
-            hub.unsubscribe(q)
+        await run_stream(ws, ws.app.state.registry, ws.app.state.control,
+                         resolve=resolve_identity,
+                         heartbeat=ws_heartbeat, send_timeout=ws_send_timeout)
 
     return app

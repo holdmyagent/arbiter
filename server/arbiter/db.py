@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -78,8 +78,22 @@ def _migrate_5_to_6(conn):
       created_at TEXT NOT NULL,
       request_expires_at TEXT NOT NULL)""")
 
+def _migrate_6_to_7(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS pairings(
+      code_hash TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT)""")
+
+def _migrate_7_to_8(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS notify_sent(
+      request_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      PRIMARY KEY(request_id, event))""")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
-              _migrate_5_to_6]
+              _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8]
 
 class Database:
     def __init__(self, path: str):
@@ -131,6 +145,19 @@ class Database:
         with self._lock:
             self.conn.execute("SELECT 1")
 
+    def checkpoint_and_close(self) -> None:
+        """Fold the WAL back into the main file and close the connection. Called
+        by the registry ONLY on eviction of a refcount==0 cell, and NEVER while
+        the registry map lock is held (the map lock is the outer lock; this takes
+        only this connection's own inner RLock). After this returns the cell's
+        connection is dead — the cell object must be unreachable from the map."""
+        with self._lock:
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.conn.commit()
+            finally:
+                self.conn.close()
+
     def add_audit(self, request_id: str, event: str, detail: dict | None = None):
         with self._lock:
             self.conn.execute(
@@ -175,6 +202,21 @@ class Database:
                 d["payload"] = json.loads(d["payload"])
                 out.append(d)
             return out
+
+    def notify_reserve(self, request_id: str, event: str) -> bool:
+        """Reserve the (request, event) dedupe key. Returns True iff newly
+        reserved; False if this outward action was already claimed. Reserve is
+        committed BEFORE the outward call so a re-drain (process restart) or a
+        cell reopened after churn observes the claim and never re-fires it."""
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "INSERT INTO notify_sent(request_id,event,sent_at) VALUES (?,?,?)",
+                    (request_id, event, _iso(_utcnow())))
+                self.conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
 
     def create_request(self, c, requested_by: str | None = None) -> dict:
         now = _utcnow()
@@ -274,6 +316,53 @@ class Database:
                               (jws, kid, rid))
             self.conn.commit()
 
+    def expire_request_with_verdict(self, rid: str, jws: str, kid: str,
+                                    now: datetime | None = None) -> dict | None:
+        """Atomically flip an overdue pending row to 'expired', store its
+        'expired' verdict, and write both audit rows in ONE transaction. The
+        UPDATE guards on status='pending' AND expires_at<=now so a concurrent
+        set_decision (which moved the row to approved/denied) wins and this
+        returns None — closing the two-commit window that could otherwise strand
+        an expired row with no verdict (permanent verdict-404). Audit rows are
+        inlined (not add_audit) so the whole flip commits exactly once."""
+        now = now or _utcnow()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE requests SET status='expired', verdict_jws=?, verdict_kid=?"
+                " WHERE id=? AND status='pending' AND expires_at <= ?",
+                (jws, kid, rid, _iso(now)))
+            if cur.rowcount != 1:
+                self.conn.rollback()
+                return None
+            self.conn.execute("INSERT INTO audit VALUES (?,?,?,?,?)",
+                              (str(uuid.uuid4()), rid, "expired", _iso(now), json.dumps({})))
+            self.conn.execute("INSERT INTO audit VALUES (?,?,?,?,?)",
+                              (str(uuid.uuid4()), rid, "verdict_issued", _iso(now),
+                               json.dumps({"decision": "expired", "kid": kid})))
+            self.conn.commit()
+            return self.get_request(rid)
+
+    def open_deadline_rows(self) -> list[dict]:
+        """Rows that still carry a live deadline: pending (expiry deadline =
+        expires_at) and approved-unconsumed (staleness deadline =
+        decided_at + approval_ttl). Used to seed/rescan the ExpiryScheduler heap
+        so a dropped heap-push cannot leave a request un-expired forever."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM requests WHERE status='pending'"
+                " OR (status='approved' AND consumed_at IS NULL)").fetchall()
+            return [self._row_to_request(r) for r in rows]
+
+    def expired_without_verdict(self) -> list[dict]:
+        """Recovery scan: rows flipped to 'expired' whose verdict never committed
+        (a crash between the flip and the sign in any non-atomic path). The
+        scheduler re-signs these at startup so no expired request is a
+        permanent verdict-404."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM requests WHERE status='expired' AND verdict_jws IS NULL").fetchall()
+            return [self._row_to_request(r) for r in rows]
+
     def expire_due(self, now: datetime | None = None) -> list[dict]:
         now = now or _utcnow()
         with self._lock:
@@ -326,6 +415,27 @@ class Database:
                 self.add_audit(r["id"], "expired", {"reason": "stale_approval"})
             self.conn.commit()
             return [self.get_request(r["id"]) for r in rows]
+
+    def invalidate_in_flight(self) -> int:
+        """Restore-safety (§12): flip every in-flight approval (pending, or
+        approved-and-unconsumed) to 'expired' so a rolled-back cell cannot
+        re-execute an already-consumed action or resurrect a stale approval.
+        The agent must re-propose. Returns the number of rows invalidated."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id FROM requests WHERE status='pending'"
+                " OR (status='approved' AND consumed_at IS NULL)").fetchall()
+            for r in rows:
+                self.conn.execute("UPDATE requests SET status='expired' WHERE id=?", (r["id"],))
+                self.add_audit(r["id"], "expired", {"reason": "cell_restored"})
+            self.conn.commit()
+            return len(rows)
+
+    def backup_to(self, dest: str) -> None:
+        """Online consistent snapshot of this cell DB (VACUUM INTO), safe under
+        concurrent writers. dest must not already exist."""
+        with self._lock:
+            self.conn.execute("VACUUM INTO ?", (dest,))
 
     def register_device(self, apns_token: str, name: str, min_severity: str = "low",
                         notifications_enabled: bool = True, sound: bool = True,
@@ -406,6 +516,40 @@ class Database:
             self.conn.commit()
             return cur.rowcount > 0
 
+    # ── device pairing (tenant-bound, single-use, short-expiry) ─────────────
+
+    def mint_pairing(self, code_hash: str, expires_at: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO pairings(code_hash,created_at,expires_at,consumed_at)"
+                " VALUES (?,?,?,NULL)", (code_hash, _iso(_utcnow()), expires_at))
+            self.conn.commit()
+
+    def redeem_pairing(self, code_hash: str,
+                       now: datetime | None = None) -> tuple[int, dict | None]:
+        """Single-use redemption of a pairing credential. Mirrors consume_request:
+        the guarded UPDATE is the atomic core, so concurrent redemptions race on
+        rowcount and exactly one wins. Returns (200, row) redeemed-now;
+        (404, None) unknown; (410, row) expired; (409, row) already-consumed."""
+        now = now or _utcnow()
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM pairings WHERE code_hash=?", (code_hash,)).fetchone()
+            if r is None:
+                return 404, None
+            cur = self.conn.execute(
+                "UPDATE pairings SET consumed_at=? WHERE code_hash=?"
+                " AND consumed_at IS NULL AND expires_at > ?",
+                (_iso(now), code_hash, _iso(now)))
+            self.conn.commit()
+            row = dict(self.conn.execute(
+                "SELECT * FROM pairings WHERE code_hash=?", (code_hash,)).fetchone())
+            if cur.rowcount == 1:
+                return 200, row
+            if row["consumed_at"] is None:   # guard failed but never consumed ⇒ expiry
+                return 410, row
+            return 409, row
+
     # ── tokens (per-identity bearer credentials, hashed at rest) ────────────
 
     def _row_to_token(self, r: sqlite3.Row) -> dict:
@@ -437,6 +581,13 @@ class Database:
         with self._lock:
             return [self._row_to_token(r) for r in self.conn.execute(
                 "SELECT * FROM tokens ORDER BY created_at").fetchall()]
+
+    def active_token_hashes(self) -> set[str]:
+        """token_hash of every unrevoked token — the reconciler's liveness set (§12)."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT token_hash FROM tokens WHERE revoked_at IS NULL").fetchall()
+            return {r["token_hash"] for r in rows}
 
     def revoke_token(self, name: str) -> dict | None:
         with self._lock:

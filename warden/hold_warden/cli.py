@@ -18,9 +18,10 @@ from hold_warden.arbiter import ArbiterClient
 from hold_warden.canonical import canonicalize
 from hold_warden.config import ConfigError, ParamValidationError, WardenConfig
 from hold_warden.db import WardenDB
+from hold_warden.rotation_state import load_rotation_state
 from hold_warden.secrets import SecretResolutionError, doctor_check, resolve
 from hold_warden.service import Orchestrator
-from hold_warden.verdict import VerdictVerifier
+from hold_warden.verdict import VerdictError, VerdictVerifier
 
 log = logging.getLogger("hold_warden.cli")
 
@@ -71,6 +72,11 @@ arbiter_token = "env:HMA_WARDEN_TOKEN"
 # Ed25519 verdict key pinned from GET /v1/keys at init. The warden only trusts
 # verdicts signed by this key; re-run init (or edit) after a key rotation.
 arbiter_pubkey = "{pinned_key}"
+# Tenant this warden is paired with, derived from the pinned key's kid at
+# init (kid = f"{{tenant}}:{{hash8}}"). VerdictVerifier rejects any verdict
+# whose aud/tenant claim doesn't match this - even a neighbour tenant's
+# verdict signed with identical key bytes.
+arbiter_tenant = "{arbiter_tenant}"
 name = "{warden_name}"
 bind = "127.0.0.1"
 port = 8646
@@ -102,8 +108,17 @@ def init(arbiter_url: str, config_path: Path) -> None:
         raise click.ClickException(
             f"{config_path} already exists - refusing to overwrite")
     base = arbiter_url.rstrip("/")
+    # /v1/keys is authenticated (tenant derived from the credential), so the
+    # warden bearer is required at init. Mint it first:
+    # hma token create <name> --role warden.
+    warden_token = os.environ.get("HMA_WARDEN_TOKEN")
+    if not warden_token:
+        raise click.ClickException(
+            "set HMA_WARDEN_TOKEN=<`hma token create ... --role warden` output> "
+            "before init")
     try:
-        resp = httpx.get(f"{base}/v1/keys", timeout=10.0)
+        resp = httpx.get(f"{base}/v1/keys", timeout=10.0,
+                         headers={"Authorization": f"Bearer {warden_token}"})
         resp.raise_for_status()
         keys = resp.json().get("keys", [])
     except (httpx.HTTPError, ValueError) as exc:
@@ -113,6 +128,7 @@ def init(arbiter_url: str, config_path: Path) -> None:
             "arbiter returned no verdict keys - is it holdmyagent 0.4.0+?")
     key = keys[0]
     pinned = f"{key['kid']}:{key['x']}"
+    arbiter_tenant = key["kid"].split(":", 1)[0]   # kid = f"{tenant}:{hash8}"
 
     config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     agent_token = token_hex(32)
@@ -120,7 +136,7 @@ def init(arbiter_url: str, config_path: Path) -> None:
     _write_private(token_path, agent_token + "\n")
 
     _write_private(config_path, _CONFIG_TEMPLATE.format(
-        arbiter_url=base, pinned_key=pinned,
+        arbiter_url=base, pinned_key=pinned, arbiter_tenant=arbiter_tenant,
         warden_name=f"{socket.gethostname()}-warden",
         token_path=token_path))
 
@@ -184,6 +200,13 @@ def doctor(config_path: Path) -> None:
         click.echo(f"config: FAILED ({exc})")
         sys.exit(1)
 
+    try:
+        cfg.pinned()
+        click.echo("pinned key shape: ok")
+    except ConfigError as exc:
+        click.echo(f"pinned key shape: FAILED ({exc})")
+        failures += 1
+
     refs: dict[str, str] = {"warden.arbiter_token": cfg.arbiter_token_ref}
     for name, ref in cfg.agents.items():
         refs[f"agents.{name}"] = ref
@@ -205,15 +228,19 @@ def doctor(config_path: Path) -> None:
     if not healthy:
         failures += 1
 
+    warden_token = os.environ.get("HMA_WARDEN_TOKEN", "")
     try:
-        resp = httpx.get(f"{base}/v1/keys", timeout=10.0)
+        resp = httpx.get(f"{base}/v1/keys", timeout=10.0,
+                         headers={"Authorization": f"Bearer {warden_token}"})
         keys = resp.json().get("keys", []) if resp.status_code == 200 else []
     except (httpx.HTTPError, ValueError):
         keys = []
-    kid, _, x = cfg.arbiter_pubkey.partition(":")
-    match = any(k.get("kid") == kid and k.get("x") == x for k in keys)
-    click.echo(f"arbiter /v1/keys matches pinned key: "
-               f"{'ok' if match else 'FAILED (key mismatch)'}")
+    served_current = keys[0] if keys else {}
+    pin_kid, _, pin_x = cfg.arbiter_pubkey.rpartition(":")
+    match = any(k.get("kid") == pin_kid and k.get("x") == pin_x for k in keys) \
+        or served_current.get("kid", "").split(":", 1)[0] == cfg.arbiter_tenant
+    click.echo(f"arbiter /v1/keys matches pinned tenant/key: "
+               f"{'ok' if match else 'FAILED (key/tenant mismatch — re-run init after rotation)'}")
     if not match:
         failures += 1
 
@@ -247,7 +274,14 @@ def serve(config_path: Path) -> None:
         raise click.ClickException(
             f"cannot resolve warden.arbiter_token: {exc} - run `hma-warden doctor`")
     arbiter = ArbiterClient(cfg.arbiter_url, warden_token)
-    verifier = VerdictVerifier(cfg.arbiter_pubkey)
+    try:
+        adopted, last_seq = load_rotation_state(data_dir)
+        # Config pin always wins a kid collision: it is the stronger trust root,
+        # and adopted keys legitimately only add new kids (never collide).
+        pinned = {**adopted, **cfg.pinned()}
+        verifier = VerdictVerifier(pinned, cfg.arbiter_tenant, last_seq=last_seq)
+    except (ConfigError, VerdictError) as exc:
+        raise click.ClickException(str(exc))
     orch = Orchestrator(cfg, db, arbiter, verifier)
     app = create_asgi_app(orch, cfg)   # resolves [agents.*] token refs; fails loud
     stop = threading.Event()

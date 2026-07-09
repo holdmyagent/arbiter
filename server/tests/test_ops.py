@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app
@@ -11,7 +12,19 @@ from arbiter.models import RequestCreate
 from arbiter.notify import Dispatcher, callback_allowed
 from arbiter.notify.webhook import WebhookNotifier
 
+from tests.conftest import build_registry_env
+
 AGENT = {"Authorization": "Bearer test-agent"}
+
+# C1 migration (task-C1-brief): create_app now takes (cfg, registry, control);
+# require_role reads request.app.state.db, removed per §15.1 — so every route
+# behind it 500s/errors until ported per-cell (Groups C4-C8). Assertions below
+# are unchanged; xfail(strict=False) documents the expected breakage. /health
+# is rewritten in C1 to resolve the default cell directly, so it keeps
+# passing genuinely (no xfail needed on the two health tests below).
+_API_XFAIL = pytest.mark.xfail(
+    reason="require_role reads app.state.db, removed per C1 §15.1; ported per-cell in C4-C8",
+    strict=False)
 
 
 class FakeSender:
@@ -19,11 +32,12 @@ class FakeSender:
         return "sent"
 
 
-def _client(cfg):
-    db = Database(":memory:")
-    app = create_app(cfg, db, FakeSender())
+def _client(cfg, tmp_path):
+    sender = FakeSender()
+    env = build_registry_env(cfg, tmp_path, sender=sender)
+    app = create_app(cfg, env.registry, env.control, sender=sender)
     c = TestClient(app)
-    c.db = db
+    c.db = env.default_db
     return c
 
 
@@ -117,9 +131,9 @@ def test_url_pattern_port_matching_both_directions():
 
 # ── create-time enforcement ──────────────────────────────────────────────────
 
-def test_create_rejects_disallowed_callback(cfg):
+def test_create_rejects_disallowed_callback(cfg, tmp_path):
     cfg.callback_allowlist = ["10.0.0.0/8"]
-    client = _client(cfg)
+    client = _client(cfg, tmp_path)
     r = client.post("/v1/requests", headers=AGENT,
                     json={"title": "t", "callback_url": "http://192.168.1.5/cb"})
     assert r.status_code == 422
@@ -182,14 +196,25 @@ def test_callback_redirects_not_followed():
 
 # ── /health readiness ────────────────────────────────────────────────────────
 
-def test_health_pings_db(cfg):
-    client = _client(cfg)
+def test_health_pings_db(cfg, tmp_path):
+    client = _client(cfg, tmp_path)
     r = client.get("/health")
     assert r.status_code == 200 and r.json() == {"ok": True, "db": True}
 
 
-def test_health_503_when_db_closed(cfg):
-    client = _client(cfg)
+def test_health_503_when_db_closed(cfg, tmp_path):
+    # Multi-tenant note (C1): /health now resolves the DEFAULT CELL through
+    # the registry, which opens its OWN Database connection onto the cell's
+    # sqlite file — a different connection object than `client.db` (the
+    # test's own handle onto the same file). Closing `client.db.conn` alone
+    # no longer breaks a LATER connection to the same file (SQLite doesn't
+    # care that some other handle closed), so the original "close the db"
+    # failure simulation needs the per-cell equivalent: corrupt the file the
+    # registry will open on its first (lazy) acquire. This preserves the
+    # test's original intent — an unreachable/broken db -> 503 — rather than
+    # xfailing a test that no longer represents a real breakage.
+    client = _client(cfg, tmp_path)
     client.db.conn.close()
+    (tmp_path / "cells" / "default" / "arbiter.sqlite3").write_bytes(b"not a sqlite file")
     r = client.get("/health")
     assert r.status_code == 503 and r.json() == {"ok": False, "db": False}

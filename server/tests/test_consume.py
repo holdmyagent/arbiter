@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import secrets as pysecrets
@@ -9,7 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arbiter.app import create_app
-from arbiter.db import Database
+from arbiter.scheduler import ExpiryScheduler
+
+from tests.conftest import build_registry_env
 
 AGENT = {"Authorization": "Bearer test-agent"}
 APP = {"Authorization": "Bearer test-app"}
@@ -20,36 +23,47 @@ class FakeSender:
         return "sent"
 
 
-def mint_token(db, name, role, scopes=None):
-    """Insert a DB token row straight against the migration-4 DDL and return the bearer."""
+def mint_token(client, name, role, scopes=None):
+    """Insert a DB token row straight against the migration-4 DDL AND register
+    its control-plane route (mirrors conftest.mint_cell_token) — a bare
+    db.create_token()-equivalent insert is invisible to resolve_identity,
+    which routes through the control plane first."""
     tok = f"hma_{role}_{pysecrets.token_hex(24)}"
-    db.conn.execute(
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    client.db.conn.execute(
         "INSERT INTO tokens(id, name, role, token_hash, scopes, created_at,"
         " expires_at, last_used_at, revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
-        (str(uuid.uuid4()), name, role, hashlib.sha256(tok.encode()).hexdigest(),
+        (str(uuid.uuid4()), name, role, th,
          json.dumps(scopes) if scopes is not None else None,
          datetime.now(timezone.utc).isoformat()))
-    db.conn.commit()
+    client.db.conn.commit()
+    client.env.control.add_route(th, "default")
     return tok
 
 
-def _client(cfg):
-    db = Database(":memory:")
-    app = create_app(cfg, db, FakeSender())
+def _client(cfg, tmp_path):
+    sender = FakeSender()
+    env = build_registry_env(cfg, tmp_path, sender=sender)
+    sched = ExpiryScheduler(env.registry, env.control,
+                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+    app = create_app(cfg, env.registry, env.control, sender=sender, scheduler=sched)
     c = TestClient(app)
-    c.db = db
+    c.db = env.default_db
+    c.env = env
     c.app_ref = app
+    c.cfg = cfg
+    c.sched = sched
     return c
 
 
 @pytest.fixture
-def client(cfg):
-    return _client(cfg)
+def client(cfg, tmp_path):
+    return _client(cfg, tmp_path)
 
 
 @pytest.fixture
 def warden_headers(client):
-    tok = mint_token(client.db, "warden1", "warden")
+    tok = mint_token(client, "warden1", "warden")
     return {"Authorization": f"Bearer {tok}"}
 
 
@@ -98,10 +112,10 @@ def test_double_consume_concurrent_exactly_one_wins(client, warden_headers):
     assert sorted(codes) == [200, 409]
 
 
-def test_stale_approval_410(cfg):
+def test_stale_approval_410(cfg, tmp_path):
     cfg.policy.approval_ttl_seconds = 0     # everything is instantly stale — no sleeping
-    client = _client(cfg)
-    tok = mint_token(client.db, "warden1", "warden")
+    client = _client(cfg, tmp_path)
+    tok = mint_token(client, "warden1", "warden")
     rid = _approved_request(client)
     r = client.post(f"/v1/requests/{rid}/consume",
                     headers={"Authorization": f"Bearer {tok}"})
@@ -117,13 +131,28 @@ def test_db_consume_stale_with_explicit_clock(db, make):
     assert code == 410 and row["consumed_at"] is None
 
 
+def _force_stale_decided_at(client, rid):
+    """Push decided_at far enough into the past that decided_at+approval_ttl
+    is already overdue, mirroring test_scheduler.py's cold-cell pattern."""
+    stale_ttl = client.cfg.policy.approval_ttl_seconds
+    past = (datetime.now(timezone.utc) - timedelta(seconds=stale_ttl + 10)).isoformat()
+    with client.db._lock:
+        client.db.conn.execute("UPDATE requests SET decided_at=? WHERE id=?", (past, rid))
+        client.db.conn.commit()
+
+
 def test_sweeper_flips_stale_approval_keeps_verdict(client, warden_headers):
     rid = _approved_request(client)
     jws_before = client.db.get_request(rid)["verdict_jws"]
     assert jws_before
-    future = datetime.now(timezone.utc) + timedelta(seconds=3600)
-    flipped = client.app_ref.state.expire_pass(now=future)
-    assert any(e["id"] == rid for e in flipped)
+    _force_stale_decided_at(client, rid)
+
+    async def _run():
+        await client.sched._fire_one((0, 0, "default", rid))
+        for t in list(client.sched._bg):
+            await t
+    asyncio.run(_run())
+
     row = client.db.get_request(rid)
     assert row["status"] == "expired"
     assert row["verdict_jws"] == jws_before   # original approved verdict kept
@@ -133,6 +162,12 @@ def test_sweeper_leaves_consumed_approvals_alone(client, warden_headers):
     rid = _approved_request(client)
     assert client.post(f"/v1/requests/{rid}/consume",
                        headers=warden_headers).status_code == 200
-    future = datetime.now(timezone.utc) + timedelta(seconds=3600)
-    client.app_ref.state.expire_pass(now=future)
+    _force_stale_decided_at(client, rid)
+
+    async def _run():
+        await client.sched._fire_one((0, 0, "default", rid))
+        for t in list(client.sched._bg):
+            await t
+    asyncio.run(_run())
+
     assert client.db.get_request(rid)["status"] == "approved"

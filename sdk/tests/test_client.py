@@ -10,20 +10,32 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 from arbiter.app import create_app
 from arbiter.config import Config
-from arbiter.db import Database
+from arbiter.control import ControlPlane
+from arbiter.registry import TenantRegistry
 from hold_sdk.client import ArbiterClient
 
 def _server():
-    absent = Path(tempfile.mkdtemp()) / "absent.toml"  # never written -> Config.load uses defaults
+    # C1 migration (arbiter task-C1-brief): create_app now takes
+    # (cfg, registry, control) instead of (cfg, db, sender) — provision a
+    # "default" tenant cell the same way arbiter/tests/conftest.py does.
+    root = Path(tempfile.mkdtemp())
+    absent = root / "absent.toml"  # never written -> Config.load uses defaults
     cfg = Config.load(str(absent))
     cfg.auth.agent_token = "A"
     cfg.auth.app_token = "P"
     cfg.auth.admin_password = "pw"
     cfg.auth.session_secret = "secret"
-    db = Database(":memory:")
     class S:
         async def send(self,t,p): return "skipped"
-    return create_app(cfg, db, S()), db
+    sender = S()
+    control = ControlPlane.open(root / "control", root / "cells")
+    cell_dir = root / "cells" / "default"
+    cell_dir.mkdir(parents=True, exist_ok=True)
+    control.create_tenant("default", str(cell_dir))
+    from arbiter.db import Database
+    db = Database(str(cell_dir / "arbiter.sqlite3"))  # convention: <dir>/arbiter.sqlite3
+    registry = TenantRegistry(control, cfg=cfg, sender=sender)
+    return create_app(cfg, registry, control, sender=sender), db
 
 def test_approved():
     app, db = _server()

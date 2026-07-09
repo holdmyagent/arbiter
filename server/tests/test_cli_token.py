@@ -77,14 +77,28 @@ def test_token_audit_events_written_without_secret(tmp_path, monkeypatch):
     joined = " ".join(r["detail"] for r in rows)
     assert value not in joined  # secrets never land in audit rows
 
+# `hma token create` is now tenant-aware (task H6, Group H): once a control.db
+# exists (a tenant has been provisioned), create/list/revoke go through the H3
+# cross-store ordering (mint_cell_token/revoke_cell_token) so a minted token
+# also gets a control-plane route — it resolves against create_app's per-cell
+# auth, not just the legacy single-tenant db_path file.
 def test_created_token_authenticates_and_revocation_bites(tmp_path, monkeypatch):
+    from arbiter.control import ControlPlane
+    from arbiter.provisioning import control_path_for, tenants_root_for
+    from arbiter.registry import TenantRegistry
+
     _env(tmp_path, monkeypatch)
     CliRunner().invoke(main, ["init"])
+    assert CliRunner().invoke(main, ["tenant", "create", "default"]).exit_code == 0
     out = CliRunner().invoke(main, ["token", "create", "hermes", "--role", "agent"]).output
     value = re.search(TOKEN_RE, out).group(0)
     cfg = Config.load()
-    db = Database(cfg.db_path_expanded())
-    app = create_app(cfg, db, APNsSender(cfg))
+    # Same control.db + cells `hma serve`/`hma tenant create` opened — proves
+    # the CLI wired both the cell row and the control-plane route, not a
+    # separately-constructed environment.
+    control = ControlPlane.open(control_path_for(cfg).parent, tenants_root_for(cfg))
+    registry = TenantRegistry(control, cfg=cfg)
+    app = create_app(cfg, registry, control, sender=APNsSender(cfg))
     client = TestClient(app)
     r = client.post("/v1/requests", headers={"Authorization": f"Bearer {value}"},
                     json={"title": "Deploy", "severity": "high", "ttl_seconds": 300})

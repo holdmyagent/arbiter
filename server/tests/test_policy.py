@@ -8,35 +8,42 @@ from fastapi.testclient import TestClient
 
 from arbiter.app import create_app
 from arbiter.auth import Identity
-from arbiter.db import Database
 from arbiter.models import RequestCreate
 from arbiter.policy import PolicyResult, evaluate_create
 
-AGENT = {"Authorization": "Bearer test-agent"}
+from tests.conftest import build_registry_env
 
+AGENT = {"Authorization": "Bearer test-agent"}
 
 class FakeSender:
     async def send(self, token, payload):
         return "sent"
 
 
-def mint_token(db, name, role, scopes=None):
+def mint_token(client, name, role, scopes=None):
+    """Insert a DB token row AND register its control-plane route (mirrors
+    conftest.mint_cell_token) — a bare token-row insert is invisible to
+    resolve_identity, which routes through the control plane first."""
     tok = f"hma_{role}_{pysecrets.token_hex(24)}"
-    db.conn.execute(
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    client.db.conn.execute(
         "INSERT INTO tokens(id, name, role, token_hash, scopes, created_at,"
         " expires_at, last_used_at, revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
-        (str(uuid.uuid4()), name, role, hashlib.sha256(tok.encode()).hexdigest(),
+        (str(uuid.uuid4()), name, role, th,
          json.dumps(scopes) if scopes is not None else None,
          datetime.now(timezone.utc).isoformat()))
-    db.conn.commit()
+    client.db.conn.commit()
+    client.env.control.add_route(th, "default")
     return tok
 
 
-def _client(cfg):
-    db = Database(":memory:")
-    app = create_app(cfg, db, FakeSender())
+def _client(cfg, tmp_path):
+    sender = FakeSender()
+    env = build_registry_env(cfg, tmp_path, sender=sender)
+    app = create_app(cfg, env.registry, env.control, sender=sender)
     c = TestClient(app)
-    c.db = db
+    c.db = env.default_db
+    c.env = env
     c.app_ref = app
     return c
 
@@ -80,27 +87,27 @@ def test_evaluate_create_scopes(cfg):
 
 # ── HTTP wiring ──────────────────────────────────────────────────────────────
 
-def test_create_policy_denied_403(cfg):
+def test_create_policy_denied_403(cfg, tmp_path):
     cfg.policy.deny_action_types = ["db.drop"]
-    client = _client(cfg)
+    client = _client(cfg, tmp_path)
     r = client.post("/v1/requests", headers=AGENT,
                     json={"title": "t", "action_type": "db.drop"})
     assert r.status_code == 403
     assert r.json()["detail"] == "policy: denied by policy"
 
 
-def test_create_floor_raises_stored_severity(cfg):
+def test_create_floor_raises_stored_severity(cfg, tmp_path):
     cfg.policy.severity_floors = {"deploy": "high"}
-    client = _client(cfg)
+    client = _client(cfg, tmp_path)
     r = client.post("/v1/requests", headers=AGENT,
                     json={"title": "t", "action_type": "deploy", "severity": "low"})
     assert r.status_code == 200 and r.json()["severity"] == "high"
     assert client.db.get_request(r.json()["id"])["severity"] == "high"
 
 
-def test_scoped_token_enforcement_403(cfg):
-    client = _client(cfg)
-    tok = mint_token(client.db, "bot", "agent",
+def test_scoped_token_enforcement_403(cfg, tmp_path):
+    client = _client(cfg, tmp_path)
+    tok = mint_token(client, "bot", "agent",
                      scopes={"action_types": ["deploy"], "max_severity": "high"})
     h = {"Authorization": f"Bearer {tok}"}
     assert client.post("/v1/requests", headers=h,
@@ -113,9 +120,9 @@ def test_scoped_token_enforcement_403(cfg):
     assert ok.status_code == 200
 
 
-def test_rate_limit_429_after_n_creates(cfg):
+def test_rate_limit_429_after_n_creates(cfg, tmp_path):
     cfg.policy.rate_limit_per_minute = 3
-    client = _client(cfg)
+    client = _client(cfg, tmp_path)
     for _ in range(3):
         assert client.post("/v1/requests", headers=AGENT,
                            json={"title": "t"}).status_code == 200

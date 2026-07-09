@@ -1,7 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 from arbiter.app import create_app
-from arbiter.db import Database
+
+from tests.conftest import build_registry_env
 
 class FakeSender:
     def __init__(self): self.calls=[]
@@ -10,13 +11,13 @@ class FakeSender:
         return "sent"
 
 @pytest.fixture
-def client(cfg):
-    db = Database(":memory:")
+def client(cfg, tmp_path):
     sender = FakeSender()
-    app = create_app(cfg, db, sender)
+    env = build_registry_env(cfg, tmp_path, sender=sender)
+    app = create_app(cfg, env.registry, env.control, sender=sender)
     c = TestClient(app)
     c.sender = sender
-    c.db = db
+    c.db = env.default_db
     return c
 
 def _create(c, tok="test-agent"):
@@ -162,8 +163,10 @@ def test_root_redirects_into_dashboard(client):
     assert r.headers["location"] == "/dashboard"
 
 
+# require_cell raises one generic 403 for a missing bearer, not 401 (spec §11;
+# see test_security.py::test_request_detail_requires_token for the canonical case).
 def test_notify_policy_requires_app_token(client):
-    assert client.get("/v1/notify/policy").status_code == 401
+    assert client.get("/v1/notify/policy").status_code == 403
 
 
 def test_notify_policy_returns_config(client, app_headers, cfg):
