@@ -1,5 +1,10 @@
 name: CI
 on: [push, pull_request]
+# Supersede in-progress runs on the same ref instead of racing them (a
+# multi-ref force-push otherwise spawns simultaneous runs that step on each other).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     strategy:
