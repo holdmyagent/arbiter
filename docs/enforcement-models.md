@@ -39,7 +39,7 @@ and proceed only if it exits 0.
 ## Tier 1 — harness hook
 
 The agent's runtime (not the model) runs a hook before executing a tool call
-and blocks on the hook's verdict: the agent `PreToolUse` hooks, git
+and blocks on the hook's verdict: agent pre-exec / pre-tool hooks, git
 `pre-push`, CI gate steps, MCP middleware. The hook shells out to `hma ask`
 (exit `0` approved / `1` denied-expired / `2` error — every nonzero blocks)
 or calls `hold_sdk.request_approval`. See

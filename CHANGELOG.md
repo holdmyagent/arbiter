@@ -65,7 +65,7 @@ changes are additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working unchanged.
   `hma ask` / `hma status` accept `--url` / `HMA_URL` for remote arbiters.
 - **Docs.** New consolidated references (`docs/api.md`, `docs/config.md`,
   `docs/cli.md`), the warden guide + secret-manager recipes, enforcement
-  tiers (`docs/enforcement-models.md`), a the agent PreToolUse hook
+  tiers (`docs/enforcement-models.md`), an agent pre-exec hook
   walkthrough, and the sandboxed-agent reference architecture.
   `SECURITY.md` gains a first-class malicious-agent analysis and an honest
   "what HMA does not protect against" table.

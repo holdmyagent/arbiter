@@ -212,7 +212,7 @@ Guides for running Arbiter as a long-lived service:
 - [`docs/warden.md`](docs/warden.md) — the Warden: verified enforcement guide
 - [`docs/secret-managers.md`](docs/secret-managers.md) — Bitwarden/`rbw`, 1Password `op`, `pass`, Vault recipes
 - [`docs/enforcement-models.md`](docs/enforcement-models.md) — tier 0/1/2, and what each does NOT protect against
-- [`docs/agent-hook.md`](docs/agent-hook.md) — gate the agent's Bash tool through HMA
+- [`docs/agent-hook.md`](docs/agent-hook.md) — gate an agent's shell/tool calls through HMA
 - [`docs/reference-sandboxed-agent.md`](docs/reference-sandboxed-agent.md) — sandboxed-agent reference architecture
 - [`docs/deploy-docker.md`](docs/deploy-docker.md) — Docker / Compose
 - [`docs/deploy-systemd.md`](docs/deploy-systemd.md) — systemd unit (Linux)
