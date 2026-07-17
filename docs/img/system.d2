@@ -1,0 +1,92 @@
+vars: { d2-config: { layout-engine: elk; pad: 40 } }
+direction: right
+
+title: |md
+  # Hold My Agent — system map
+| {
+  near: top-center
+  shape: text
+}
+
+classes: {
+  boundary: {
+    style: {
+      stroke-dash: 4
+      fill: transparent
+      stroke: "#607d8b"
+      font-color: "#455a64"
+      stroke-width: 2
+    }
+  }
+  svc: {
+    style: {
+      fill: "#e8f0fe"
+      stroke: "#1a56a8"
+      border-radius: 6
+    }
+  }
+  store: {
+    shape: cylinder
+    style: {
+      fill: "#eef7ee"
+      stroke: "#2e7d32"
+    }
+  }
+  device: {
+    style: {
+      fill: "#fdf3e3"
+      stroke: "#b26a00"
+      border-radius: 6
+    }
+  }
+  ext: {
+    style: {
+      fill: "#f3eefa"
+      stroke: "#5e35b1"
+      border-radius: 6
+    }
+  }
+  enforce: { style: { stroke: "#b26a00"; stroke-width: 2 } }
+  push: { style: { stroke-dash: 3 } }
+}
+
+sandbox: Agent sandbox (untrusted) {
+  class: boundary
+  agent: AI agent { class: svc }
+}
+
+trusted: Operator trust domain {
+  class: boundary
+  warden: hold-warden daemon {
+    class: svc
+    registry: action registry\n(warden.toml) { class: store }
+    secrets: secret resolvers\n(env / file / cmd) { class: store }
+  }
+  arbiter: Arbiter server {
+    class: svc
+    control: control plane\n(control.db, MAC'd routes) { class: store }
+    cells: tenant cells\n(SQLite + Ed25519 key\n+ egress, each) { class: store }
+  }
+}
+
+channels: Notification channels {
+  class: boundary
+  apns: APNs { class: ext }
+  ntfy: ntfy { class: ext }
+  webhook: webhooks { class: ext }
+}
+
+phone: iOS app\n(paired device) { class: device }
+dash: Admin dashboard\n(view-only) { class: device }
+targets: commands / HTTP / secrets { class: ext }
+
+sandbox.agent -> trusted.arbiter: hma ask / hold-sdk
+sandbox.agent -> trusted.warden: propose + poll\n(no credentials) { class: enforce }
+trusted.warden -> trusted.arbiter: create + poll + verify\nverdict + consume { class: enforce }
+trusted.warden -> targets: execute approved action { class: enforce }
+trusted.arbiter -> channels.apns: push { class: push }
+trusted.arbiter -> channels.ntfy: publish { class: push }
+trusted.arbiter -> channels.webhook: HMAC-signed POST { class: push }
+channels.apns -> phone: notification { class: push }
+phone -> trusted.arbiter: decision + Face ID / Touch ID
+dash -> trusted.arbiter: watch live (session cookie)

@@ -70,7 +70,7 @@ requests and want to reuse one `httpx.Client` (connection pooling)
 instead of opening a fresh one per call:
 
 ```python
-from hold_sdk.client import ArbiterClient
+from hold_sdk import ArbiterClient
 
 client = ArbiterClient(
     base_url="http://127.0.0.1:8000",
@@ -78,6 +78,9 @@ client = ArbiterClient(
 )
 decision = client.request_approval("Restart api service", severity="medium", target="hermes")
 ```
+
+(`from hold_sdk.client import ArbiterClient` still works — the class lives
+in `hold_sdk.client` and is re-exported from the package root.)
 
 The method's actual signature:
 

@@ -212,6 +212,7 @@ it privately.
 
 Guides for running Arbiter as a long-lived service:
 
+- **[How it all fits together → docs/architecture.md](docs/architecture.md)** — system map, request lifecycle, enforcement chain, tenancy
 - [`docs/quickstart.md`](docs/quickstart.md) — local install, config, first request
 - [`docs/api.md`](docs/api.md) — consolidated REST API reference (every `/v1` endpoint)
 - [`docs/config.md`](docs/config.md) — full `config.toml` reference
