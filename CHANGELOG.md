@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+## [0.4.1] - 2026-07-17
+
+Consolidation patch after the 0.4.0 train — hardening and performance only;
+no `/v1` API surface changes. Upgrading runs two quick schema migrations
+(9: token-hash index; 10: duplicate-collapse indexes — pre-existing duplicate
+pending rows, if any, are expired with an audit trail).
+
+### Fixed
+
+- Tenant-cell acquisition failures no longer escape as 500s or dropped
+  sockets: an epoch race returns the same generic 403 as every other
+  resolution failure, a capacity shed returns 503, and `/v1/stream` closes
+  cleanly (4401 / 1013 Try Again Later).
+- The dashboard login limiter now keys on the trusted client id (the
+  forwarded client behind a configured trusted proxy), matching the API
+  fleet limiter — one attacker behind a shared ingress IP can no longer
+  lock the admin out.
+- The create route checks its rate limit *before* policy evaluation, so a
+  flood of policy-denied requests trips the limiter instead of bypassing it
+  (policy-denied creates now count toward the window).
+- Duplicate-collapse is enforced at the database level too (partial unique
+  indexes): a concurrent identical create returns the surviving pending
+  request instead of racing in a twin row.
+- A second `hma serve` on the same data directory refuses to start
+  (advisory lock) instead of silently double-serving one database.
+
+### Changed
+
+- `tokens.token_hash` is indexed — token auth no longer table-scans.
+- `GET /v1/audit/export` streams the audit log in batches instead of
+  materializing every row in memory.
+- The release pipeline builds each package exactly once: publish jobs
+  upload their dists and the GitHub release attaches those same files.
+- Removed dead pre-multitenancy auth internals (`require_role`,
+  `_resolve_identity_legacy`); no supported code path used them since the
+  per-cell port in 0.4.0.
+
 ## [0.4.0] - 2026-07-17
 
 The trust upgrade: approvals become verifiable artifacts, and a new
