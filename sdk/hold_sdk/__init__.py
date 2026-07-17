@@ -2,6 +2,8 @@ import os
 import time
 import httpx
 
+from .client import ArbiterClient  # re-export: consumers import from the package root
+
 def request_approval(title, *, description="", severity="medium", target=None,
                      ttl_seconds=300, payload=None, action_type="generic",
                      server_url=None, token=None, poll_interval=2, timeout=None,
@@ -35,3 +37,5 @@ def request_approval(title, *, description="", severity="medium", target=None,
     except Exception:
         return "denied"  # fail-closed
     return "denied"      # local timeout
+
+__all__ = ["request_approval", "ArbiterClient"]

@@ -13,7 +13,7 @@ its own virtualenv and test suite.
 cd server
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e '.[dev]' -e ../warden
 pytest tests
 ```
 
