@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-07-17
 
 The trust upgrade: approvals become verifiable artifacts, and a new
 enforcement daemon can execute them outside the agent's reach. All `/v1`
