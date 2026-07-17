@@ -51,8 +51,7 @@ def require_cell(*roles: str):
     (not nested in create_app): it closes over nothing tenant-scoped, reading
     everything off request.app.state, so it can be imported directly (the
     brief's inline sketch nests it inside create_app, but that would make it
-    unimportable as `arbiter.app.require_cell` — module scope is equivalent
-    and matches the require_role precedent in auth.py).
+    unimportable as `arbiter.app.require_cell` — module scope is equivalent).
 
     The fleet auth-failure limiter (§13) is keyed on trusted_client_id, which
     with no configured trusted proxy IS the bare peer IP — so it is only ever
