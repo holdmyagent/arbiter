@@ -1,39 +1,15 @@
-import pytest
-
-# C1 migration (task-C1-brief): app.state.login_limiter is removed per §15.1
-# (nothing tenant-scoped/process-local on app.state beyond the pinned list),
-# but web/__init__.py's login() route still reads request.app.state.login_limiter
-# — so /dashboard/login (and therefore every test that logs in first) 500s.
-# Also, build_router(cfg, db, hub) is now called as build_router(cfg, registry,
-# control) (app.py) — its own route bodies (requests_page/request_detail/
-# devices_page/etc.) still call the closure param as a bare `db`/`hub`, which is
-# now a TenantRegistry/ControlPlane and has no list_requests()/etc. NO task in
-# plan-groups/{A..I} currently owns rewriting build_router to be per-cell
-# (derive the cell from the session, per Cell.login_limiter/db/hub) — this is a
-# planning gap surfaced by the C8 sweep; flagged in the C8 report for the
-# operator to assign a task/group. Assertions below are unchanged;
-# xfail(strict=False) documents the expected breakage.
-_DASHBOARD_XFAIL = pytest.mark.xfail(
-    reason="dashboard build_router still reads process-global login_limiter/db/hub; "
-           "no task in plan-groups/A-I ports it yet (gap flagged in C8 report for operator)",
-    strict=False)
-
-
 def _login(client, password="test-admin"):
     r = client.post("/dashboard/login", data={"password": password}, follow_redirects=False)
     return r
 
-@_DASHBOARD_XFAIL
 def test_login_success_sets_cookie_and_redirects(client):
     r = _login(client)
     assert r.status_code == 303 and "hma_session" in r.cookies
 
-@_DASHBOARD_XFAIL
 def test_login_failure_no_cookie(client):
     r = _login(client, "wrong")
     assert r.status_code in (200, 401) and "hma_session" not in r.cookies
 
-@_DASHBOARD_XFAIL
 def test_login_rate_limited(client):
     for _ in range(6):
         _login(client, "wrong")
@@ -43,7 +19,6 @@ def test_pair_requires_session(client):
     r = client.get("/dashboard/pair", follow_redirects=False)
     assert r.status_code in (302, 303) and "/dashboard/login" in r.headers["location"]
 
-@_DASHBOARD_XFAIL
 def test_pair_shows_qr_when_logged_in(client):
     _login(client)
     r = client.get("/dashboard/pair")
@@ -53,12 +28,10 @@ def test_old_pair_redirects(client):
     r = client.get("/pair", follow_redirects=False)
     assert r.status_code == 302 and "/dashboard/pair" in r.headers["location"]
 
-@_DASHBOARD_XFAIL
 def test_logout_requires_csrf(client):
     _login(client)
     assert client.post("/dashboard/logout", data={}).status_code == 403
 
-@_DASHBOARD_XFAIL
 def test_stream_accepts_session_cookie(client, agent_headers):
     _login(client)
     with client.websocket_connect("/v1/stream") as ws:   # cookie jar carries hma_session
@@ -69,7 +42,6 @@ def test_stream_accepts_session_cookie(client, agent_headers):
 # module-level _REVOKED set, and TimestampSigner's 1-second resolution over a
 # constant payload means a later login in the same second would mint the same
 # (already revoked) value.
-@_DASHBOARD_XFAIL
 def test_logout_invalidates_session_replay(client):
     _login(client)
     csrf = client.get("/dashboard/pair").text.split('name="csrf" value="')[1].split('"')[0]
@@ -79,7 +51,6 @@ def test_logout_invalidates_session_replay(client):
     r = client.get("/dashboard/pair", follow_redirects=False)
     assert r.status_code == 303 and "/dashboard/login" in r.headers["location"]
 
-@_DASHBOARD_XFAIL
 def test_requests_page_lists_and_fragment(client, agent_headers):
     _login(client)
     client.post("/v1/requests", headers=agent_headers, json={"title": "Deploy X", "severity": "critical"})
@@ -88,7 +59,6 @@ def test_requests_page_lists_and_fragment(client, agent_headers):
     frag = client.get("/dashboard/requests?fragment=1")
     assert "Deploy X" in frag.text and "<html" not in frag.text
 
-@_DASHBOARD_XFAIL
 def test_request_detail_slip(client, agent_headers):
     _login(client)
     rid = client.post("/v1/requests", headers=agent_headers,
@@ -99,7 +69,6 @@ def test_request_detail_slip(client, agent_headers):
     assert "DROP TABLE events;" in page.text  # description = the gated command, on the slip
     assert "Approve" not in page.text and "Deny" not in page.text  # view-only
 
-@_DASHBOARD_XFAIL
 def test_devices_rename_and_delete(client, app_headers):
     _login(client)
     client.post("/v1/devices", headers=app_headers, json={"apns_token": "tok1", "name": "iPhone"})
@@ -110,7 +79,6 @@ def test_devices_rename_and_delete(client, app_headers):
     client.post(f"/dashboard/devices/{did}/delete", data={"csrf": csrf})
     assert client.get("/v1/devices", headers=app_headers).json() == []
 
-@_DASHBOARD_XFAIL
 def test_audit_page_filters(client, agent_headers):
     _login(client)
     rid = client.post("/v1/requests", headers=agent_headers, json={"title": "A"}).json()["id"]
@@ -127,7 +95,6 @@ def _client_for(cfg, tmp_path):
     app = create_app(cfg, env.registry, env.control, sender=sender)
     return TestClient(app)
 
-@_DASHBOARD_XFAIL
 def test_rotate_writes_loaded_config_path_not_default(tmp_path, monkeypatch):
     # A `--config /custom/path` deployment: the cfg's loaded_path is the
     # custom file, which already exists with known tokens. Rotation must
@@ -156,7 +123,6 @@ def test_rotate_writes_loaded_config_path_not_default(tmp_path, monkeypatch):
     assert oct(custom.stat().st_mode & 0o777) == "0o600"
     assert not default_cfg.exists()
 
-@_DASHBOARD_XFAIL
 def test_rotate_creates_missing_parent_dir(tmp_path):
     # loaded_path can point at a not-yet-existing directory (e.g. a fresh
     # --config path nobody has `hma init`-ed yet) — rotate must mkdir it
@@ -180,7 +146,6 @@ def test_rotate_creates_missing_parent_dir(tmp_path):
     assert oct(custom.stat().st_mode & 0o777) == "0o600"
     assert cfg.auth.agent_token != "test-agent"
 
-@_DASHBOARD_XFAIL
 def test_notify_policy_toggle_persists_and_applies(tmp_path, monkeypatch):
     from arbiter.config import Config
     p = tmp_path / "config.toml"
@@ -202,7 +167,6 @@ def test_notify_policy_toggle_persists_and_applies(tmp_path, monkeypatch):
         assert oct(p.stat().st_mode & 0o777) == "0o600"
 
 
-@_DASHBOARD_XFAIL
 def test_notify_policy_requires_csrf_and_valid_severity(client):
     _login(client)
     assert client.post("/dashboard/settings/notify-policy",

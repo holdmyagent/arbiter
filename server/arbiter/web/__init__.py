@@ -91,18 +91,35 @@ def _write_config_value(cfg, path: list[str], key: str, value):
             f.write(tomlkit.dumps(doc))
         os.replace(tmp, p)
 
-def build_router(cfg, db, hub) -> APIRouter:
+def build_router(cfg, registry, control) -> APIRouter:
     r = APIRouter(prefix="/dashboard")
     session = Depends(require_session(cfg))
+
+    async def _default_cell():
+        # Session-authed admin → the 'default' tenant's cell, mirroring the
+        # session path of /v1/audit/export (app.py): a disabled or absent
+        # default tenant fails closed; the cell is pinned for the request and
+        # released exactly once.
+        if control.is_disabled("default"):
+            raise HTTPException(403, "forbidden")
+        epoch = control.epoch_of("default")
+        if epoch is None:
+            raise HTTPException(403, "forbidden")
+        cell = await registry.acquire("default", epoch)
+        try:
+            yield cell
+        finally:
+            registry.release(cell)
+    cell_dep = Depends(_default_cell)
 
     @r.get("/login", response_class=HTMLResponse)
     def login_form(request: Request):
         return TEMPLATES.TemplateResponse(request, "login.html", {"error": None})
 
     @r.post("/login")
-    def login(request: Request, password: str = Form(...)):
+    def login(request: Request, password: str = Form(...), cell=cell_dep):
         import secrets as s
-        lim = request.app.state.login_limiter
+        lim = cell.login_limiter
         ip = request.client.host if request.client else "unknown"
         if lim.blocked(ip):
             raise HTTPException(429, "too many attempts")
@@ -138,44 +155,44 @@ def build_router(cfg, db, hub) -> APIRouter:
             "csrf": csrf_token(cfg, sv)})
 
     @r.get("/requests", response_class=HTMLResponse)
-    def requests_page(request: Request, sv: str = session, fragment: int = 0):
-        reqs = db.list_requests()
+    def requests_page(request: Request, sv: str = session, fragment: int = 0, cell=cell_dep):
+        reqs = cell.db.list_requests()
         ctx = {"requests": reqs, "csrf": csrf_token(cfg, sv)}
         tpl = "_request_rows.html" if fragment else "requests.html"
         return TEMPLATES.TemplateResponse(request, tpl, ctx)
 
     @r.get("/requests/{rid}", response_class=HTMLResponse)
-    def request_detail(request: Request, rid: str, sv: str = session):
-        req = db.get_request(rid)
+    def request_detail(request: Request, rid: str, sv: str = session, cell=cell_dep):
+        req = cell.db.get_request(rid)
         if not req:
             raise HTTPException(404)
         return TEMPLATES.TemplateResponse(request, "request_detail.html",
-            {"r": req, "audit": db.list_audit(rid), "csrf": csrf_token(cfg, sv)})
+            {"r": req, "audit": cell.db.list_audit(rid), "csrf": csrf_token(cfg, sv)})
 
     @r.get("/devices", response_class=HTMLResponse)
-    def devices_page(request: Request, sv: str = session):
+    def devices_page(request: Request, sv: str = session, cell=cell_dep):
         return TEMPLATES.TemplateResponse(request, "devices.html",
-            {"devices": db.list_devices(), "csrf": csrf_token(cfg, sv)})
+            {"devices": cell.db.list_devices(), "csrf": csrf_token(cfg, sv)})
 
     @r.post("/devices/{did}/rename")
     def device_rename(request: Request, did: str, sv: str = session,
-                      name: str = Form(...), csrf: str = Form(default="")):
+                      name: str = Form(...), csrf: str = Form(default=""), cell=cell_dep):
         _check_csrf(cfg, sv, csrf)
-        if not db.rename_device(did, name):
+        if not cell.db.rename_device(did, name):
             raise HTTPException(404)
         return RedirectResponse("/dashboard/devices", status_code=303)
 
     @r.post("/devices/{did}/delete")
-    def device_delete(request: Request, did: str, sv: str = session, csrf: str = Form(default="")):
+    def device_delete(request: Request, did: str, sv: str = session, csrf: str = Form(default=""), cell=cell_dep):
         _check_csrf(cfg, sv, csrf)
-        if not db.delete_device(did):
+        if not cell.db.delete_device(did):
             raise HTTPException(404)
         return RedirectResponse("/dashboard/devices", status_code=303)
 
     @r.get("/audit", response_class=HTMLResponse)
-    def audit_page(request: Request, sv: str = session, request_id: str | None = None):
+    def audit_page(request: Request, sv: str = session, request_id: str | None = None, cell=cell_dep):
         return TEMPLATES.TemplateResponse(request, "audit.html",
-            {"events": db.list_audit(request_id), "request_id": request_id or ""})
+            {"events": cell.db.list_audit(request_id), "request_id": request_id or ""})
 
     @r.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, sv: str = session):
@@ -184,7 +201,7 @@ def build_router(cfg, db, hub) -> APIRouter:
 
     @r.post("/settings/rotate")
     def rotate(request: Request, sv: str = session,
-               which: str = Form(...), csrf: str = Form(default="")):
+               which: str = Form(...), csrf: str = Form(default=""), cell=cell_dep):
         import secrets as s
         _check_csrf(cfg, sv, csrf)
         if which not in ("agent", "app"):
@@ -192,12 +209,12 @@ def build_router(cfg, db, hub) -> APIRouter:
         new = s.token_hex(32)
         _write_config_value(cfg, ["auth"], f"{which}_token", new)
         setattr(cfg.auth, f"{which}_token", new)
-        db.add_audit("-", "token_rotated", {"which": which})
+        cell.db.add_audit("-", "token_rotated", {"which": which})
         return RedirectResponse("/dashboard/settings", status_code=303)
 
     @r.post("/settings/notify-policy")
     def notify_policy(request: Request, sv: str = session,
-                      severity: str = Form(...), csrf: str = Form(default="")):
+                      severity: str = Form(...), csrf: str = Form(default=""), cell=cell_dep):
         from ..config import SEVERITIES
         _check_csrf(cfg, sv, csrf)
         if severity not in SEVERITIES:
@@ -205,7 +222,7 @@ def build_router(cfg, db, hub) -> APIRouter:
         new_value = not cfg.notify_severities[severity]
         _write_config_value(cfg, ["notify", "severities"], severity, new_value)
         cfg.notify_severities[severity] = new_value
-        db.add_audit("-", "notify_policy_changed", {"severity": severity, "enabled": new_value})
+        cell.db.add_audit("-", "notify_policy_changed", {"severity": severity, "enabled": new_value})
         return RedirectResponse("/dashboard/settings", status_code=303)
 
     return r
