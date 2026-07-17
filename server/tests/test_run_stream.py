@@ -1,6 +1,7 @@
 import asyncio
 import pytest
 
+from arbiter.registry import CapacityExceeded, EpochChanged
 from arbiter.stream import run_stream
 from tests._stream_fakes import FakeCell, FakeRegistry, FakeWS, make_resolve
 
@@ -105,3 +106,27 @@ async def test_per_tenant_stream_cap_rejects_and_still_releases():
     await asyncio.wait_for(asyncio.gather(*held), timeout=1.0)
     assert reg.refcounts["A"] == 0
     assert reg.stream_slots["A"] == 0                 # slot count back to baseline
+
+
+@pytest.mark.asyncio
+async def test_epoch_changed_during_resolve_closes_4401():
+    reg = FakeRegistry({"A": FakeCell("A")})
+
+    async def resolve(ws, registry, control):
+        raise EpochChanged("A")                    # e.g. cookie-path acquire raced
+
+    ws = FakeWS({"authorization": "Bearer tokA"})
+    await run_stream(ws, reg, None, resolve=resolve, heartbeat=1e9, send_timeout=5.0)
+    assert ws.accepted is False and ws.closed == 4401
+
+
+@pytest.mark.asyncio
+async def test_capacity_exceeded_during_resolve_closes_1013():
+    reg = FakeRegistry({"A": FakeCell("A")})
+
+    async def resolve(ws, registry, control):
+        raise CapacityExceeded("A")
+
+    ws = FakeWS({"authorization": "Bearer tokA"})
+    await run_stream(ws, reg, None, resolve=resolve, heartbeat=1e9, send_timeout=5.0)
+    assert ws.accepted is False and ws.closed == 1013

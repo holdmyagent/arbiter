@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_client_id
 from .enroll import resolve_pairing
-from .errors import generic_403
+from .errors import GENERIC_403_DETAIL, generic_403
+from .registry import CapacityExceeded, EpochChanged
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
@@ -212,6 +213,22 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     app.state.auth_limiter = SlidingWindowLimiter(10, 60.0)   # fleet auth-failure limiter (§13)
     app.state.notify_tasks = notify_tasks
     app.state.session_check = lambda v: session_valid(cfg, v)
+
+    # Registry-acquire escapes (review #3). Neither is an HTTPException, so
+    # without these they'd 500 out of every acquire site (resolve_identity,
+    # audit_export's session path, the dashboard's _default_cell, pairing
+    # enroll). EpochChanged is a delete/recreate/dir-rebind racing a live
+    # resolution (§5) -> the same constant 403 as every resolution failure
+    # (§11, no oracle). CapacityExceeded is the FD-budget shed (§15.13) ->
+    # 503: server capacity, not an auth failure, so it is never counted by
+    # the auth limiter.
+    @app.exception_handler(EpochChanged)
+    async def _epoch_changed(request, exc):
+        return JSONResponse(status_code=403, content={"detail": GENERIC_403_DETAIL})
+
+    @app.exception_handler(CapacityExceeded)
+    async def _capacity_exceeded(request, exc):
+        return JSONResponse(status_code=503, content={"detail": "server over capacity, retry later"})
 
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
     app.include_router(build_router(cfg, registry, control))   # dashboard group re-signs build_router
