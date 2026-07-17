@@ -3,7 +3,8 @@ from .config import Config
 from .apns import APNsSender
 from .app import create_app
 from .control import ControlPlane
-from .provisioning import control_path_for, ensure_default_cell, tenants_root_for
+from .provisioning import (ServeLockError, acquire_serve_lock, control_path_for,
+                           ensure_default_cell, tenants_root_for)
 from .registry import TenantRegistry
 from .scheduler import ExpiryScheduler
 
@@ -11,6 +12,11 @@ cfg = Config.load()
 problems = cfg.validate_for_serve()
 if problems:
     sys.exit("Refusing to start:\n  - " + "\n  - ".join(problems))
+
+try:
+    acquire_serve_lock(cfg)       # raw fd stays open for the process lifetime
+except ServeLockError as exc:
+    sys.exit(str(exc))
 
 # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one
 # provisioned "default" cell rooted alongside the configured db_path, so an

@@ -11,6 +11,7 @@ from here — no import cycle). Keep the two bodies in lock-step per §15.7.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
 import shutil
@@ -300,3 +301,31 @@ def tenants_root_for(cfg) -> Path:
     # (`<db_path.parent>/cells`) — single source of truth, see
     # `control_path_for` above.
     return Path(cfg.db_path_expanded()).parent / "cells"
+
+
+class ServeLockError(Exception):
+    """Another live server process already holds this data root's serve lock."""
+
+
+def acquire_serve_lock(cfg) -> int:
+    """Advisory cross-process serve lock (warden RR): two servers on one data
+    root would each hold their own in-memory limiter/hub/single-flight state
+    and their own SQLite connections — silently divergent behavior. Takes an
+    exclusive flock on <db_path.parent>/serve.lock (the same root
+    control_path_for/tenants_root_for hang off). The caller leaves the
+    returned fd open for the process lifetime; the lock dies with the
+    process, so a crashed server never wedges the next start. Raises
+    ServeLockError if a live process holds it."""
+    import fcntl   # POSIX-only, like the rest of the deploy story
+    root = Path(cfg.db_path_expanded()).parent
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "serve.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise ServeLockError(
+            f"another hma serve already holds {lock_path} - refusing to start "
+            "(two servers on one data dir would desync approvals and limits)")
+    return fd
