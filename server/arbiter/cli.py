@@ -113,13 +113,18 @@ def serve(config_path, lan, log_json):
     problems = cfg.validate_for_serve()
     if problems:
         raise click.ClickException("refusing to start:\n  - " + "\n  - ".join(problems))
+    from .provisioning import (ServeLockError, acquire_serve_lock, control_path_for,
+                               ensure_default_cell, tenants_root_for)
+    try:
+        acquire_serve_lock(cfg)   # raw fd stays open for the process lifetime
+    except ServeLockError as exc:
+        raise click.ClickException(str(exc))
     host = "0.0.0.0" if lan else cfg.server.host
     if lan or host == "0.0.0.0":
         click.echo(f"Pair page: http://{local_ip()}:{cfg.server.port}/dashboard/pair")
     from .notify import APNsSender
     from .app import create_app
     from .control import ControlPlane
-    from .provisioning import control_path_for, ensure_default_cell, tenants_root_for
     from .registry import TenantRegistry
     from .scheduler import ExpiryScheduler
     # Single-tenant back-compat boot (iOS 0.5.0): one control plane + one

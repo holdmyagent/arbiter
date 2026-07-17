@@ -147,3 +147,17 @@ def test_legacy_app_token_resolves_strictly_to_default(tmp_path):
     ident, cell = _run(resolve_identity(_req(cfg, "Bearer test-app"), reg, cp))
     assert (ident.tenant_id, ident.role, ident.legacy) == ("default", "app", True)
     assert reg.acquired == 1 and reg.released == 0
+
+
+def test_expired_in_cell_token_403(tmp_path):
+    cfg = _cfg()
+    bearer = "hma_agent_old"
+    db = Database(":memory:")
+    db.create_token("old", "agent", _hash(bearer), None, "2020-01-01T00:00:00+00:00")
+    cp = _control(tmp_path)
+    cp.add_route(_hash(bearer), "acme")
+    reg = FakeRegistry(FakeCell(1, db))
+    with pytest.raises(HTTPException) as ei:
+        _run(resolve_identity(_req(cfg, f"Bearer {bearer}"), reg, cp))
+    assert ei.value.status_code == 403
+    assert reg.acquired == 1 and reg.released == 1    # pinned then released exactly once

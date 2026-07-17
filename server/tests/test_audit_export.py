@@ -73,7 +73,7 @@ def test_policy_denied_and_rate_limited_events(cfg, tmp_path):
     # rate_limit_per_minute is baked into the cell's create_limiter at cell
     # open, so cfg must be mutated before the first request opens the cell.
     cfg.policy.deny_action_types = ["db.drop"]
-    cfg.policy.rate_limit_per_minute = 1
+    cfg.policy.rate_limit_per_minute = 2   # the denied create now counts (rate-limit-first)
     env = build_registry_env(cfg, tmp_path)
     client = TestClient(create_app(cfg, env.registry, env.control))
     agent = {"Authorization": "Bearer test-agent"}

@@ -1,3 +1,5 @@
+import json
+import uuid
 from datetime import timedelta, timezone
 from datetime import datetime as _dt
 
@@ -133,3 +135,33 @@ def test_expired_without_verdict():
     assert [x["id"] for x in rows] == [r["id"]]
     db.set_verdict(r["id"], "JWS", "kid")                      # once signed, no longer returned
     assert db.expired_without_verdict() == []
+
+def test_iter_audit_batches_cover_all_rows_in_order(db):
+    for i in range(5):
+        db.add_audit(f"r{i}", "created", {"i": i})
+    rows = list(db.iter_audit(batch=2))              # forces 3 keyset fetches
+    assert len(rows) == 5
+    assert {r["detail"]["i"] for r in rows} == set(range(5))
+    keys = [(r["at"], r["id"]) for r in rows]
+    assert keys == sorted(keys)                      # oldest-first (at, id), like before
+    assert rows == list(db.iter_audit())             # default batch agrees
+
+def test_iter_audit_tiebreaks_on_id_within_same_at(db):
+    # Several rows sharing one `at` timestamp (a same-millisecond burst) must
+    # all come back exactly once at every batch size: a naive `at > last_at`
+    # keyset predicate (instead of the tuple `(at, id) > (?, ?)`) would
+    # silently skip every tie-group member after a page boundary landed
+    # mid-tie -- the classic keyset-skip bug item 7's guard exists for.
+    tied_at = "2026-01-01T00:00:00.000000+00:00"
+    ids = sorted(str(uuid.uuid4()) for _ in range(6))
+    with db._lock:
+        for i, rid in enumerate(ids):
+            db.conn.execute(
+                "INSERT INTO audit VALUES (?,?,?,?,?)",
+                (rid, f"r{i}", "created", tied_at, json.dumps({"i": i})))
+        db.conn.commit()
+    full = list(db.iter_audit())
+    assert [r["id"] for r in full] == ids             # full read, tie broken by id
+    for batch in (1, 2, 3):
+        paged = list(db.iter_audit(batch=batch))
+        assert [r["id"] for r in paged] == ids        # same order at every batch size

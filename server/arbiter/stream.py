@@ -69,12 +69,19 @@ async def run_stream(ws, registry, control, *, resolve,
     pin is released EXACTLY ONCE in the outer finally — a stuck send, a disconnect,
     a cap rejection and a disable sentinel all funnel through it.
     """
+    # Lazy import: registry.py imports stream.Hub at module load, so a
+    # module-level import here would be circular.
+    from .registry import CapacityExceeded, EpochChanged
     try:
         identity, cell = await resolve(ws, registry, control)
-    except HTTPException:
-        # Auth/route/disabled failure: resolve released any pin it took. Nothing to
-        # release here. Generic close; never leak which check failed.
+    except (HTTPException, EpochChanged):
+        # Auth/route/disabled failure, or an epoch race during resolve: any
+        # pin taken was already released (resolve_identity releases on every
+        # failure exit). Generic close; never leak which check failed.
         await ws.close(code=4401)
+        return
+    except CapacityExceeded:
+        await ws.close(code=1013)      # try again later: FD-budget shed, not auth
         return
     # From here `cell` is pinned; the outer finally is the single release site.
     try:

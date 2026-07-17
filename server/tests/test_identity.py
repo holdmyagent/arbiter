@@ -1,51 +1,17 @@
 import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from arbiter import auth as arbiter_auth
 from arbiter.app import create_app
-from arbiter.auth import Identity, _resolve_identity_legacy as resolve_identity
 from arbiter.models import RequestCreate
 
 from tests.conftest import build_registry_env
 
 def _sha(v: str) -> str:
     return hashlib.sha256(v.encode()).hexdigest()
-
-def _iso_in(hours: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
-
-# ── resolve_identity units ──────────────────────────────────────────────────
-
-def test_db_token_resolves_and_touches_last_used(db, cfg):
-    db.create_token("hermes", "agent", _sha("hma_agent_t1"))
-    assert resolve_identity(db, cfg, "hma_agent_t1") == Identity(name="hermes", role="agent")
-    assert db.get_token_by_hash(_sha("hma_agent_t1"))["last_used_at"] is not None
-
-def test_revoked_db_token_is_rejected(db, cfg):
-    db.create_token("gone", "agent", _sha("t2"))
-    db.revoke_token("gone")
-    assert resolve_identity(db, cfg, "t2") is None
-
-def test_expired_db_token_is_rejected(db, cfg):
-    db.create_token("old", "warden", _sha("t3"), expires_at=_iso_in(-1))
-    assert resolve_identity(db, cfg, "t3") is None
-
-def test_unexpired_db_token_is_accepted(db, cfg):
-    db.create_token("fresh", "warden", _sha("t4"), expires_at=_iso_in(+1))
-    assert resolve_identity(db, cfg, "t4") == Identity(name="fresh", role="warden")
-
-def test_legacy_config_tokens_map_to_fixed_identities(db, cfg):
-    assert resolve_identity(db, cfg, "test-agent") == Identity(
-        name="agent", role="agent", legacy=True)
-    assert resolve_identity(db, cfg, "test-app") == Identity(
-        name="app", role="app", legacy=True)
-
-def test_unknown_token_resolves_to_none(db, cfg):
-    assert resolve_identity(db, cfg, "nope") is None
 
 # ── route wiring: identity-aware create / scoped reads / decided_by ─────────
 

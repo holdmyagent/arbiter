@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_client_id
 from .enroll import resolve_pairing
-from .errors import generic_403
+from .errors import GENERIC_403_DETAIL, generic_403
+from .registry import CapacityExceeded, EpochChanged
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
@@ -50,8 +51,7 @@ def require_cell(*roles: str):
     (not nested in create_app): it closes over nothing tenant-scoped, reading
     everything off request.app.state, so it can be imported directly (the
     brief's inline sketch nests it inside create_app, but that would make it
-    unimportable as `arbiter.app.require_cell` — module scope is equivalent
-    and matches the require_role precedent in auth.py).
+    unimportable as `arbiter.app.require_cell` — module scope is equivalent).
 
     The fleet auth-failure limiter (§13) is keyed on trusted_client_id, which
     with no configured trusted proxy IS the bare peer IP — so it is only ever
@@ -213,6 +213,22 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     app.state.notify_tasks = notify_tasks
     app.state.session_check = lambda v: session_valid(cfg, v)
 
+    # Registry-acquire escapes (review #3). Neither is an HTTPException, so
+    # without these they'd 500 out of every acquire site (resolve_identity,
+    # audit_export's session path, the dashboard's _default_cell, pairing
+    # enroll). EpochChanged is a delete/recreate/dir-rebind racing a live
+    # resolution (§5) -> the same constant 403 as every resolution failure
+    # (§11, no oracle). CapacityExceeded is the FD-budget shed (§15.13) ->
+    # 503: server capacity, not an auth failure, so it is never counted by
+    # the auth limiter.
+    @app.exception_handler(EpochChanged)
+    async def _epoch_changed(request, exc):
+        return JSONResponse(status_code=403, content={"detail": GENERIC_403_DETAIL})
+
+    @app.exception_handler(CapacityExceeded)
+    async def _capacity_exceeded(request, exc):
+        return JSONResponse(status_code=503, content={"detail": "server over capacity, retry later"})
+
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "web" / "static")), name="static")
     app.include_router(build_router(cfg, registry, control))   # dashboard group re-signs build_router
 
@@ -327,6 +343,14 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         # back-compat reads; DB tokens are stamped with their name.
         requested_by = None if identity.legacy else identity.name
         scopes = None if identity.legacy else identity.scopes
+        # Rate limit BEFORE policy evaluation (warden RR): a flood of
+        # policy-denied creates must trip the limiter — and stop writing
+        # policy_denied audit rows — not bypass the window entirely. Denied
+        # creates therefore count toward the window.
+        if cell.create_limiter.blocked(identity.name):
+            db.add_audit("-", "rate_limited", {"identity": identity.name})
+            raise HTTPException(429, "rate limited")
+        cell.create_limiter.record_failure(identity.name)  # count this create in the window
         result = evaluate_create(cfg, identity, body, scopes=scopes)
         if not result.allowed:
             db.add_audit("-", "policy_denied",
@@ -334,10 +358,6 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                           "reason": result.reason})
             raise HTTPException(403, f"policy: {result.reason}")
         body.severity = result.effective_severity   # stored severity = effective
-        if cell.create_limiter.blocked(identity.name):
-            db.add_audit("-", "rate_limited", {"identity": identity.name})
-            raise HTTPException(429, "rate limited")
-        cell.create_limiter.record_failure(identity.name)  # count this create in the window
         if body.callback_url and not callback_allowed(
                 cell.dispatcher.cfg.callback_allowlist, body.callback_url):
             raise HTTPException(422, "callback_url not in allowlist")
@@ -364,11 +384,16 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         try:
             req = db.create_request(body, requested_by=requested_by)
         except sqlite3.IntegrityError:
-            # concurrent identical create lost the unique(requested_by, idempotency_key) race
+            # concurrent identical create lost a uniqueness race: either the
+            # unique(requested_by, idempotency_key) index or the migration-10
+            # duplicate-collapse indexes fired — return the surviving row.
             existing = db.get_request_by_idem(requested_by, body.idempotency_key) \
                 if body.idempotency_key else None
             if existing:
                 return existing
+            dup = db.find_duplicate_pending(requested_by, body.action_hash, body.title)
+            if dup:
+                return dup
             raise
         if scheduler is not None:
             scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
+from ..auth import trusted_client_id
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 try:
@@ -120,11 +121,14 @@ def build_router(cfg, registry, control) -> APIRouter:
     def login(request: Request, password: str = Form(...), cell=cell_dep):
         import secrets as s
         lim = cell.login_limiter
-        ip = request.client.host if request.client else "unknown"
-        if lim.blocked(ip):
+        # Same per-caller key as the fleet auth limiter (§13): behind a
+        # configured trusted proxy this is the forwarded client, never the
+        # shared ingress IP — one attacker can't lock the admin out.
+        key = trusted_client_id(request, cfg)
+        if lim.blocked(key):
             raise HTTPException(429, "too many attempts")
         if not s.compare_digest(password.encode(), cfg.auth.admin_password.encode()):
-            lim.record_failure(ip)
+            lim.record_failure(key)
             return TEMPLATES.TemplateResponse(request, "login.html",
                                               {"error": "Wrong password"}, status_code=401)
         resp = RedirectResponse("/dashboard", status_code=303)
