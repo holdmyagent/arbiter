@@ -44,6 +44,13 @@ kill the server, and it exits non-zero — `hma ask`'s whole job is to make
 "can't reach the approver" and "the approver said no" indistinguishable
 from a script's point of view.
 
+**Tenants.** Arbiter is single-owner by default — `hma init && hma serve`
+gives you one `default` tenant and nothing else to think about. Since 0.4.0
+the same server can host **isolated tenants** (`hma tenant create`): each
+tenant gets its own database, verdict-signing key, notification egress, and
+rate limits in a private "cell", with a fail-closed routing layer in front.
+Run one for yourself, or a fleet for your team.
+
 ## Get it on your phone
 
 Arbiter can push a notification to your phone the moment an agent asks for
