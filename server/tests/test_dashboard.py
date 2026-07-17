@@ -194,3 +194,36 @@ def test_no_decision_routes_under_dashboard(client):
     dash = [p for p in paths if p.startswith("/dashboard")]
     assert len(dash) >= 11          # guards against a silently-empty walk
     assert not any("decision" in p for p in dash)
+
+def test_login_limiter_keys_on_forwarded_client_not_proxy_ip(cfg, registry_env):
+    # Behind a trusted ingress proxy every request shares one peer IP; the
+    # limiter must key on trusted_client_id (§13) so one attacker's failures
+    # can't lock the admin out of the dashboard.
+    from fastapi.testclient import TestClient
+    from arbiter.apns import APNsSender
+    from arbiter.app import create_app
+    cfg.server.trusted_proxies = ["10.0.0.0/8"]
+    app = create_app(cfg, registry_env.registry, registry_env.control, sender=APNsSender(cfg))
+
+    class ForcePeer:
+        # TestClient pins scope["client"] to "testclient" (not an IP); rewrite
+        # it so the peer IS the trusted proxy and X-Forwarded-For is believed.
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] in ("http", "websocket"):
+                scope = dict(scope)
+                scope["client"] = ("10.0.0.5", 40000)
+            await self.app(scope, receive, send)
+
+    c = TestClient(ForcePeer(app))
+    attacker = {"x-forwarded-for": "7.7.7.7"}
+    admin = {"x-forwarded-for": "8.8.8.8"}
+    for _ in range(6):
+        c.post("/dashboard/login", data={"password": "wrong"}, headers=attacker)
+    assert c.post("/dashboard/login", data={"password": "wrong"},
+                  headers=attacker).status_code == 429       # attacker's key is blocked
+    r = c.post("/dashboard/login", data={"password": "test-admin"},
+               headers=admin, follow_redirects=False)
+    assert r.status_code == 303                              # admin unaffected
