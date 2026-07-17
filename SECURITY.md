@@ -33,8 +33,10 @@ codebase — read them before you deploy.
   [`docs/enforcement-models.md`](docs/enforcement-models.md) for what each
   tier does and does not enforce.
 - **Auth on every data-bearing route.** All `/v1/*` API routes require a
-  bearer token except `GET /health` and the public verdict keys at
-  `GET /v1/keys`; the dashboard requires a signed, revocable session cookie.
+  bearer token except `GET /health`; the verdict key set at `GET /v1/keys`
+  requires any authenticated role (agent, warden, or app) and is scoped to
+  the caller's tenant. The dashboard requires a signed, revocable session
+  cookie.
   Per-IP sliding-window rate limiting throttles repeated auth failures on
   both the API and the dashboard login form; per-identity request-creation is
   rate limited (`[policy] rate_limit_per_minute`). Dashboard state-changing

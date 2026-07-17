@@ -112,6 +112,9 @@ async def resolve_stream(ws, registry, control):
                 epoch = control.epoch_of("default")
                 if epoch is not None:
                     cell = await registry.acquire("default", epoch)
+                    # role="app" mirrors audit_export's session=app-authority equivalence
+                    # (run_stream ignores role today); legacy=True only means "not a
+                    # tokens-table identity" -- don't reuse where legacy drives requested_by.
                     return (Identity(name="admin-session", role="app",
                                      tenant_id="default", epoch=epoch, legacy=True),
                             cell)

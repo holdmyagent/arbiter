@@ -19,6 +19,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with: { python-version: "3.12" }
+      - name: Guard - tag must match server version
+        run: |
+          v=$(python3 -c "import tomllib; print(tomllib.load(open('server/pyproject.toml','rb'))['project']['version'])")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match holdmyagent version $v - refusing to publish"
+            exit 1
+          fi
       - run: pip install build && python -m build server -o dist/
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with: { packages-dir: dist/, skip-existing: true }
