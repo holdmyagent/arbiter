@@ -380,11 +380,16 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         try:
             req = db.create_request(body, requested_by=requested_by)
         except sqlite3.IntegrityError:
-            # concurrent identical create lost the unique(requested_by, idempotency_key) race
+            # concurrent identical create lost a uniqueness race: either the
+            # unique(requested_by, idempotency_key) index or the migration-10
+            # duplicate-collapse indexes fired — return the surviving row.
             existing = db.get_request_by_idem(requested_by, body.idempotency_key) \
                 if body.idempotency_key else None
             if existing:
                 return existing
+            dup = db.find_duplicate_pending(requested_by, body.action_hash, body.title)
+            if dup:
+                return dup
             raise
         if scheduler is not None:
             scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])

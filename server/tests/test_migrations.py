@@ -86,7 +86,10 @@ def test_reopen_and_pre_versioning_rerun_are_idempotent(tmp_path):
 def test_idem_index_is_partial_unique(db, make):
     a = db.create_request(make())
     b = db.create_request(make())
-    c = db.create_request(make())
+    # distinct title: isolates the idem index under test from migration 10's
+    # dup_title index (same requested_by + title + pending would legitimately
+    # collide there too, for an unrelated reason)
+    c = db.create_request(make(title="other"))
     db.conn.execute("UPDATE requests SET requested_by='hermes', idempotency_key='k1' WHERE id=?",
                     (a["id"],))
     with pytest.raises(sqlite3.IntegrityError):
@@ -94,3 +97,39 @@ def test_idem_index_is_partial_unique(db, make):
                         (b["id"],))
     # partial index: rows with NULL idempotency_key never collide
     db.conn.execute("UPDATE requests SET requested_by='hermes' WHERE id=?", (c["id"],))
+
+# ── migrations 9 + 10 (token-hash index, duplicate-collapse) ─────────────────
+
+def test_migration_9_indexes_token_hash(tmp_path):
+    db = Database(str(tmp_path / "m9.sqlite3"))
+    names = [r[1] for r in db.conn.execute("PRAGMA index_list(tokens)")]
+    assert "idx_tokens_token_hash" in names
+
+
+def test_migration_10_collapses_dupes_and_enforces(tmp_path):
+    p = str(tmp_path / "m10.sqlite3")
+    db = Database(p)
+    # Rewind to v9: drop the new indexes, plant pre-index duplicate pending
+    # rows, reset user_version — reopening must run exactly migration 10.
+    db.conn.execute("DROP INDEX idx_requests_dup_hash")
+    db.conn.execute("DROP INDEX idx_requests_dup_title")
+    for rid, ts in (("a", "2026-01-01T00:00:00+00:00"),
+                    ("b", "2026-01-02T00:00:00+00:00"),
+                    ("c", "2026-01-03T00:00:00+00:00")):
+        db.conn.execute(
+            "INSERT INTO requests(id,created_at,title,payload,status,requested_by,action_hash)"
+            " VALUES (?,?,?,?,?,?,?)", (rid, ts, "t", "{}", "pending", "hermes", "h1"))
+    db.conn.execute("PRAGMA user_version=9")
+    db.conn.commit()
+    db.conn.close()
+    db2 = Database(p)                                # runs migration 10
+    status = {r["id"]: r["status"]
+              for r in db2.conn.execute("SELECT id,status FROM requests")}
+    assert status == {"a": "pending", "b": "expired", "c": "expired"}   # oldest survives
+    audits = db2.conn.execute(
+        "SELECT request_id FROM audit WHERE detail LIKE '%duplicate_collapsed%'").fetchall()
+    assert {r[0] for r in audits} == {"b", "c"}
+    with pytest.raises(sqlite3.IntegrityError):      # and the index enforces from now on
+        db2.conn.execute(
+            "INSERT INTO requests(id,created_at,title,payload,status,requested_by,action_hash)"
+            " VALUES ('d','2026-01-04T00:00:00+00:00','t','{}','pending','hermes','h1')")

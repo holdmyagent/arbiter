@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -92,8 +92,49 @@ def _migrate_7_to_8(conn):
       sent_at TEXT NOT NULL,
       PRIMARY KEY(request_id, event))""")
 
+def _migrate_8_to_9(conn):
+    # resolve_identity looks tokens up by hash on EVERY authenticated request
+    # (get_token_by_hash); without an index that's a table scan (warden RR).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tokens_token_hash ON tokens(token_hash)")
+
+def _migrate_9_to_10(conn):
+    """DB-level duplicate-collapse backstop for the in-route check (app.py
+    create / find_duplicate_pending): at most one PENDING row per
+    (requested_by, action_hash) for hash-bound creates and per
+    (requested_by, title) for unbound ones. Pre-existing duplicates (raced in
+    before this index existed) are collapsed first — the oldest row per group
+    (the one earlier creates were handed back) stays pending, later twins flip
+    to 'expired' with an audit row, mirroring invalidate_in_flight's style.
+    The strict (created_at, id)-minimum of each group is never selected (no
+    earlier witness exists for it), so exactly one row per group survives.
+    requested_by IS NULL rows are exempt (SQLite UNIQUE treats NULLs as
+    distinct): for legacy unstamped creates the in-route check remains the
+    only collapse, exactly as before."""
+    dupes = conn.execute("""
+        SELECT id FROM requests AS r
+        WHERE status='pending' AND requested_by IS NOT NULL
+          AND EXISTS (SELECT 1 FROM requests AS k
+                      WHERE k.status='pending'
+                        AND k.requested_by = r.requested_by
+                        AND ((r.action_hash IS NOT NULL AND k.action_hash = r.action_hash)
+                             OR (r.action_hash IS NULL AND k.action_hash IS NULL
+                                 AND k.title = r.title))
+                        AND (k.created_at < r.created_at
+                             OR (k.created_at = r.created_at AND k.id < r.id)))""").fetchall()
+    for row in dupes:
+        conn.execute("UPDATE requests SET status='expired' WHERE id=?", (row[0],))
+        conn.execute("INSERT INTO audit VALUES (?,?,?,?,?)",
+                     (str(uuid.uuid4()), row[0], "expired", _iso(_utcnow()),
+                      json.dumps({"reason": "duplicate_collapsed"})))
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_dup_hash
+        ON requests(requested_by, action_hash)
+        WHERE status='pending' AND action_hash IS NOT NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_dup_title
+        ON requests(requested_by, title)
+        WHERE status='pending' AND action_hash IS NULL""")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
-              _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8]
+              _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10]
 
 class Database:
     def __init__(self, path: str):

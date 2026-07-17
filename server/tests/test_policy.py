@@ -135,3 +135,26 @@ def test_config_template_has_policy_section():
     from arbiter.cli import CONFIG_TEMPLATE
     assert "[policy]" in CONFIG_TEMPLATE
     assert "deny_action_types" in CONFIG_TEMPLATE
+
+
+def test_create_race_falls_back_to_db_duplicate_index(cfg, tmp_path, monkeypatch):
+    # Simulate the read-then-insert race the in-route duplicate check can
+    # lose: force the route's dup lookups to miss, so the INSERT hits
+    # migration 10's partial unique index. The route must return the
+    # surviving row (collapse semantics), not 500.
+    from arbiter.db import Database
+    client = _client(cfg, tmp_path)
+    tok = mint_token(client, "racer", "agent")
+    h = {"Authorization": f"Bearer {tok}"}
+    orig = Database.find_duplicate_pending
+    calls = {"n": 0}
+
+    def flaky(self, *a, **kw):
+        calls["n"] += 1
+        return None if calls["n"] <= 2 else orig(self, *a, **kw)  # both creates "miss"
+
+    monkeypatch.setattr(Database, "find_duplicate_pending", flaky)
+    r1 = client.post("/v1/requests", headers=h, json={"title": "same"})
+    r2 = client.post("/v1/requests", headers=h, json={"title": "same"})
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r2.json()["id"] == r1.json()["id"]        # collapsed to the survivor
