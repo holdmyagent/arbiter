@@ -1,6 +1,6 @@
 # Changelog — hold-warden
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-07-17
 
 First release of the Warden — Hold My Agent's enforcement daemon. HMA is
 the gate; the warden decides whether the agent walks through it or merely

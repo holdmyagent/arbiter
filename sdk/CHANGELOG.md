@@ -1,6 +1,6 @@
 # Changelog — hold-sdk
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-07-17
 
 ### Added
 
