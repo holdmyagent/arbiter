@@ -8,5 +8,5 @@ dist/
 build/
 .ruff_cache/
 
-# SDD run scratch (never publish)
+# local agent scratch (never publish)
 .superpowers/

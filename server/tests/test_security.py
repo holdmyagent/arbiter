@@ -2,11 +2,6 @@ import itertools
 
 import pytest
 
-_DASHBOARD_XFAIL = pytest.mark.xfail(
-    reason="dashboard build_router still reads process-global login_limiter/db/hub; "
-           "no task in plan-groups/A-I ports it yet (gap flagged in C8 report for operator)",
-    strict=False)
-
 def test_non_ascii_bearer_is_403_not_500(client):
     # httpx encodes plain str header values as ASCII client-side, so a literal
     # non-ASCII str never reaches the wire; bytes bypass that and land on the
@@ -15,7 +10,6 @@ def test_non_ascii_bearer_is_403_not_500(client):
     r = client.get("/v1/requests", headers={"Authorization": "Bearer ÿÿÿ".encode()})
     assert r.status_code == 403
 
-@_DASHBOARD_XFAIL
 def test_non_ascii_login_is_401_not_500(client):
     r = client.post("/dashboard/login", data={"password": "päss"}, follow_redirects=False)
     assert r.status_code == 401

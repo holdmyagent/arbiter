@@ -1,7 +1,5 @@
 # Changelog
 
-## Unreleased
-
 ## [0.4.0] - Unreleased
 
 The trust upgrade: approvals become verifiable artifacts, and a new
@@ -13,8 +11,9 @@ changes are additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working unchanged.
 - **Signed verdicts.** Every decision (and expiry) now produces an Ed25519
   JWS over `{request_id, action_hash, decision, decided_at,
   approval_ttl_seconds}`, stored on the request and served at
-  `GET /v1/requests/{id}/verdict`; the public key set is at `GET /v1/keys`
-  (unauthenticated). The signing key is minted at init/first-serve
+  `GET /v1/requests/{id}/verdict`; the per-tenant key set is at `GET /v1/keys`
+  (any authenticated role — agent, warden, or app; each tenant sees only its
+  own keys). The signing key is minted at init/first-serve
   (`verdict_signing_key.pem`, 0600).
 - **Action-hash binding.** `POST /v1/requests` accepts `canonical_action` +
   `action_hash`; the server recomputes the SHA-256 over the received bytes
@@ -53,14 +52,15 @@ changes are additive; iOS 0.5.0 and hold-sdk 0.2.1 keep working unchanged.
   enqueue is not co-committed with the request state change, so a crash in
   the instant between the state change committing and the outbox row
   committing can still lose that one notification (accepted v1 scope — no
-  transactional outbox). Conversely, because the row is deleted only after a
-  successful dispatch, a crash between dispatch-success and that delete
-  causes the startup drain to re-deliver — so delivery is at-least-once
-  across a crash (a push/webhook may be sent twice; channels are not
-  idempotent). Max 3 attempts per row with retry gaps of 1s then 5s (ladder
-  constants 1/5/25s; the third rung is unreachable at max 3 attempts); stale
-  rows past the request's TTL are dropped; deliberately no dead-letter
-  queue.
+  transactional outbox). Migration 8 adds a persisted `notify_sent`
+  (request, event) reserve committed before dispatch, making outward
+  delivery **at-most-once per (request, event) across restarts**: a crash
+  after the reserve commits but before the send completes drops that one
+  notification rather than double-firing it (the TTL sweeper still
+  fail-closes the request itself). Max 3 attempts per row with retry gaps
+  of 1s then 5s (ladder constants 1/5/25s; the third rung is unreachable
+  at max 3 attempts); stale rows past the request's TTL are dropped;
+  deliberately no dead-letter queue.
 - **Ops promotions.** `/health` now does a real DB ping (200/503);
   `hma ask` / `hma status` accept `--url` / `HMA_URL` for remote arbiters.
 - **Docs.** New consolidated references (`docs/api.md`, `docs/config.md`,

@@ -11,7 +11,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .auth import SlidingWindowLimiter, resolve_identity, trusted_client_id
+from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_client_id
 from .enroll import resolve_pairing
 from .errors import generic_403
 from .models import RequestCreate, Decision, DeviceRegister
@@ -81,6 +81,45 @@ def require_cell(*roles: str):
         finally:
             st.registry.release(cell)                  # exactly once (§15.4)
     return dep
+
+
+async def resolve_stream(ws, registry, control):
+    """WS analog of /v1/audit/export's bearer-OR-cookie split (app.py, HTTP):
+    the existing /v1/stream bearer path (resolve_identity, any resolvable
+    role — unchanged) first, then — only on a failed/absent bearer — an admin
+    dashboard session -> the 'default' cell, so the dashboard's live view
+    (web/static/dashboard.js, connects with cookies only) keeps working. Same
+    limiter + auth_failure discipline as audit_export (§13): blocked-check
+    BEFORE any attempt, record_failure only on ultimate failure. Module-level
+    (not nested in create_app), matching require_cell's precedent: it closes
+    over nothing tenant-scoped, reading cfg/limiter/session_check off
+    ws.app.state, and its (ws, registry, control) signature is exactly what
+    run_stream's `resolve` callback is invoked with.
+
+    resolve_identity's own contract already releases any pin it took on every
+    failure exit (auth.py: `except BaseException: registry.release(cell);
+    raise`), so a failed bearer attempt here can never leave a cell pinned
+    before the cookie path acquires its own — no double-acquire/double-release."""
+    st = ws.app.state
+    key = trusted_client_id(ws, st.cfg)
+    if st.auth_limiter.blocked(key):
+        raise HTTPException(429, "too many failed auth attempts")
+    try:
+        return await resolve_identity(ws, registry, control)
+    except HTTPException:
+        if st.session_check(ws.cookies.get("hma_session", "")):
+            if not control.is_disabled("default"):
+                epoch = control.epoch_of("default")
+                if epoch is not None:
+                    cell = await registry.acquire("default", epoch)
+                    return (Identity(name="admin-session", role="app",
+                                     tenant_id="default", epoch=epoch, legacy=True),
+                            cell)
+        auth = ws.headers.get("authorization", "")
+        reason = "invalid_token" if auth.startswith("Bearer ") else "missing_bearer"
+        st.auth_limiter.record_failure(key)
+        log.warning("auth_failure key=%s reason=%s", key, reason)  # never log the supplied value
+        raise
 
 
 def create_app(cfg, registry, control, *, sender=None, scheduler=None,
@@ -467,7 +506,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
         await run_stream(ws, ws.app.state.registry, ws.app.state.control,
-                         resolve=resolve_identity,
+                         resolve=resolve_stream,
                          heartbeat=ws_heartbeat, send_timeout=ws_send_timeout)
 
     return app

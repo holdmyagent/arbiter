@@ -53,6 +53,12 @@ codebase — read them before you deploy.
   admin dashboard session can read both legacy tokens on the Settings page —
   an admin session transitively grants full agent and decision capability.
   Protect the admin password and session cookie accordingly.
+- **Tenant isolation (0.4.0+).** Each tenant's state lives in an isolated
+  per-tenant cell (own SQLite DB, own Ed25519 signing key, own notification
+  egress config). Bearer→tenant routing rows are individually MAC'd (tamper
+  fails closed), verdicts are audience-bound to their tenant, and
+  cross-tenant reads/writes/streams are rejected by construction — enforced
+  by a dedicated isolation test suite (`server/tests/isolation/`).
 
 ## The malicious-agent analysis
 
