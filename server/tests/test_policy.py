@@ -158,3 +158,18 @@ def test_create_race_falls_back_to_db_duplicate_index(cfg, tmp_path, monkeypatch
     r2 = client.post("/v1/requests", headers=h, json={"title": "same"})
     assert r1.status_code == 200 and r2.status_code == 200
     assert r2.json()["id"] == r1.json()["id"]        # collapsed to the survivor
+
+
+def test_policy_denied_creates_count_toward_rate_limit(cfg, tmp_path):
+    # warden RR: rate-limit BEFORE policy — a flood of policy-denied creates
+    # must trip the limiter (and stop writing policy_denied audit rows), not
+    # bypass the window entirely.
+    cfg.policy.deny_action_types = ["db.drop"]
+    cfg.policy.rate_limit_per_minute = 3
+    client = _client(cfg, tmp_path)
+    for _ in range(3):
+        assert client.post("/v1/requests", headers=AGENT,
+                           json={"title": "t", "action_type": "db.drop"}).status_code == 403
+    r = client.post("/v1/requests", headers=AGENT,
+                    json={"title": "t", "action_type": "db.drop"})
+    assert r.status_code == 429      # today: 403 — the limiter never saw the denied creates

@@ -132,4 +132,14 @@ def test_expired_without_verdict():
     rows = db.expired_without_verdict()
     assert [x["id"] for x in rows] == [r["id"]]
     db.set_verdict(r["id"], "JWS", "kid")                      # once signed, no longer returned
+
+def test_iter_audit_batches_cover_all_rows_in_order(db):
+    for i in range(5):
+        db.add_audit(f"r{i}", "created", {"i": i})
+    rows = list(db.iter_audit(batch=2))              # forces 3 keyset fetches
+    assert len(rows) == 5
+    assert {r["detail"]["i"] for r in rows} == set(range(5))
+    keys = [(r["at"], r["id"]) for r in rows]
+    assert keys == sorted(keys)                      # oldest-first (at, id), like before
+    assert rows == list(db.iter_audit())             # default batch agrees
     assert db.expired_without_verdict() == []

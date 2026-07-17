@@ -533,16 +533,28 @@ class Database:
                     base + " ORDER BY a.at DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
-    def iter_audit(self):
-        """Yield every audit row oldest-first, detail parsed to a dict."""
-        with self._lock:
-            cur = self.conn.execute(
-                "SELECT id, request_id, event, at, detail FROM audit ORDER BY at, id")
-            rows = cur.fetchall()
-        for r in rows:
-            d = dict(r)
-            d["detail"] = json.loads(d["detail"])
-            yield d
+    def iter_audit(self, batch: int = 500):
+        """Yield every audit row oldest-first, detail parsed to a dict.
+        Keyset-paginated: fetches `batch` rows per lock hold instead of
+        materializing the whole table (warden RR) — a cursor can't be held
+        across lock releases on the shared connection, so each batch re-seeks
+        past the last (at, id) seen. Same (at, id) order as before; rows
+        committed behind the cursor position mid-export are simply not
+        revisited (the export was never a point-in-time snapshot)."""
+        last_at, last_id = "", ""
+        while True:
+            with self._lock:
+                rows = self.conn.execute(
+                    "SELECT id, request_id, event, at, detail FROM audit"
+                    " WHERE (at, id) > (?, ?) ORDER BY at, id LIMIT ?",
+                    (last_at, last_id, batch)).fetchall()
+            if not rows:
+                return
+            for r in rows:
+                d = dict(r)
+                d["detail"] = json.loads(d["detail"])
+                yield d
+            last_at, last_id = rows[-1]["at"], rows[-1]["id"]
 
     def rename_device(self, device_id: str, name: str) -> dict | None:
         with self._lock:

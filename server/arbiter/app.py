@@ -343,6 +343,14 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         # back-compat reads; DB tokens are stamped with their name.
         requested_by = None if identity.legacy else identity.name
         scopes = None if identity.legacy else identity.scopes
+        # Rate limit BEFORE policy evaluation (warden RR): a flood of
+        # policy-denied creates must trip the limiter — and stop writing
+        # policy_denied audit rows — not bypass the window entirely. Denied
+        # creates therefore count toward the window.
+        if cell.create_limiter.blocked(identity.name):
+            db.add_audit("-", "rate_limited", {"identity": identity.name})
+            raise HTTPException(429, "rate limited")
+        cell.create_limiter.record_failure(identity.name)  # count this create in the window
         result = evaluate_create(cfg, identity, body, scopes=scopes)
         if not result.allowed:
             db.add_audit("-", "policy_denied",
@@ -350,10 +358,6 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                           "reason": result.reason})
             raise HTTPException(403, f"policy: {result.reason}")
         body.severity = result.effective_severity   # stored severity = effective
-        if cell.create_limiter.blocked(identity.name):
-            db.add_audit("-", "rate_limited", {"identity": identity.name})
-            raise HTTPException(429, "rate limited")
-        cell.create_limiter.record_failure(identity.name)  # count this create in the window
         if body.callback_url and not callback_allowed(
                 cell.dispatcher.cfg.callback_allowlist, body.callback_url):
             raise HTTPException(422, "callback_url not in allowlist")
