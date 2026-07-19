@@ -214,7 +214,7 @@ def fake_command(monkeypatch):
     from hold_warden.adapters import CommandResult
     calls: list[dict] = []
 
-    def _fake(argv, timeout_s, extra_env=None):
+    def _fake(argv, timeout_s, extra_env=None, cwd=None):
         calls.append({"argv": list(argv), "timeout_s": timeout_s})
         return CommandResult(exit_code=0, stdout_tail="hello\n",
                              stderr_tail="", duration_ms=5)
@@ -444,3 +444,76 @@ def test_tick_adapter_error_fails_with_attempt_receipt(orch, monkeypatch):
     assert row["status"] == "failed"
     assert "adapter error" in row["result"]["error"]
     assert row["receipt"]["executed_at"] is not None
+
+
+# ---------------------------------------------- 0.1.1 cwd + env + timeout
+
+def test_execute_command_passes_cwd_and_resolved_env(orch, monkeypatch):
+    monkeypatch.setenv("TEST_ANTHROPIC_KEY", "sk-test-123")
+    cfg = orch.cfg
+    cfg.secrets["anthropic_key"] = "env:TEST_ANTHROPIC_KEY"
+    cfg.actions["dispatch_claude"] = make_action(
+        name="dispatch_claude", adapter="command", severity="high",
+        description="dispatch claude",
+        argv=["sh", "-c", "pwd; printenv ANTHROPIC_API_KEY"],
+        cwd="/tmp", env={"ANTHROPIC_API_KEY": "secret:anthropic_key"},
+        params={})
+    spec = cfg.actions["dispatch_claude"]
+    resolved = spec.resolve_template({})
+    receipt = {"request_id": "r1", "action_hash": "h1", "decision": "approved",
+               "decided_at": "2026-07-18T00:00:00+00:00", "verdict_jws": "x",
+               "executed_at": None}
+    row = orch.db.create_proposal(agent="hermes", action="dispatch_claude", params={},
+                                  canonical="c", action_hash="h1", request_id="r1",
+                                  idempotency_key=None)
+    pid = row["id"]
+    orch._execute(pid, spec, {}, resolved, receipt)
+    out = orch.db.get(pid)
+    assert out["status"] == "executed"
+    assert "tmp" in out["result"]["stdout_tail"]
+    assert "sk-test-123" in out["result"]["stdout_tail"]
+
+
+def test_exec_timeout_s_is_honored_per_action(orch):
+    cfg = orch.cfg
+    cfg.actions["slow"] = make_action(
+        name="slow", adapter="command", severity="low",
+        description="sleeps past its own cap", argv=["sleep", "5"],
+        exec_timeout_s=1, params={})
+    spec = cfg.actions["slow"]
+    resolved = spec.resolve_template({})
+    receipt = {"request_id": "r2", "action_hash": "h2", "decision": "approved",
+               "decided_at": "2026-07-18T00:00:00+00:00", "verdict_jws": "x",
+               "executed_at": None}
+    orch.db.create_proposal(agent="hermes", action="slow", params={},
+                            canonical="c2", action_hash="h2", request_id="r2",
+                            idempotency_key="slow-1")
+    pid = orch.db.get_by_idem("hermes", "slow-1")["id"]
+    orch._execute(pid, spec, {}, resolved, receipt)
+    out = orch.db.get(pid)
+    assert out["status"] == "failed"
+    assert "adapter error" in out["result"]["error"]
+    assert "sleep" in out["result"]["error"] or "timed out" in out["result"]["error"]
+
+
+def test_exec_timeout_s_unset_uses_global_default(orch, monkeypatch):
+    """A pre-0.1.1 action must still receive exactly EXEC_TIMEOUT_S."""
+    seen = {}
+
+    def fake_run_command(argv, timeout_s, extra_env=None, cwd=None):
+        seen["timeout_s"] = timeout_s
+        from hold_warden.adapters import CommandResult
+        return CommandResult(exit_code=0, stdout_tail="", stderr_tail="", duration_ms=1)
+
+    monkeypatch.setattr(service, "run_command", fake_run_command)
+    spec = orch.cfg.actions["greet"]
+    resolved = spec.resolve_template({"word": "hello"})
+    receipt = {"request_id": "r3", "action_hash": "h3", "decision": "approved",
+               "decided_at": "2026-07-18T00:00:00+00:00", "verdict_jws": "x",
+               "executed_at": None}
+    orch.db.create_proposal(agent="hermes", action="greet", params={"word": "hello"},
+                            canonical="c3", action_hash="h3", request_id="r3",
+                            idempotency_key="greet-1")
+    pid = orch.db.get_by_idem("hermes", "greet-1")["id"]
+    orch._execute(pid, spec, {"word": "hello"}, resolved, receipt)
+    assert seen["timeout_s"] == service.EXEC_TIMEOUT_S == 60

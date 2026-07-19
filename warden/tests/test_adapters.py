@@ -154,3 +154,15 @@ def test_run_http_body_head_is_first_1024_chars(http_target):
     assert len(r.body_head) == 1024
     assert r.body_head == "y" * 1024
     assert r.body_sha256 == hashlib.sha256(b"y" * 3000).hexdigest()
+
+
+def test_cwd_is_honored():
+    r = run_command(["pwd"], timeout_s=10, cwd="/tmp")
+    assert r.exit_code == 0
+    assert r.stdout_tail.strip() in ("/tmp", "/private/tmp")  # macOS resolves /tmp
+
+
+def test_cwd_none_keeps_process_cwd():
+    import os
+    r = run_command(["pwd"], timeout_s=10)
+    assert r.stdout_tail.strip() == os.getcwd()

@@ -163,3 +163,108 @@ token = "env:A"
     cfg = WardenConfig.load(p)
     with pytest.raises(ConfigError):
         cfg.pinned()
+
+
+# --- 0.1.1: per-action cwd + env + exec_timeout_s on the command adapter ---
+
+SAMPLE_WITH_ANTHROPIC = SAMPLE.replace(
+    'deploy_key = "file:/etc/warden/deploy_key"',
+    'deploy_key = "file:/etc/warden/deploy_key"\n'
+    'anthropic_key = "env:TEST_ANTHROPIC_KEY"')
+
+DISPATCH_ACTION = '''
+[actions.dispatch_claude]
+adapter = "command"
+severity = "high"
+ttl_seconds = 90
+exec_timeout_s = 3600
+description = "Dispatch claude on a coder-scratch repo"
+argv = ["claude", "-p", "{task}"]
+cwd = "/srv/agentwork/claude/{repo}"
+env = { ANTHROPIC_API_KEY = "secret:anthropic_key" }
+  [actions.dispatch_claude.params.repo]
+  type = "enum"
+  values = ["coder-scratch"]
+  [actions.dispatch_claude.params.task]
+  type = "string"
+  max_len = 4000
+'''
+
+
+def test_load_command_action_with_cwd_and_env(tmp_path: Path) -> None:
+    p = tmp_path / "warden.toml"
+    p.write_text(SAMPLE_WITH_ANTHROPIC + DISPATCH_ACTION, encoding="utf-8")
+    cfg = WardenConfig.load(p)
+    spec = cfg.actions["dispatch_claude"]
+    assert spec.cwd == "/srv/agentwork/claude/{repo}"
+    assert spec.env == {"ANTHROPIC_API_KEY": "secret:anthropic_key"}
+    assert spec.exec_timeout_s == 3600
+
+
+def test_exec_timeout_s_defaults_to_none(tmp_path: Path) -> None:
+    """Unset -> None, so service.py falls back to the global 60s EXEC_TIMEOUT_S
+    and every pre-0.1.1 action keeps its old behaviour byte for byte."""
+    p = tmp_path / "warden.toml"
+    p.write_text(SAMPLE, encoding="utf-8")
+    cfg = WardenConfig.load(p)
+    assert cfg.actions["restart_service"].exec_timeout_s is None
+    assert cfg.actions["restart_service"].cwd is None
+    assert cfg.actions["restart_service"].env is None
+
+
+def test_cwd_must_be_absolute(tmp_path: Path) -> None:
+    p = tmp_path / "warden.toml"
+    p.write_text(SAMPLE + '''
+[actions.bad_cwd]
+adapter = "command"
+argv = ["echo", "hi"]
+cwd = "relative/path"
+''', encoding="utf-8")
+    with pytest.raises(ConfigError, match="cwd must be an absolute path"):
+        WardenConfig.load(p)
+
+
+def test_cwd_param_must_be_enum_typed(tmp_path: Path) -> None:
+    """A free-form string/int param used in cwd is a path-traversal vector
+    (repo could be '../../etc') -- config load rejects it outright."""
+    p = tmp_path / "warden.toml"
+    p.write_text(SAMPLE + '''
+[actions.bad_cwd_param]
+adapter = "command"
+argv = ["echo", "{repo}"]
+cwd = "/srv/agentwork/{repo}"
+  [actions.bad_cwd_param.params.repo]
+  type = "string"
+  max_len = 50
+''', encoding="utf-8")
+    with pytest.raises(ConfigError, match='cwd param .* must be type "enum"'):
+        WardenConfig.load(p)
+
+
+def test_env_value_must_reference_declared_secret(tmp_path: Path) -> None:
+    p = tmp_path / "warden.toml"
+    p.write_text(SAMPLE + '''
+[actions.bad_env]
+adapter = "command"
+argv = ["echo", "hi"]
+env = { SOME_KEY = "secret:nonexistent" }
+''', encoding="utf-8")
+    with pytest.raises(ConfigError, match="nonexistent"):
+        WardenConfig.load(p)
+
+
+def test_resolve_template_command_includes_cwd_and_env_names() -> None:
+    spec = ActionSpec(
+        name="dispatch_claude", adapter="command", severity="high", ttl_seconds=90,
+        description="", argv=["claude", "-p", "{task}"], url=None, method=None,
+        body_template=None, headers=None, secret=None,
+        cwd="/srv/agentwork/claude/{repo}",
+        env={"ANTHROPIC_API_KEY": "secret:anthropic_key"},
+        exec_timeout_s=3600,
+        params={"repo": ParamSpec(type="enum", values=["coder-scratch"]),
+                "task": ParamSpec(type="string", max_len=4000)})
+    resolved = spec.resolve_template({"repo": "coder-scratch", "task": "echo hi"})
+    assert resolved["argv"] == ["claude", "-p", "echo hi"]
+    assert resolved["cwd"] == "/srv/agentwork/claude/coder-scratch"
+    assert resolved["env_names"] == ["ANTHROPIC_API_KEY"]
+    assert "anthropic_key" not in str(resolved)  # secret VALUES/refs never in the hash doc

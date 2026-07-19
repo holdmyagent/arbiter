@@ -262,7 +262,10 @@ class Orchestrator:
         receipt["executed_at"] = _utcnow().isoformat()
         try:
             if spec.adapter == "command":
-                res = run_command(resolved["argv"], timeout_s=EXEC_TIMEOUT_S)
+                res = run_command(resolved["argv"],
+                                  timeout_s=spec.exec_timeout_s or EXEC_TIMEOUT_S,
+                                  extra_env=self._resolve_env(spec.env or {}),
+                                  cwd=resolved.get("cwd"))
                 result = {"exit_code": res.exit_code,
                           "stdout_tail": res.stdout_tail,
                           "stderr_tail": res.stderr_tail,
@@ -295,6 +298,23 @@ class Orchestrator:
         """Header values are literals or 'secret:<name>' refs into [secrets]."""
         out: dict[str, str] = {}
         for name, value in headers.items():
+            if value.startswith("secret:"):
+                secret_name = value.split(":", 1)[1]
+                if secret_name not in self.cfg.secrets:
+                    raise SecretResolutionError(f"unknown secret name: {secret_name}")
+                out[name] = resolve(self.cfg.secrets[secret_name])
+            else:
+                out[name] = value
+        return out
+
+    def _resolve_env(self, env: dict[str, str]) -> dict[str, str]:
+        """Command env values are literals or 'secret:<name>' refs into [secrets].
+        Resolved lazily at execution, exactly like header values: the resolved
+        VALUE never enters the canonical document, the arbiter payload, the
+        receipt, or a log line — only the sorted NAMES (resolve_template's
+        env_names) are hash-bound."""
+        out: dict[str, str] = {}
+        for name, value in env.items():
             if value.startswith("secret:"):
                 secret_name = value.split(":", 1)[1]
                 if secret_name not in self.cfg.secrets:
