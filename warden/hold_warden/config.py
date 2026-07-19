@@ -56,6 +56,9 @@ class ActionSpec:
     body_template: str | None
     headers: dict[str, str] | None
     secret: str | None
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+    exec_timeout_s: int | None = None  # per-action adapter cap; None -> global EXEC_TIMEOUT_S (60s)
     params: dict[str, ParamSpec] = field(default_factory=dict)
 
     def validate_params(self, params: dict[str, str]) -> None:
@@ -106,7 +109,12 @@ class ActionSpec:
             for element in self.argv or []:
                 match = _PLACEHOLDER_RE.fullmatch(element)
                 argv.append(params[match.group(1)] if match else element)
-            return {"argv": argv}
+            resolved: dict = {"argv": argv}
+            if self.cwd is not None:
+                resolved["cwd"] = _substitute(self.cwd, params)
+            if self.env:
+                resolved["env_names"] = sorted(self.env.keys())
+            return resolved
         if self.adapter == "http":
             url = _substitute(self.url or "", params)
             header_names = sorted((self.headers or {}).keys())
@@ -235,7 +243,10 @@ def _parse_action(path: Path, name: str, tbl: object) -> ActionSpec:
         description=tbl.get("description", ""),
         argv=tbl.get("argv"), url=tbl.get("url"), method=tbl.get("method"),
         body_template=tbl.get("body_template"), headers=tbl.get("headers"),
-        secret=tbl.get("secret"), params=params)
+        secret=tbl.get("secret"), cwd=tbl.get("cwd"), env=tbl.get("env"),
+        exec_timeout_s=(int(tbl["exec_timeout_s"])
+                        if tbl.get("exec_timeout_s") is not None else None),
+        params=params)
 
 
 def _validate_action(path: Path, spec: ActionSpec, secrets: dict[str, str]) -> None:
@@ -256,6 +267,20 @@ def _validate_action(path: Path, spec: ActionSpec, secrets: dict[str, str]) -> N
                     raise ConfigError(
                         f"{path}: [actions.{spec.name}] argv references undeclared param "
                         f"{{{pname}}} — declare [actions.{spec.name}.params.{pname}]")
+        if spec.cwd is not None:
+            if not spec.cwd.startswith("/"):
+                raise ConfigError(
+                    f"{path}: [actions.{spec.name}] cwd must be an absolute path")
+            for pname in _PLACEHOLDER_RE.findall(spec.cwd):
+                if pname not in declared:
+                    raise ConfigError(
+                        f"{path}: [actions.{spec.name}] cwd references undeclared param "
+                        f"{{{pname}}} — declare [actions.{spec.name}.params.{pname}]")
+                if spec.params[pname].type != "enum":
+                    raise ConfigError(
+                        f"{path}: [actions.{spec.name}] cwd param {{{pname}}} must be "
+                        f"type \"enum\" (path-traversal guard) — free-form string/int "
+                        f"params are not allowed in cwd")
     elif spec.adapter == "http":
         if not spec.url or not spec.method:
             raise ConfigError(
@@ -281,3 +306,8 @@ def _validate_action(path: Path, spec: ActionSpec, secrets: dict[str, str]) -> N
             raise ConfigError(
                 f"{path}: [actions.{spec.name}] references secret:{sname} but "
                 f"[secrets] has no {sname!r}")
+    for ename, evalue in (spec.env or {}).items():
+        if evalue.startswith("secret:") and evalue.removeprefix("secret:") not in secrets:
+            raise ConfigError(
+                f"{path}: [actions.{spec.name}] env {ename} references "
+                f"{evalue!r} but [secrets] has no {evalue.removeprefix('secret:')!r}")

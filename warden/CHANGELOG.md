@@ -1,5 +1,21 @@
 # Changelog — hold-warden
 
+## [0.1.1] - 2026-07-18
+
+### Added
+
+- **Command adapter `cwd` + `env` + `exec_timeout_s`**: `[actions.*]` may now set
+  `cwd = "/abs/path/{param}"` (any `{param}` used in `cwd` MUST be `type = "enum"` —
+  a path-traversal guard; config load rejects free-form string/int params there),
+  `env = { VAR = "secret:name" }` (or a literal value), resolved lazily like header
+  values, and `exec_timeout_s = <int>` (per-action adapter-execution cap; unset falls
+  back to the global 60 s `EXEC_TIMEOUT_S`). `resolve_template`'s `resolved` dict for
+  `command` now includes `cwd` (hash-bound — a human approving a dispatch is bound to
+  the exact working directory) and `env_names` (injected variable NAMES only, never
+  resolved values, mirroring `header_names`). Motivation: coder dispatch — a real
+  `claude -p` run takes minutes, needs a repo cwd, and needs its API key injected
+  without the warden's own environment leaking into the subprocess.
+
 ## [0.1.0] - 2026-07-17
 
 First release of the Warden — Hold My Agent's enforcement daemon. HMA is

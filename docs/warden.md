@@ -167,8 +167,13 @@ Registry rules (enforced at config load and at propose time):
   and params; everything else comes from this file.
 - **Command environment is scrubbed**: `command` actions run without a shell and with a
   subprocess environment containing only `PATH=/usr/bin:/bin:/usr/local/bin` — the
-  warden's own environment (and any secrets in it) never leaks into subprocesses. There
-  is no configurable extra env in v0.1.0.
+  warden's own environment (and any secrets in it) never leaks into subprocesses.
+  Since 0.1.1 a `command` action may add `env = { VAR = "secret:name" }` (resolved
+  lazily, values never logged or hashed — only the sorted NAMES appear in the
+  canonical document as `env_names`), a `cwd = "/abs/path/{param}"` (any `{param}`
+  used in `cwd` MUST be `type = "enum"`; config load rejects free-form string/int
+  params there as a path-traversal guard), and `exec_timeout_s = <int>` (per-action
+  execution cap; unset falls back to the global 60 s).
 - **Secrets appear only as references** (`env:` / `file:` / `cmd:`). Resolved values
   never enter the canonical document, the arbiter payload, receipts, or logs. See
   [secret-managers.md](secret-managers.md).

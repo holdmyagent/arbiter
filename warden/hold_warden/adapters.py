@@ -37,10 +37,11 @@ class CommandResult:
 
 
 def run_command(argv: list[str], timeout_s: int,
-                extra_env: dict[str, str] | None = None) -> CommandResult:
+                extra_env: dict[str, str] | None = None,
+                cwd: str | None = None) -> CommandResult:
     env = {"PATH": _SCRUBBED_PATH} | (extra_env or {})
     start = time.monotonic()
-    proc = subprocess.run(argv, shell=False, env=env, capture_output=True,
+    proc = subprocess.run(argv, shell=False, env=env, cwd=cwd, capture_output=True,
                           text=True, errors="replace", timeout=timeout_s)
     duration_ms = int((time.monotonic() - start) * 1000)
     return CommandResult(exit_code=proc.returncode, stdout_tail=_tail(proc.stdout),
