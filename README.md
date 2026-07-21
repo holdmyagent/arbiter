@@ -11,9 +11,7 @@ request times out, or anything goes wrong, the answer defaults to **no**.
 Nothing gets through by accident.
 
 <p align="center">
-  <img src="docs/img/dashboard-requests-dark.png" alt="Arbiter dashboard — live requests list" width="49%">
   <img src="docs/img/authorization-slip-dark.png" alt="Arbiter dashboard — authorization slip detail" width="49%">
-  <img src="docs/img/audit-log-dark.png" alt="Arbiter dashboard — audit log" width="49%">
 </p>
 
 ## The five-minute loop
