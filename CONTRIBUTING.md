@@ -60,14 +60,15 @@ bash scripts/smoke.sh
 
 - **Add tests.** New behavior needs test coverage; bug fixes should include
   a regression test that fails without the fix.
-- **Keep ruff clean.** Both packages share the same lint config
+- **Keep ruff clean.** All three packages share the same lint config
   (`[tool.ruff]` in each `pyproject.toml`, 110-char lines, `py311` target).
-  Run `ruff check server sdk` before pushing — CI will reject anything it
-  flags. Avoid blanket `# noqa`; if a specific line genuinely needs one,
+  Run `ruff check server sdk warden` before pushing — CI will reject anything
+  it flags. Avoid blanket `# noqa`; if a specific line genuinely needs one,
   leave a comment explaining why.
-- **Run both suites.** `pytest server/tests` and `pytest sdk/tests` should
-  both be green. CI runs the full matrix (Linux + macOS, Python 3.11–3.13)
-  plus `scripts/smoke.sh` on every push and pull request.
+- **Run all three suites.** `pytest server/tests`, `pytest sdk/tests`, and
+  `pytest warden/tests` should all be green. CI runs the full matrix
+  (Linux + macOS, Python 3.11–3.13) plus `scripts/smoke.sh` on every push
+  and pull request.
 - **Keep changes scoped.** Prefer small, focused pull requests over broad
   refactors bundled with feature work — it makes review and bisecting much
   easier.
