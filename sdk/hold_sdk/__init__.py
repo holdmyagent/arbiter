@@ -28,14 +28,27 @@ def request_approval(title, *, description="", severity="medium", target=None,
             rid = r.json()["id"]
             deadline = time.time() + (timeout if timeout is not None else ttl_seconds + 5)
             while time.time() < deadline:
+                try:
+                    g = c.get(f"/v1/requests/{rid}", headers=hdr)
+                    g.raise_for_status()
+                    status = g.json()["status"]
+                except Exception:
+                    status = None            # transient poll failure — keep waiting
+                if status in ("approved", "denied", "expired"):
+                    return status
+                time.sleep(poll_interval)
+            # Deadline reached without a terminal status: one final read, so a
+            # server-side expiry (or late decision) is reported truthfully.
+            try:
                 g = c.get(f"/v1/requests/{rid}", headers=hdr)
                 g.raise_for_status()
                 status = g.json()["status"]
                 if status in ("approved", "denied", "expired"):
                     return status
-                time.sleep(poll_interval)
+            except Exception:
+                pass
     except Exception:
-        return "denied"  # fail-closed
-    return "denied"      # local timeout
+        return "denied"  # fail-closed: create failed or client setup broke
+    return "denied"      # fail-closed: outcome unknown at deadline
 
 __all__ = ["request_approval", "ArbiterClient"]
