@@ -38,3 +38,42 @@ def test_stream_heartbeat(cfg, tmp_path):
     with TestClient(app) as c:
         with c.websocket_connect("/v1/stream", headers={"Authorization": f"Bearer {cfg.auth.app_token}"}) as ws:
             assert ws.receive_json()["event"] == "ping"
+
+
+# --- #19: /v1/stream is app-role ONLY (capability matrix; #14 least-privilege) ---
+# The feed of every approval request must not be watchable by an agent/warden
+# credential. Legacy app_token opening the stream is already covered by
+# test_stream_emits_* / test_stream_heartbeat above; the admin session cookie by
+# test_dashboard.test_stream_accepts_session_cookie — so neither is duplicated here.
+
+
+def test_stream_db_app_token_opens(client, agent_headers):
+    tok = client.env.mint("default", "streamer", "app")
+    with client.websocket_connect("/v1/stream",
+                                  headers={"Authorization": f"Bearer {tok}"}) as ws:
+        rid = client.post("/v1/requests", headers=agent_headers,
+                          json={"title": "x"}).json()["id"]
+        evt = ws.receive_json()
+        assert evt["event"] == "request.created" and evt["request"]["id"] == rid
+
+
+def test_stream_db_agent_token_rejected(client):
+    tok = client.env.mint("default", "worker", "agent")
+    with pytest.raises(Exception):
+        with client.websocket_connect("/v1/stream",
+                                      headers={"Authorization": f"Bearer {tok}"}):
+            pass
+
+
+def test_stream_db_warden_token_rejected(client):
+    tok = client.env.mint("default", "gate", "warden")
+    with pytest.raises(Exception):
+        with client.websocket_connect("/v1/stream",
+                                      headers={"Authorization": f"Bearer {tok}"}):
+            pass
+
+
+def test_stream_legacy_agent_token_rejected(client, agent_headers):
+    with pytest.raises(Exception):
+        with client.websocket_connect("/v1/stream", headers=agent_headers):
+            pass

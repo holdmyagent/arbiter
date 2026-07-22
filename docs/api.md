@@ -32,7 +32,7 @@ Two credential systems are accepted:
 |---|---|
 | `agent` | Create requests; read **own** requests (`requested_by` == token name, 404 otherwise); read own verdicts. |
 | `warden` | Everything `agent` can, plus: send `canonical_action`/`action_hash` at create, and `POST .../consume` an approval (single-use, **any** warden identity — not scoped to the request's creator). |
-| `app` | List all requests, decide, register/list devices, read notify policy, `/v1/stream` (legacy static `app_token` only — DB tokens don't open the stream; see [Live events](#live-events)), audit export. Held by the paired iOS app. |
+| `app` | List all requests, decide, register/list devices, read notify policy, `/v1/stream` (any app-role credential — legacy static `app_token` or a DB `--role app` token; admin session cookie also accepted; see [Live events](#live-events)), audit export. Held by the paired iOS app. |
 | admin session | Dashboard (view-only) + `GET /v1/audit/export`. Cookie minted at `/dashboard/login`. |
 
 Rate limits: repeated **auth failures** are throttled per client IP (429).
@@ -224,18 +224,19 @@ device's own opt-in both allow that severity.
 
 ## Live events
 
-### `WebSocket /v1/stream` — legacy `[auth] app_token` (Bearer header) or dashboard session cookie
+### `WebSocket /v1/stream` — app-role credential (Bearer header) or dashboard session cookie
 
 Pushes `{"event": "<name>", "request"|"device"|"data": <payload>}` messages:
 `request.created`, `request.decided`, `request.expired`, `device.updated`,
 `ping` (heartbeat). No replay or resume — reconcile via `GET /v1/requests`
 after a reconnect. Bad credentials close with code 4401.
 
-**Note:** unlike every other `/v1` route, the stream currently checks the
-Bearer value directly against `[auth] app_token` — it does not resolve
-per-identity DB tokens. A `hma token create NAME --role app` token will not
-open this connection; use the legacy static `app_token` (or the dashboard
-session cookie) until DB-token support lands here.
+**Note:** the stream is **app-role only**, matching the capability matrix and
+every other app-only route. Any app-role credential opens it: the legacy static
+`[auth] app_token`, a `hma token create NAME --role app` DB token, or the
+dashboard session cookie. Agent/warden DB tokens (and the legacy `agent_token`)
+are rejected — the socket is closed with code 4401, the same close a bad
+credential gets (no oracle distinguishing wrong-role from bad-token).
 
 ## Status code summary
 

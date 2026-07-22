@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Security
+
+- `/v1/stream` now enforces the **app** role, matching the documented
+  capability matrix and the #14 least-privilege model. Previously any
+  resolvable credential — an agent- or warden-role DB token, or the legacy
+  static `agent_token` — could open the live approval feed and watch every
+  tenant request/decision. Such credentials are now rejected (the socket
+  closes with 4401, indistinguishable from a bad credential); app-role
+  tokens and the admin session cookie are unchanged (fixes #19).
+
 ## [0.5.0] - 2026-07-22
 
 Ships `hold-warden` 0.1.1 alongside SDK and docs fixes; no `/v1` API surface
