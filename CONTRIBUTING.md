@@ -1,9 +1,12 @@
 # Contributing to Arbiter
 
-Thanks for considering a contribution. This repo has two Python packages —
-the `server` (the `holdmyagent` distribution, importable as `arbiter`) and
-the `sdk` (the `hold-sdk` distribution, importable as `hold_sdk`) — each with
-its own virtualenv and test suite.
+Thanks for considering a contribution. This repo has three Python packages —
+the `server` (the `holdmyagent` distribution, importable as `arbiter`), the
+`sdk` (the `hold-sdk` distribution, importable as `hold_sdk`), and `warden`
+(the `hold-warden` distribution, importable as `hold_warden`) — the
+enforcement daemon that executes signed, single-use approvals. `server` and
+`sdk` each have their own virtualenv and test suite; `warden` shares the
+server's venv but has its own test suite.
 
 ## Dev setup
 
@@ -30,6 +33,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest tests
+```
+
+### Warden
+
+Installed as an editable dependency by the server's
+`pip install -e '.[dev]' -e ../warden` above — it doesn't need its own
+virtualenv. With that venv active, run its tests from the repo root:
+
+```bash
+pytest warden/tests
 ```
 
 ### End-to-end smoke test

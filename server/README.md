@@ -12,5 +12,19 @@ hma init
 hma serve
 ```
 
+## Roles & capabilities
+
+Four kinds of caller talk to the API, each scoped to a different slice:
+
+| Role | Can do |
+|---|---|
+| `agent` | Create requests; read its own requests and verdicts. |
+| `warden` | Everything `agent` can, plus send `canonical_action`/`action_hash` at create and consume an approved verdict (single-use, any warden identity). |
+| `app` | List and decide all requests, manage devices, read notify policy, open the live stream, export the audit log. |
+| admin session | View-only dashboard, plus audit export. |
+
+Full capability matrix (exact routes and status codes):
+[`docs/api.md`](../docs/api.md#authentication-and-roles).
+
 - Homepage: https://holdmyagent.com
 - Source / issues: https://github.com/holdmyagent/arbiter

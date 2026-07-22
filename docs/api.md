@@ -251,6 +251,9 @@ session cookie) until DB-token support lands here.
 | 429 | Auth-failure throttling (per IP) or create rate limit (per identity). |
 | 503 | `/health` with a failing DB ping. |
 
+**Note:** 403 bodies are deliberately generic (`{"detail": "forbidden"}`):
+error responses must not act as a capability or tenant oracle (spec §11).
+
 See also: [`config.md`](config.md) for every knob referenced above,
 [`cli.md`](cli.md) for the `hma` / `hma-warden` commands, and
 [`warden.md`](warden.md) for the warden's own (separate) agent-facing API.
