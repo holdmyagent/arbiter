@@ -85,8 +85,9 @@ def require_cell(*roles: str):
 
 async def resolve_stream(ws, registry, control):
     """WS analog of /v1/audit/export's bearer-OR-cookie split (app.py, HTTP):
-    the existing /v1/stream bearer path (resolve_identity, any resolvable
-    role — unchanged) first, then — only on a failed/absent bearer — an admin
+    the /v1/stream bearer path (resolve_identity, then an app-role check — the
+    stream is app-only per the capability matrix / §14 least-privilege) first,
+    then — only on a failed/absent bearer — an admin
     dashboard session -> the 'default' cell, so the dashboard's live view
     (web/static/dashboard.js, connects with cookies only) keeps working. Same
     limiter + auth_failure discipline as audit_export (§13): blocked-check
@@ -105,7 +106,7 @@ async def resolve_stream(ws, registry, control):
     if st.auth_limiter.blocked(key):
         raise HTTPException(429, "too many failed auth attempts")
     try:
-        return await resolve_identity(ws, registry, control)
+        identity, cell = await resolve_identity(ws, registry, control)
     except HTTPException:
         if st.session_check(ws.cookies.get("hma_session", "")):
             if not control.is_disabled("default"):
@@ -113,8 +114,11 @@ async def resolve_stream(ws, registry, control):
                 if epoch is not None:
                     cell = await registry.acquire("default", epoch)
                     # role="app" mirrors audit_export's session=app-authority equivalence
-                    # (run_stream ignores role today); legacy=True only means "not a
-                    # tokens-table identity" -- don't reuse where legacy drives requested_by.
+                    # and is REQUIRED: the app-role gate below runs only on the bearer
+                    # branch, so the admin session (app-authority) is minted role="app"
+                    # to match the stream's app-only contract. legacy=True only means
+                    # "not a tokens-table identity" -- don't reuse where legacy drives
+                    # requested_by.
                     return (Identity(name="admin-session", role="app",
                                      tenant_id="default", epoch=epoch, legacy=True),
                             cell)
@@ -123,6 +127,20 @@ async def resolve_stream(ws, registry, control):
         st.auth_limiter.record_failure(key)
         log.warning("auth_failure key=%s reason=%s", key, reason)  # never log the supplied value
         raise
+    # Bearer resolved. The stream is app-role ONLY (capability matrix / §14
+    # least-privilege): an agent/warden DB token or the legacy agent_token must
+    # never watch the approval feed. Reject exactly as the stream path rejects any
+    # auth failure -- raise HTTPException, which run_stream turns into a uniform
+    # 4401 close (no oracle distinguishing wrong-role from bad-token). Release the
+    # pin resolve_identity took first: its release-on-failure contract covers only
+    # ITS OWN failures, not this post-success rejection. record_failure mirrors the
+    # cookie-fail branch above and require_cell's role gate (a valid-but-forbidden
+    # token counts the same as a bad one for the §13 limiter).
+    if identity.role != "app":
+        registry.release(cell)
+        st.auth_limiter.record_failure(key)
+        raise HTTPException(403, "forbidden")   # generic (§11)
+    return (identity, cell)
 
 
 def create_app(cfg, registry, control, *, sender=None, scheduler=None,
