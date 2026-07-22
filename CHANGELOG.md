@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## [0.5.0] - 2026-07-22
+
+Ships `hold-warden` 0.1.1 alongside SDK and docs fixes; no `/v1` API surface
+changes. The warden's command adapter gains per-action `cwd`, `env`
+(secret-ref), and `exec_timeout_s` — needed for coder dispatch — see
+`warden/CHANGELOG.md` for the details.
+
+### Fixed
+
+- The SDK's blocking poll no longer collapses a genuine server-observed
+  `expired` (or a late decision) into `denied`: a final read at the local
+  deadline reports the true terminal status, and a transient poll error
+  (a network blip) no longer aborts the wait — only a failed request
+  creation, or a genuinely unknown outcome at the deadline, still fail
+  closed as `denied` (fixes #13).
+
+### Docs
+
+- `docs/api.md` documents why 403 responses are deliberately generic
+  (they must not act as a capability or tenant oracle); `server/README.md`
+  gains a role-capability matrix (closes #14).
+- `CONTRIBUTING.md`'s pre-PR checklist now covers the warden package
+  (lint + tests).
+- New `RELEASING.md` — the release runbook (version bump order, CHANGELOG
+  discipline, the tag-to-PyPI-to-ghcr pipeline, the Homebrew tap
+  follow-up).
+- README screenshots refreshed to the 0.4.1 UI (authorization slip), plus
+  a new audit-log view screenshot.
+
 ## [0.4.1] - 2026-07-17
 
 Consolidation patch after the 0.4.0 train — hardening and performance only;

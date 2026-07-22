@@ -39,8 +39,19 @@ class ArbiterClient:
                 g.raise_for_status()
                 status = g.json()["status"]
             except Exception:
-                return "denied"  # fail-closed
+                status = None            # transient poll failure — keep waiting
             if status in ("approved", "denied", "expired"):
                 return status
             time.sleep(poll_interval)
-        return "denied"  # fail-closed on local timeout
+        # Deadline reached without a terminal status: one final read, so a
+        # server-side expiry (or late decision) is reported truthfully.
+        try:
+            g = self._http.get(f"/v1/requests/{rid}",
+                headers={"Authorization": f"Bearer {self.agent_token}"})
+            g.raise_for_status()
+            status = g.json()["status"]
+            if status in ("approved", "denied", "expired"):
+                return status
+        except Exception:
+            pass
+        return "denied"  # fail-closed: outcome unknown at deadline
