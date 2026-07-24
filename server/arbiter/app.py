@@ -16,7 +16,7 @@ from .enroll import resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
-from .models import RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody, OverlayBody
+from .models import RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
@@ -61,24 +61,39 @@ def assert_step_up(request, cfg, *, now=None) -> None:
         raise HTTPException(403, "forbidden")
 
 
-def _assert_step_up_single_use(request, cfg, cell) -> None:
+def _check_step_up_single_use(request, cfg, cell) -> int:
     """policy:write step-up gate PLUS anti-replay (RFC-6238 §5.2): verify_totp
     is stateless, so a captured valid code stays acceptable for its whole
     ~60-90s window -- a replayed capture could otherwise author a second
     mutation. After assert_step_up confirms the code verifies, resolve the
     SPECIFIC time-step counter it matched and require it to be strictly newer
-    than the last counter this cell accepted; only then persist it. Net
-    effect: a given code authorizes at most one write. Cannot change
-    assert_step_up's signature (it's a small, focused gate reused as-is), so
-    this wraps it rather than folding replay-tracking into it. Generic 403,
-    same as every other step-up failure -- no oracle distinguishing "replay"
-    from "wrong code"."""
+    than the last counter this cell accepted. Cannot change assert_step_up's
+    signature (it's a small, focused gate reused as-is), so this wraps it
+    rather than folding replay-tracking into it. Generic 403, same as every
+    other step-up failure -- no oracle distinguishing "replay" from "wrong
+    code".
+
+    Deliberately does NOT persist the counter (see _commit_step_up below):
+    this runs BEFORE the route validates its body / checks preconditions, so
+    persisting here would burn the operator's code on a 400/404/409 that
+    never actually mutated anything -- and because TOTP is deterministic
+    within its window, the corrected resubmit would reuse the same code and
+    get rejected. Returns the matched counter so the route can persist it
+    once the mutation actually succeeds."""
     assert_step_up(request, cfg)
     counter = step_up.matched_counter(cfg.auth.step_up_totp_secret,
                                       request.headers.get("x-step-up-code", ""))
     last = cell.db.policy_get_step_up_counter()
     if counter is None or (last is not None and counter <= last):
         raise HTTPException(403, "forbidden")
+    return counter
+
+
+def _commit_step_up(cell, counter: int) -> None:
+    """Advance the anti-replay watermark. Call ONLY after the route's
+    validation has passed and the store mutation has succeeded -- see
+    _check_step_up_single_use for why persisting any earlier reopens the
+    lockout foot-gun."""
     cell.db.policy_set_step_up_counter(counter)
 
 
@@ -639,10 +654,11 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                    ctx: tuple = Depends(require_cell("app"))):
         identity, cell = ctx
         assert_cap(identity, "policy:write")
-        _assert_step_up_single_use(request, cfg, cell)
+        counter = _check_step_up_single_use(request, cfg, cell)
         if cell.db.policy_get_preset(body.preset) is None:
             raise HTTPException(404, "unknown preset")
         cell.db.policy_set_active(body.preset)
+        _commit_step_up(cell, counter)
         _policy_mutation(app, cell, identity, "set_active", {"preset": body.preset})
         return {"preset": body.preset}
 
@@ -657,7 +673,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                       ctx: tuple = Depends(require_cell("app"))):
         identity, cell = ctx
         assert_cap(identity, "policy:write")
-        _assert_step_up_single_use(request, cfg, cell)
+        counter = _check_step_up_single_use(request, cfg, cell)
         try:
             gate_policy.validate_preset(body.name, body.block_patterns, body.allow_patterns,
                                         body.tool_allowlist, body.default_decision)
@@ -665,6 +681,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             raise HTTPException(400, e.message)
         cell.db.policy_put_preset(body.name, body.block_patterns, body.allow_patterns,
                                   body.tool_allowlist, body.default_decision)
+        _commit_step_up(cell, counter)
         _policy_mutation(app, cell, identity, "put_preset", {"preset": body.name})
         return cell.db.policy_get_preset(body.name)
 
@@ -682,7 +699,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                    ctx: tuple = Depends(require_cell("app"))):
         identity, cell = ctx
         assert_cap(identity, "policy:write")
-        _assert_step_up_single_use(request, cfg, cell)
+        counter = _check_step_up_single_use(request, cfg, cell)
         try:
             gate_policy.validate_preset(name, body.block_patterns, body.allow_patterns,
                                         body.tool_allowlist, body.default_decision)
@@ -690,6 +707,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             raise HTTPException(400, e.message)
         cell.db.policy_put_preset(name, body.block_patterns, body.allow_patterns,
                                   body.tool_allowlist, body.default_decision)
+        _commit_step_up(cell, counter)
         _policy_mutation(app, cell, identity, "put_preset", {"preset": name})
         return cell.db.policy_get_preset(name)
 
@@ -698,11 +716,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                       ctx: tuple = Depends(require_cell("app"))):
         identity, cell = ctx
         assert_cap(identity, "policy:write")
-        _assert_step_up_single_use(request, cfg, cell)
+        counter = _check_step_up_single_use(request, cfg, cell)
         if cell.db.policy_get_active() == name:
             raise HTTPException(409, "cannot delete the active preset; select another first")
         if not cell.db.policy_delete_preset(name):
             raise HTTPException(404, "not found")
+        _commit_step_up(cell, counter)
         _policy_mutation(app, cell, identity, "delete_preset", {"preset": name})
         return {"deleted": name}
 

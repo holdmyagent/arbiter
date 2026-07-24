@@ -194,6 +194,44 @@ def test_mutation_bumps_version_and_audits(wclient):
     assert any(a["event"] == "policy_updated" for a in audit)
 
 
+def test_invalid_preset_400_does_not_burn_step_up_code(wclient, monkeypatch):
+    """Important lockout foot-gun (adversarial review): the anti-replay
+    watermark must NOT advance on a validation failure. A 400 (gates-NOTHING
+    preset, same shape as test_write_rejects_fail_open_preset_400) must leave
+    the just-presented code usable for the corrected resubmit in the SAME
+    TOTP window -- otherwise every typo forces a ~30s wait for a fresh code."""
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    headers = _step_headers(APP)
+    bad = wclient.post("/v1/policy/presets", headers=headers,
+                       json={"name": "empty", "default_decision": "allow"})
+    assert bad.status_code == 400
+    # SAME code, SAME window -> the corrected body must still succeed.
+    good = wclient.post("/v1/policy/presets", headers=headers,
+                        json={"name": "dangerous-shell", "block_patterns": ["rm -rf"],
+                              "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    assert good.status_code == 200, good.text
+
+
+def test_unknown_preset_404_does_not_burn_step_up_code(wclient, monkeypatch):
+    """Same foot-gun, 404 path: PUT active with an unknown preset must not
+    burn the code either."""
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    headers = _step_headers(APP)
+    wclient.post("/v1/policy/presets", headers=_step_headers(APP),
+                 json={"name": "dangerous-shell", "block_patterns": ["rm -rf"],
+                       "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    clock[0] += 30
+    headers = _step_headers(APP)
+    bad = wclient.put("/v1/policy/active", headers=headers,
+                      json={"preset": "does-not-exist"})
+    assert bad.status_code == 404
+    good = wclient.put("/v1/policy/active", headers=headers,
+                       json={"preset": "dangerous-shell"})
+    assert good.status_code == 200, good.text
+
+
 def test_step_up_code_is_single_use(wclient, monkeypatch):
     """Addition 1: the SAME step-up code must authorize at most one write. A
     captured/replayed code (still inside its ~60-90s verify_totp window) has
