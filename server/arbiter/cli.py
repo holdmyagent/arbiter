@@ -32,6 +32,9 @@ agent_token = "{agent}"
 app_token = "{app}"
 admin_password = "{admin}"
 session_secret = "{session}"
+# step_up_totp_secret = ""  # base32 TOTP shared secret; REQUIRED to author gate
+                            # policy (policy:write). Empty = authoring DISABLED
+                            # (fail-closed). Provision the same secret in the app.
 
 [policy]                    # create-time policy (0.4.0)
 ttl_min_seconds = 30
@@ -40,6 +43,10 @@ approval_ttl_seconds = 600  # how long an approval stays consumable
 rate_limit_per_minute = 30  # per-identity create rate limit
 deny_action_types = []      # e.g. ["db.drop"]
 # [policy.severity_floors]  # e.g. deploy = "high"
+# [policy.gate] is not a TOML table — gate policy (presets/overlay/active
+# selection) is stored in the per-cell DB (migration 11), not this file.
+# Manage it via the /v1/policy* endpoints (app Settings -> Gate Policy)
+# once auth.step_up_totp_secret above is provisioned.
 
 [notify]                    # restrict per-request callback_url destinations
 callback_allowlist = []     # e.g. ["10.0.0.0/8", "https://hooks.example.com/*"]; [] = allow all (legacy)

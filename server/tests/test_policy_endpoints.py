@@ -653,3 +653,8 @@ def test_cross_tenant_policy_isolation_write_denial(cfg, tmp_path, monkeypatch):
     assert presets_after == presets_before
     assert preset_after == preset_before
     assert gate_status_after == gate_status_before
+
+
+def test_config_template_documents_step_up():
+    from arbiter.cli import CONFIG_TEMPLATE
+    assert "step_up_totp_secret" in CONFIG_TEMPLATE
