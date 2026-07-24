@@ -183,3 +183,55 @@ def evaluate(resolved: dict, tool_name: str, command: str = "") -> str:
     if any(_matches(p, command) for p in resolved["advisory_allow_patterns"]):
         return "allow"
     return resolved["default_decision"]
+
+
+import re
+
+_NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
+_MAX_PATTERNS = 200
+_MAX_PATTERN_LEN = 512
+
+
+class PolicyValidationError(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def _check_patterns(patterns, label):
+    if len(patterns) > _MAX_PATTERNS:
+        raise PolicyValidationError(f"{label}: too many patterns (max {_MAX_PATTERNS})")
+    for p in patterns:
+        if not isinstance(p, str) or p == "":
+            raise PolicyValidationError(f"{label}: empty pattern not allowed")
+        if len(p) > _MAX_PATTERN_LEN:
+            raise PolicyValidationError(f"{label}: pattern too long (max {_MAX_PATTERN_LEN})")
+
+
+def validate_preset(name, block_patterns, allow_patterns, tool_allowlist,
+                    default_decision) -> None:
+    if not _NAME_RE.match(name or ""):
+        raise PolicyValidationError("preset name must match [a-z0-9-]{1,64}")
+    if default_decision not in ("ask", "allow"):
+        raise PolicyValidationError("default_decision must be 'ask' or 'allow'")
+    _check_patterns(block_patterns, "block_patterns")
+    _check_patterns(allow_patterns, "allow_patterns")
+    if len(tool_allowlist) > _MAX_PATTERNS:
+        raise PolicyValidationError("tool_allowlist too long")
+    # H9: a preset that gates NOTHING beyond the categorical floor is fail-open.
+    # default_decision "allow" with no block patterns gates nothing -> reject.
+    if default_decision == "allow" and not block_patterns:
+        raise PolicyValidationError(
+            "this policy gates NOTHING beyond categorical-ask: add block patterns "
+            "or set default_decision to 'ask'")
+
+
+def validate_overlay(always_ask, always_allow) -> None:
+    _check_patterns(always_ask, "always_ask")
+    _check_patterns(always_allow, "always_allow")
+    for p in always_allow:
+        # minimum specificity: no bare dangerous verb (rm/curl/ssh/kubectl).
+        if len(p) < 8 or " " not in p:
+            raise PolicyValidationError(
+                f"always_allow entry '{p}' is too broad: must be >=8 chars and "
+                "specific (contain a space) to prevent a fail-open override")

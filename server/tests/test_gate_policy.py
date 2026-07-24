@@ -1,3 +1,5 @@
+import pytest
+
 from arbiter.db import Database
 from arbiter import gate_policy as gp
 
@@ -202,3 +204,26 @@ def test_matcher_bare_git_override_allow_does_not_shadow_git_push_block():
                           {"version": 1, "epoch": 1})
     assert gp.evaluate(r, "run_shell", "git push origin main") == "ask"
     assert gp.evaluate(r, "run_shell", "git status") == "allow"  # override still works elsewhere
+
+
+def test_validate_preset_rejects_fail_open_shapes():
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("bad name!", [], [], [], "allow")          # name charset
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("p", ["", "ok"], [], ["run_shell"], "allow")  # empty pattern
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("p", [], [], [], "allow")                  # gates nothing
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("p", ["rm"], [], [], "sometimes")          # bad decision
+    # a real preset is fine:
+    gp.validate_preset("dangerous-shell", ["rm -rf"], [], ["run_shell"], "allow")
+    # default_decision "ask" always gates (unmatched -> ask), so empty blocks ok:
+    gp.validate_preset("everything", [], [], [], "ask")
+
+
+def test_validate_overlay_specificity():
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_overlay([], ["rm"])                # too short / no space
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_overlay([""], [])                  # empty always_ask
+    gp.validate_overlay(["curl"], ["ls -la /home/hermes"])   # ok
