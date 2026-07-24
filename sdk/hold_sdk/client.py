@@ -55,3 +55,34 @@ class ArbiterClient:
         except Exception:
             pass
         return "denied"  # fail-closed: outcome unknown at deadline
+
+    # ── gate-facing policy (agent_token / policy:read-resolved) ──────────────
+    # The gate-facing read surface only. The write/admin surface (presets,
+    # overlay, active, test) needs the app-role decision credential and has no
+    # Python consumer — it lives in the macOS app's ArbiterKit — so it is
+    # deliberately not carried here. Unlike request_approval's fail-closed
+    # polling loop, these raise on non-2xx (like a plain typed client) so the
+    # gate's sync process can fall back to its OWN local most-restrictive.
+
+    def get_resolved_policy(self) -> dict:
+        """GET /v1/policy — the resolved policy the gate consumes.
+
+        Raises on non-200 (httpx.HTTPStatusError) so the caller/gate can fall
+        back to its own local most-restrictive rather than acting on a partial
+        or missing policy."""
+        r = self._http.get("/v1/policy",
+            headers={"Authorization": f"Bearer {self.agent_token}"})
+        r.raise_for_status()
+        return r.json()
+
+    def report_gate_status(self, version: int, etag: str, fetched_at: str,
+                           most_restrictive: bool) -> dict:
+        """POST /v1/policy/gate-status — report what the gate is enforcing
+        (closed-loop telemetry). Returns the stored record (the reported fields
+        plus a server-stamped ``reported_at``). Raises on non-200."""
+        r = self._http.post("/v1/policy/gate-status",
+            headers={"Authorization": f"Bearer {self.agent_token}"},
+            json={"version": version, "etag": etag,
+                  "fetched_at": fetched_at, "most_restrictive": most_restrictive})
+        r.raise_for_status()
+        return r.json()
