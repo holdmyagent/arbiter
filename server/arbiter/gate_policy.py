@@ -12,7 +12,6 @@ Two responsibilities, no I/O:
 The server may only ADD asks/blocks: effective policy = local floor UNION server
 policy. No override/advisory allow can suppress a categorical-ask tool.
 """
-import copy
 import hashlib
 
 POLICY_SCHEMA_VERSION = 1
@@ -76,18 +75,29 @@ def _base(meta: dict) -> dict:
     }
 
 
-MOST_RESTRICTIVE_STATIC = {
-    "default_decision": "ask",
-    "categorical_ask": list(LOCAL_FLOOR_CATEGORICAL),
-    "tool_allowlist": [],
-    "ask_patterns": [],
-    "advisory_allow_patterns": [],
-    "override_allow_patterns": [],
-    "active_preset": None,
-}
+def _most_restrictive_body() -> dict:
+    """Fresh most-restrictive body, rebuilt from the PRIMITIVE constants on
+    every call (mirrors the preset path's `list(...)` style). No caller may
+    ever be handed a reference into a shared mutable template: each call
+    returns brand-new list objects, so in-place mutation of one caller's copy
+    (including the public MOST_RESTRICTIVE snapshot below) can never corrupt
+    what a later resolve_policy(None, ...) call returns."""
+    return {
+        "default_decision": "ask",
+        "categorical_ask": list(LOCAL_FLOOR_CATEGORICAL),
+        "tool_allowlist": [],
+        "ask_patterns": [],
+        "advisory_allow_patterns": [],
+        "override_allow_patterns": [],
+        "active_preset": None,
+    }
 
-# Public symbol per the Produces contract (Task 3 / endpoints import this name).
-MOST_RESTRICTIVE = MOST_RESTRICTIVE_STATIC
+
+# Public symbol per the Produces contract (Task 3 / endpoints import this
+# name). This is an INDEPENDENT snapshot, not an alias of the object graph
+# resolve_policy rebuilds from below — mutating it in place cannot affect
+# the resolver's fail-closed default.
+MOST_RESTRICTIVE = _most_restrictive_body()
 
 
 def resolve_policy(active_preset: dict | None, overlay: dict, meta: dict) -> dict:
@@ -100,10 +110,11 @@ def resolve_policy(active_preset: dict | None, overlay: dict, meta: dict) -> dic
     swallow it into allow."""
     doc = _base(meta)
     if active_preset is None:
-        # deepcopy: MOST_RESTRICTIVE_STATIC's lists must never be handed out by
-        # reference — a caller mutating the returned doc would otherwise
-        # permanently corrupt the fail-closed default for every future call.
-        doc.update(copy.deepcopy(MOST_RESTRICTIVE_STATIC))
+        # Rebuilt fresh from primitives each call (not deepcopied from any
+        # shared module-level object) — a caller mutating the returned doc,
+        # or mutating the public MOST_RESTRICTIVE snapshot, can never corrupt
+        # the fail-closed default for future calls.
+        doc.update(_most_restrictive_body())
         return doc
 
     # "everything" is detected by SHAPE (ask + no allowlist), matching the

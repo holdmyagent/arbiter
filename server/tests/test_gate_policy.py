@@ -21,7 +21,7 @@ def test_most_restrictive_default_is_isolated_across_calls():
     # A caller that mutates the returned most-restrictive doc must NOT corrupt
     # the fail-closed default for subsequent independent resolve_policy calls
     # (dict.update is a shallow copy — the returned lists must be fresh, not
-    # the same list objects as the module constant MOST_RESTRICTIVE_STATIC).
+    # the same list objects any other resolve_policy(None, ...) call handed out).
     r = gp.resolve_policy(None, {"always_ask": [], "always_allow": []},
                           {"version": 0, "epoch": 1})
     r["tool_allowlist"].append("run_shell")
@@ -32,6 +32,22 @@ def test_most_restrictive_default_is_isolated_across_calls():
     assert r2["tool_allowlist"] == []
     assert set(gp.LOCAL_FLOOR_CATEGORICAL) <= set(r2["categorical_ask"])
     assert "execute_code" in r2["categorical_ask"]
+
+
+def test_mutating_exported_most_restrictive_does_not_corrupt_resolver_default():
+    # The public symbol gp.MOST_RESTRICTIVE must be a snapshot, NOT an alias of
+    # whatever object graph resolve_policy's None-branch rebuilds from. A
+    # consumer mutating the exported "constant" in place must never corrupt
+    # the fail-closed default returned to subsequent independent callers.
+    gp.MOST_RESTRICTIVE["tool_allowlist"].append("run_shell")
+    gp.MOST_RESTRICTIVE["categorical_ask"].clear()
+
+    r = gp.resolve_policy(None, {"always_ask": [], "always_allow": []},
+                          {"version": 0, "epoch": 1})
+    assert r["tool_allowlist"] == []
+    assert set(gp.LOCAL_FLOOR_CATEGORICAL) <= set(r["categorical_ask"])
+    assert "execute_code" in r["categorical_ask"]
+    assert "delegate_task" in r["categorical_ask"]
 
 
 def test_resolver_unions_local_floor_and_never_lets_overlay_drop_it():
