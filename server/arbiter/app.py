@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_client_id
 from .enroll import resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
+from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
 from .models import RequestCreate, Decision, DeviceRegister
 from .notify import callback_allowed
@@ -58,6 +59,13 @@ def assert_step_up(request, cfg, *, now=None) -> None:
     code = request.headers.get("x-step-up-code", "")
     if not step_up.verify_totp(secret, code, now):
         raise HTTPException(403, "forbidden")
+
+
+def _resolved_for(cell) -> dict:
+    db = cell.db
+    active_name = db.policy_get_active()
+    preset = db.policy_get_preset(active_name) if active_name else None
+    return gate_policy.resolve_policy(preset, db.policy_get_overlay(), db.policy_meta())
 
 
 def _spawn_publish(app, tenant_id, epoch, event, req):
@@ -582,6 +590,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     def notify_policy(ctx: tuple = Depends(require_cell("app"))):
         _identity, cell = ctx
         return dict(cell.dispatcher.cfg.notify_severities)
+
+    @app.get("/v1/policy")
+    def get_policy(ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read-resolved")
+        return _resolved_for(cell)
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
