@@ -1,11 +1,17 @@
-import hashlib, base64, hmac, struct, time
+import hashlib
+import base64
+import hmac
+import struct
+import time
 import pytest
 from fastapi import HTTPException
 from arbiter import step_up
 from arbiter.app import capabilities_for, assert_cap
 from arbiter.auth import Identity
 
-import json, uuid, secrets as pysecrets
+import json
+import uuid
+import secrets as pysecrets
 from datetime import datetime, timezone
 from arbiter import gate_policy as gp
 
@@ -261,11 +267,7 @@ def test_step_up_code_is_single_use(wclient, monkeypatch):
 def test_overlay_roundtrip_and_stream_event(wclient):
     # Subscribe to the cell hub directly to assert the policy.updated publish
     # (the WS stream is app-only; publishing is what this task guarantees).
-    cell = wclient.env.registry
     # Simpler: assert via the hub on the pinned default cell.
-    import asyncio
-    default_epoch = wclient.env.default_epoch
-
     r = wclient.get("/v1/policy/overlay", headers=APP)
     assert r.json() == {"always_ask": [], "always_allow": []}
 
@@ -331,14 +333,16 @@ def test_policy_test_matches_pure_matcher_corpus(wclient, monkeypatch):
 
 def test_policy_updated_published_on_mutation(cfg, tmp_path):
     # Drive a mutation and assert the cell hub received a policy.updated event.
-    import asyncio, json as _json
+    import asyncio
     from tests.conftest import build_registry_env
     from arbiter.app import create_app, _resolved_for  # noqa
     from fastapi.testclient import TestClient
     cfg.auth.step_up_totp_secret = STEP_SECRET
     env = build_registry_env(cfg, tmp_path)
     app = create_app(cfg, env.registry, env.control)
-    c = TestClient(app); c.db = env.default_db; c.env = env
+    c = TestClient(app)
+    c.db = env.default_db
+    c.env = env
 
     async def _grab():
         async with env.registry.hold("default", env.default_epoch) as cell:
@@ -554,7 +558,8 @@ def test_cross_tenant_policy_isolation(cfg, tmp_path):
     env = build_registry_env(cfg, tmp_path)
     env.provision("tenant-b")
     app = create_app(cfg, env.registry, env.control)
-    c = TestClient(app); c.env = env
+    c = TestClient(app)
+    c.env = env
     tok_a = env.mint("default", "app-a", "app")
     tok_b = env.mint("tenant-b", "app-b", "app")
     # author a preset in tenant-b:
@@ -593,7 +598,8 @@ def test_cross_tenant_policy_isolation_write_denial(cfg, tmp_path, monkeypatch):
     env = build_registry_env(cfg, tmp_path)
     env.provision("tenant-b")
     app = create_app(cfg, env.registry, env.control)
-    c = TestClient(app); c.env = env
+    c = TestClient(app)
+    c.env = env
     tok_a = env.mint("default", "app-a", "app")     # full caps (role default)
     tok_b = env.mint("tenant-b", "app-b", "app")
     a_headers = {"Authorization": f"Bearer {tok_a}"}

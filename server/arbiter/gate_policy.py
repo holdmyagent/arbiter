@@ -13,6 +13,7 @@ The server may only ADD asks/blocks: effective policy = local floor UNION server
 policy. No override/advisory allow can suppress a categorical-ask tool.
 """
 import hashlib
+import re
 
 POLICY_SCHEMA_VERSION = 1
 
@@ -192,8 +193,6 @@ def evaluate(resolved: dict, tool_name: str, command: str = "") -> str:
     # blindly) fails CLOSED to "ask", never echoes the garbage value open.
     return "allow" if resolved["default_decision"] == "allow" else "ask"
 
-
-import re
 
 _NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 _MAX_PATTERNS = 200
