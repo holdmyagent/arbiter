@@ -19,6 +19,7 @@ class AuthCfg:
     app_token: str = ""
     admin_password: str = ""
     session_secret: str = ""
+    step_up_totp_secret: str = ""
 
 @dataclass
 class ApnsCfg:
@@ -96,7 +97,8 @@ class Config:
                     setattr(cfg.server, k, s[k])
             if "trusted_proxies" in s:
                 cfg.server.trusted_proxies = [str(x) for x in s["trusted_proxies"]]
-            for k in ("agent_token", "app_token", "admin_password", "session_secret"):
+            for k in ("agent_token", "app_token", "admin_password", "session_secret",
+                      "step_up_totp_secret"):
                 if k in a:
                     setattr(cfg.auth, k, a[k])
             for k in ("key_path", "key_id", "team_id", "bundle_id", "sandbox"):
@@ -127,6 +129,7 @@ class Config:
              ("HMA_AGENT_TOKEN", cfg.auth, "agent_token", str), ("HMA_APP_TOKEN", cfg.auth, "app_token", str),
              ("HMA_ADMIN_PASSWORD", cfg.auth, "admin_password", str),
              ("HMA_SESSION_SECRET", cfg.auth, "session_secret", str),
+             ("HMA_STEP_UP_TOTP_SECRET", cfg.auth, "step_up_totp_secret", str),
              ("HMA_APNS_KEY_PATH", cfg.apns, "key_path", str), ("HMA_APNS_KEY_ID", cfg.apns, "key_id", str),
              ("HMA_APNS_TEAM_ID", cfg.apns, "team_id", str), ("HMA_APNS_BUNDLE_ID", cfg.apns, "bundle_id", str),
              ("HMA_APNS_SANDBOX", cfg.apns, "sandbox", _b),

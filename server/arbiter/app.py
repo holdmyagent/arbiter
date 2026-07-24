@@ -22,8 +22,42 @@ from .policy import evaluate_create
 from .signing import sign_verdict
 from .stream import run_stream
 from .web import build_router, session_valid
+from . import step_up
 
 log = logging.getLogger("arbiter.app")
+
+_ROLE_CAPS = {
+    "app": {"policy:read-resolved", "policy:read", "policy:write"},
+    "agent": {"policy:read-resolved"},
+    "warden": {"policy:read-resolved"},
+}
+
+
+def capabilities_for(identity) -> set:
+    """Policy capabilities for an identity. An explicit scopes["capabilities"]
+    list is authoritative (least-privilege: the gate token carries only
+    ["policy:read-resolved"]); otherwise fall back to the role default so the
+    legacy app_token/agent_token work out of the box."""
+    if identity.scopes and isinstance(identity.scopes.get("capabilities"), list):
+        return set(identity.scopes["capabilities"])
+    return set(_ROLE_CAPS.get(identity.role, set()))
+
+
+def assert_cap(identity, cap: str) -> None:
+    if cap not in capabilities_for(identity):
+        raise HTTPException(403, "forbidden")       # generic (§11)
+
+
+def assert_step_up(request, cfg, *, now=None) -> None:
+    """policy:write step-up gate. Fail-closed: if no secret is provisioned,
+    authoring is DISABLED (403) — the product's promise is never fail-open, so a
+    missing step-up secret must not silently allow writes."""
+    secret = cfg.auth.step_up_totp_secret
+    if not secret:
+        raise HTTPException(403, "forbidden")
+    code = request.headers.get("x-step-up-code", "")
+    if not step_up.verify_totp(secret, code, now):
+        raise HTTPException(403, "forbidden")
 
 
 def _spawn_publish(app, tenant_id, epoch, event, req):
