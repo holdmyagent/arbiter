@@ -16,7 +16,7 @@ from .enroll import resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
-from .models import RequestCreate, Decision, DeviceRegister
+from .models import RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody, OverlayBody
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
@@ -61,11 +61,42 @@ def assert_step_up(request, cfg, *, now=None) -> None:
         raise HTTPException(403, "forbidden")
 
 
+def _assert_step_up_single_use(request, cfg, cell) -> None:
+    """policy:write step-up gate PLUS anti-replay (RFC-6238 §5.2): verify_totp
+    is stateless, so a captured valid code stays acceptable for its whole
+    ~60-90s window -- a replayed capture could otherwise author a second
+    mutation. After assert_step_up confirms the code verifies, resolve the
+    SPECIFIC time-step counter it matched and require it to be strictly newer
+    than the last counter this cell accepted; only then persist it. Net
+    effect: a given code authorizes at most one write. Cannot change
+    assert_step_up's signature (it's a small, focused gate reused as-is), so
+    this wraps it rather than folding replay-tracking into it. Generic 403,
+    same as every other step-up failure -- no oracle distinguishing "replay"
+    from "wrong code"."""
+    assert_step_up(request, cfg)
+    counter = step_up.matched_counter(cfg.auth.step_up_totp_secret,
+                                      request.headers.get("x-step-up-code", ""))
+    last = cell.db.policy_get_step_up_counter()
+    if counter is None or (last is not None and counter <= last):
+        raise HTTPException(403, "forbidden")
+    cell.db.policy_set_step_up_counter(counter)
+
+
 def _resolved_for(cell) -> dict:
     db = cell.db
     active_name = db.policy_get_active()
     preset = db.policy_get_preset(active_name) if active_name else None
     return gate_policy.resolve_policy(preset, db.policy_get_overlay(), db.policy_meta())
+
+
+def _policy_mutation(app, cell, identity, action: str, detail: dict) -> int:
+    version = cell.db.policy_bump_version()
+    meta = cell.db.policy_meta()
+    actor = "app" if identity.legacy else identity.name
+    cell.db.add_audit("-", "policy_updated",
+                      {"actor": actor, "action": action, "version": version, **detail})
+    cell.hub.publish({"event": "policy.updated", "version": version, "epoch": meta["epoch"]})
+    return version
 
 
 def _spawn_publish(app, tenant_id, epoch, event, req):
@@ -596,6 +627,84 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         identity, cell = ctx
         assert_cap(identity, "policy:read-resolved")
         return _resolved_for(cell)
+
+    @app.get("/v1/policy/active")
+    def get_active(ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read")
+        return {"preset": cell.db.policy_get_active()}
+
+    @app.put("/v1/policy/active")
+    def set_active(body: ActiveBody, request: Request,
+                   ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:write")
+        _assert_step_up_single_use(request, cfg, cell)
+        if cell.db.policy_get_preset(body.preset) is None:
+            raise HTTPException(404, "unknown preset")
+        cell.db.policy_set_active(body.preset)
+        _policy_mutation(app, cell, identity, "set_active", {"preset": body.preset})
+        return {"preset": body.preset}
+
+    @app.get("/v1/policy/presets")
+    def list_presets(ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read")
+        return cell.db.policy_list_presets()
+
+    @app.post("/v1/policy/presets")
+    def create_preset(body: PresetBody, request: Request,
+                      ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:write")
+        _assert_step_up_single_use(request, cfg, cell)
+        try:
+            gate_policy.validate_preset(body.name, body.block_patterns, body.allow_patterns,
+                                        body.tool_allowlist, body.default_decision)
+        except gate_policy.PolicyValidationError as e:
+            raise HTTPException(400, e.message)
+        cell.db.policy_put_preset(body.name, body.block_patterns, body.allow_patterns,
+                                  body.tool_allowlist, body.default_decision)
+        _policy_mutation(app, cell, identity, "put_preset", {"preset": body.name})
+        return cell.db.policy_get_preset(body.name)
+
+    @app.get("/v1/policy/presets/{name}")
+    def get_preset(name: str, ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read")
+        p = cell.db.policy_get_preset(name)
+        if p is None:
+            raise HTTPException(404, "not found")
+        return p
+
+    @app.put("/v1/policy/presets/{name}")
+    def put_preset(name: str, body: PresetBody, request: Request,
+                   ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:write")
+        _assert_step_up_single_use(request, cfg, cell)
+        try:
+            gate_policy.validate_preset(name, body.block_patterns, body.allow_patterns,
+                                        body.tool_allowlist, body.default_decision)
+        except gate_policy.PolicyValidationError as e:
+            raise HTTPException(400, e.message)
+        cell.db.policy_put_preset(name, body.block_patterns, body.allow_patterns,
+                                  body.tool_allowlist, body.default_decision)
+        _policy_mutation(app, cell, identity, "put_preset", {"preset": name})
+        return cell.db.policy_get_preset(name)
+
+    @app.delete("/v1/policy/presets/{name}")
+    def delete_preset(name: str, request: Request,
+                      ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:write")
+        _assert_step_up_single_use(request, cfg, cell)
+        if cell.db.policy_get_active() == name:
+            raise HTTPException(409, "cannot delete the active preset; select another first")
+        if not cell.db.policy_delete_preset(name):
+            raise HTTPException(404, "not found")
+        _policy_mutation(app, cell, identity, "delete_preset", {"preset": name})
+        return {"deleted": name}
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):

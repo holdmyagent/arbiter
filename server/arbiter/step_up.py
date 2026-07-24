@@ -32,3 +32,25 @@ def verify_totp(secret_b32: str, code: str, now: float | None = None,
         if hmac.compare_digest(_code_at(key, counter + delta), code):
             return True
     return False
+
+
+def matched_counter(secret_b32: str, code: str, now: float | None = None,
+                    *, step: int = 30, window: int = 1) -> int | None:
+    """Anti-replay support (RFC-6238 §5.2: an OTP must not be accepted twice).
+    Same HOTP internals as verify_totp (reused, not re-derived) but returns
+    the specific time-step counter that matched `code`, or None if no match —
+    callers use the counter as a monotonic per-cell watermark so a step-up
+    code can authorize at most one write."""
+    if not secret_b32 or not code:
+        return None
+    try:
+        key = base64.b32decode(secret_b32, casefold=True)
+    except Exception:
+        return None
+    now = _time.time() if now is None else now
+    counter = int(now // step)
+    for delta in range(-window, window + 1):
+        candidate = counter + delta
+        if hmac.compare_digest(_code_at(key, candidate), code):
+            return candidate
+    return None

@@ -701,6 +701,15 @@ class Database:
     def policy_set_active(self, name: str) -> None:
         self._policy_kv_set("active", name)
 
+    def policy_get_step_up_counter(self) -> int | None:
+        """Last-accepted TOTP time-step counter for this cell's policy writes
+        (anti-replay watermark, RFC-6238 §5.2) — None until the first write."""
+        v = self._policy_kv_get("step_up_last_counter")
+        return int(v) if v is not None else None
+
+    def policy_set_step_up_counter(self, counter: int) -> None:
+        self._policy_kv_set("step_up_last_counter", str(counter))
+
     def _row_to_preset(self, r: sqlite3.Row) -> dict:
         return {"name": r["name"],
                 "block_patterns": json.loads(r["block_patterns"]),
