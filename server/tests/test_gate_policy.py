@@ -321,6 +321,27 @@ def test_h9_all_seed_presets_still_validate():
                            p["tool_allowlist"], p["default_decision"])
 
 
+def test_matcher_malformed_default_decision_fails_closed_to_ask():
+    # Rider (Task 3 review hardening): evaluate()'s final default_decision
+    # backstop must self-enforce ask-unless-explicit-allow -- an unexpected/
+    # garbage default_decision value (never should happen given
+    # validate_preset, but evaluate() must not trust its input blindly) must
+    # fail CLOSED (ask), not echo the garbage value open.
+    preset = {"name": "p", "block_patterns": [], "allow_patterns": [],
+              "tool_allowlist": ["run_shell"], "default_decision": "allow"}
+    r = gp.resolve_policy(preset, {"always_ask": [], "always_allow": []},
+                          {"version": 1, "epoch": 1})
+    r["default_decision"] = "allow_all_typo"          # malformed/garbage value
+    assert gp.evaluate(r, "run_shell", "anything") == "ask"
+
+    # A normal, correct "allow" default still returns "allow" when nothing
+    # asks/blocks -- the hardening must not turn a real allow into an ask.
+    r2 = gp.resolve_policy(preset, {"always_ask": [], "always_allow": []},
+                          {"version": 1, "epoch": 1})
+    assert r2["default_decision"] == "allow"
+    assert gp.evaluate(r2, "run_shell", "anything") == "allow"
+
+
 def test_h9_e2e_critical_whitespace_policy_rejected_before_it_can_reach_evaluate():
     # End-to-end guard for the proven CRITICAL hole: this exact policy shape
     # used to pass validate_preset, after which resolve_policy + evaluate

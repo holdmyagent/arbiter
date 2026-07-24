@@ -186,7 +186,11 @@ def evaluate(resolved: dict, tool_name: str, command: str = "") -> str:
         return "allow"
     if any(_matches(p, command) for p in resolved["advisory_allow_patterns"]):
         return "allow"
-    return resolved["default_decision"]
+    # Self-enforce the return contract: only an EXPLICIT "allow" may allow.
+    # Any unexpected/garbage default_decision value (should never happen
+    # given validate_preset, but this function must not trust its input
+    # blindly) fails CLOSED to "ask", never echoes the garbage value open.
+    return "allow" if resolved["default_decision"] == "allow" else "ask"
 
 
 import re
