@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with: { python-version: "${{ matrix.python }}" }
-      - run: pip install ruff && ruff check server sdk warden
+      - run: pip install ruff==0.15.0 && ruff check server sdk warden
       # warden is installed alongside server: two §16 isolation gates
       # (test_rotation_anchor, test_verdict_tenant_binding) verify the server's
       # tenant-bound verdicts through hold_warden's VerdictVerifier.

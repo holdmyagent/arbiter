@@ -53,3 +53,23 @@ class DeviceRegister(BaseModel):
     sound: bool = True
     severities: dict[str, bool] | None = None
     badge: bool = False
+
+class PresetBody(BaseModel):
+    name: str
+    block_patterns: list[str] = Field(default_factory=list)
+    allow_patterns: list[str] = Field(default_factory=list)
+    tool_allowlist: list[str] = Field(default_factory=list)
+    default_decision: Literal["ask", "allow"] = "ask"
+
+class ActiveBody(BaseModel):
+    preset: str
+
+class OverlayBody(BaseModel):
+    always_ask: list[str] = Field(default_factory=list)
+    always_allow: list[str] = Field(default_factory=list)
+
+class GateStatusReport(BaseModel):
+    version: int
+    etag: str
+    fetched_at: str
+    most_restrictive: bool
