@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -133,8 +133,29 @@ def _migrate_9_to_10(conn):
         ON requests(requested_by, title)
         WHERE status='pending' AND action_hash IS NULL""")
 
+def _migrate_10_to_11(conn):
+    """Gate-policy store (feature: server-mediated gate policy). Per-cell:
+    named presets, one overlay row, one active-selection row, and a monotonic
+    meta counter (version) + generation (epoch, for cache-adoption keying)."""
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS policy_presets(
+      name TEXT PRIMARY KEY,
+      block_patterns TEXT NOT NULL,
+      allow_patterns TEXT NOT NULL,
+      tool_allowlist TEXT NOT NULL,
+      default_decision TEXT NOT NULL CHECK(default_decision IN ('ask','allow')));
+    CREATE TABLE IF NOT EXISTS policy_kv(
+      k TEXT PRIMARY KEY,
+      v TEXT NOT NULL);
+    """)
+    conn.execute("INSERT OR IGNORE INTO policy_kv(k,v) VALUES ('version','0')")
+    conn.execute("INSERT OR IGNORE INTO policy_kv(k,v) VALUES ('epoch','1')")
+    conn.execute("INSERT OR IGNORE INTO policy_kv(k,v) VALUES ('overlay',?)",
+                 (json.dumps({"always_ask": [], "always_allow": []}),))
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
-              _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10]
+              _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10,
+              _migrate_10_to_11]
 
 class Database:
     def __init__(self, path: str):
@@ -659,3 +680,100 @@ class Database:
             self.conn.execute("UPDATE tokens SET last_used_at=? WHERE id=?",
                               (_iso(_utcnow()), token_id))
             self.conn.commit()
+
+    # ── gate policy store (server-mediated gate policy) ─────────────────────
+
+    def _policy_kv_get(self, k: str, default=None):
+        with self._lock:
+            r = self.conn.execute("SELECT v FROM policy_kv WHERE k=?", (k,)).fetchone()
+            return r["v"] if r else default
+
+    def _policy_kv_set(self, k: str, v: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO policy_kv(k,v) VALUES (?,?) "
+                "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+            self.conn.commit()
+
+    def policy_get_active(self) -> str | None:
+        return self._policy_kv_get("active")
+
+    def policy_set_active(self, name: str) -> None:
+        self._policy_kv_set("active", name)
+
+    def policy_get_step_up_counter(self) -> int | None:
+        """Last-accepted TOTP time-step counter for this cell's policy writes
+        (anti-replay watermark, RFC-6238 §5.2) — None until the first write."""
+        v = self._policy_kv_get("step_up_last_counter")
+        return int(v) if v is not None else None
+
+    def policy_set_step_up_counter(self, counter: int) -> None:
+        self._policy_kv_set("step_up_last_counter", str(counter))
+
+    def _row_to_preset(self, r: sqlite3.Row) -> dict:
+        return {"name": r["name"],
+                "block_patterns": json.loads(r["block_patterns"]),
+                "allow_patterns": json.loads(r["allow_patterns"]),
+                "tool_allowlist": json.loads(r["tool_allowlist"]),
+                "default_decision": r["default_decision"]}
+
+    def policy_list_presets(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM policy_presets ORDER BY name").fetchall()
+            return [self._row_to_preset(r) for r in rows]
+
+    def policy_get_preset(self, name: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM policy_presets WHERE name=?", (name,)).fetchone()
+            return self._row_to_preset(r) if r else None
+
+    def policy_put_preset(self, name: str, block_patterns: list, allow_patterns: list,
+                          tool_allowlist: list, default_decision: str) -> dict:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO policy_presets(name,block_patterns,allow_patterns,"
+                "tool_allowlist,default_decision) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET block_patterns=excluded.block_patterns,"
+                "allow_patterns=excluded.allow_patterns,tool_allowlist=excluded.tool_allowlist,"
+                "default_decision=excluded.default_decision",
+                (name, json.dumps(block_patterns), json.dumps(allow_patterns),
+                 json.dumps(tool_allowlist), default_decision))
+            self.conn.commit()
+            return self.policy_get_preset(name)
+
+    def policy_delete_preset(self, name: str) -> bool:
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM policy_presets WHERE name=?", (name,))
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def policy_get_overlay(self) -> dict:
+        return json.loads(self._policy_kv_get(
+            "overlay", '{"always_ask": [], "always_allow": []}'))
+
+    def policy_set_overlay(self, always_ask: list, always_allow: list) -> None:
+        self._policy_kv_set("overlay", json.dumps(
+            {"always_ask": always_ask, "always_allow": always_allow}))
+
+    def policy_meta(self) -> dict:
+        return {"version": int(self._policy_kv_get("version", "0")),
+                "epoch": int(self._policy_kv_get("epoch", "1"))}
+
+    def policy_get_gate_status(self) -> dict | None:
+        v = self._policy_kv_get("gate_status")
+        return json.loads(v) if v is not None else None
+
+    def policy_set_gate_status(self, d: dict) -> None:
+        self._policy_kv_set("gate_status", json.dumps(d))
+
+    def policy_bump_version(self) -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE policy_kv SET v=CAST(CAST(v AS INTEGER)+1 AS TEXT) WHERE k='version'")
+            if cur.rowcount == 0:
+                self.conn.execute("INSERT INTO policy_kv(k,v) VALUES ('version','1')")
+            self.conn.commit()
+            return int(self.conn.execute(
+                "SELECT v FROM policy_kv WHERE k='version'").fetchone()["v"])

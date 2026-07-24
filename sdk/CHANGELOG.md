@@ -1,5 +1,28 @@
 # Changelog — hold-sdk
 
+## [0.4.0] - 2026-07-24
+
+### Added
+
+- **Gate-facing policy methods on `ArbiterClient`.** Two typed methods over the
+  server's `/v1/policy*` surface, both authorized by the ordinary agent token
+  (`policy:read-resolved`):
+  - `get_resolved_policy() -> dict` — `GET /v1/policy`, the resolved policy the
+    gate consumes. Raises on non-2xx (does **not** fail-closed-return like
+    `request_approval`) so the gate's sync process can fall back to its own
+    local most-restrictive rather than act on a partial/missing policy.
+  - `report_gate_status(version, etag, fetched_at, most_restrictive) -> dict` —
+    `POST /v1/policy/gate-status`, the closed-loop telemetry the gate/sync uses
+    to report what it is enforcing. Returns the stored record (the reported
+    fields plus a server-stamped `reported_at`).
+
+  The policy **write/admin** surface (presets, overlay, active preset, command
+  test, gate-status readout) needs the app-role decision credential and has no
+  Python consumer — it is served by the macOS app's ArbiterKit — so it is
+  deliberately **not** added to this agent-side SDK. Accordingly, the
+  `ArbiterClient(base_url, agent_token, verify=True)` signature is unchanged and
+  0.3.0's removal of the `app_token` constructor parameter stands.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added

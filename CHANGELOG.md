@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Server-mediated **gate policy**: per-tenant presets + personal overlay + active
+  selection, resolved fail-closed (`GET /v1/policy` always non-empty,
+  most-restrictive default). New `/v1/policy*` endpoints, `policy:read-resolved` /
+  `policy:read` / `policy:write` capabilities, TOTP step-up on writes, mutation
+  audit, and a `policy.updated` stream event. (migration 11)
+
 ### Security
 
 - `/v1/stream` now enforces the **app** role, matching the documented
