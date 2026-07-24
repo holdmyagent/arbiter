@@ -427,3 +427,150 @@ def test_gate_status_most_restrictive_true_stored_and_read_back(client):
                json={**GATE_STATUS_BODY, "most_restrictive": True})
     got = client.get("/v1/policy/gate-status", headers=APP).json()
     assert got["most_restrictive"] is True
+
+
+# ── Task 10: GATE A — default-deny parametric + cross-tenant isolation ────
+#
+# Coverage extension (post-dates the original plan): gate-status is a real
+# endpoint pair now (POST authorized by policy:read-resolved, the gate cap;
+# GET authorized by policy:read), so it is folded into the same data-driven
+# table rather than left to bespoke 9B-only coverage.
+
+# One combined body that satisfies every mutating endpoint's Pydantic model
+# at once (PresetBody/ActiveBody/OverlayBody ignore unrecognized fields;
+# GateStatusReport's required fields are included) -- so the SAME body works
+# for every row below and the table stays a plain (method, path) list a
+# reviewer can scan for omissions.
+_POLICY_MUTATION_BODY = {
+    "preset": "x", "name": "x", "block_patterns": ["rm -rf"],
+    "tool_allowlist": ["run_shell"], "default_decision": "allow",
+    "always_ask": [], "always_allow": [],
+    "version": 3, "etag": "abc123",
+    "fetched_at": "2026-07-24T00:00:00+00:00", "most_restrictive": True,
+}
+
+# Every mutating verb of every policy endpoint. If a new policy:write (or
+# gate-cap) route is added and NOT appended here, this list -- not silent
+# omission -- is where a reviewer notices the gap.
+_POLICY_MUTATIONS = [
+    ("put", "/v1/policy/active"),
+    ("post", "/v1/policy/presets"),
+    ("put", "/v1/policy/presets/x"),
+    ("delete", "/v1/policy/presets/x"),
+    ("put", "/v1/policy/overlay"),
+    ("post", "/v1/policy/gate-status"),   # coverage extension: needs the gate cap
+]
+
+
+@pytest.mark.parametrize("method,path", _POLICY_MUTATIONS,
+                         ids=[f"{m}:{p}" for m, p in _POLICY_MUTATIONS])
+def test_every_mutation_denies_read_only_token(wclient, method, path):
+    # A read-only-capability app token gets 403 on every mutating verb of
+    # every policy endpoint, even with a valid step-up code (capability
+    # check precedes step-up) -- and even on gate-status, whose POST needs
+    # policy:read-resolved, not policy:read.
+    #
+    # NOTE: uses wclient.request(method.upper(), ...) rather than
+    # getattr(wclient, method)(...) because this environment's httpx/
+    # starlette TestClient.delete() does not accept a json= kwarg (only
+    # .request() does) -- a test-harness fact, not an RBAC one.
+    tok = f"hma_app_{pysecrets.token_hex(24)}"
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    wclient.db.conn.execute(
+        "INSERT INTO tokens(id,name,role,token_hash,scopes,created_at,expires_at,"
+        "last_used_at,revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
+        (str(uuid.uuid4()), "ro", "app", th,
+         json.dumps({"capabilities": ["policy:read"]}),
+         datetime.now(timezone.utc).isoformat()))
+    wclient.db.conn.commit()
+    wclient.env.control.add_route(th, "default")
+    h = _step_headers({"Authorization": f"Bearer {tok}"})
+    r = wclient.request(method.upper(), path, headers=h, json=_POLICY_MUTATION_BODY)
+    assert r.status_code == 403
+
+
+def test_read_only_token_reads_what_it_holds(wclient):
+    # Coverage extension: the mirror of the parametric denial above -- the
+    # SAME shape of policy:read-only token (no policy:read-resolved, no
+    # policy:write) gets 200 on every read endpoint policy:read actually
+    # covers (default-deny must not become default-deny-everything), but
+    # still 403 on the one read that needs the DIFFERENT capability
+    # policy:read-resolved (/v1/policy) -- no accidental privilege creep.
+    tok = f"hma_app_{pysecrets.token_hex(24)}"
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    wclient.db.conn.execute(
+        "INSERT INTO tokens(id,name,role,token_hash,scopes,created_at,expires_at,"
+        "last_used_at,revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
+        (str(uuid.uuid4()), "ro", "app", th,
+         json.dumps({"capabilities": ["policy:read"]}),
+         datetime.now(timezone.utc).isoformat()))
+    wclient.db.conn.commit()
+    wclient.env.control.add_route(th, "default")
+    h = {"Authorization": f"Bearer {tok}"}
+    assert wclient.get("/v1/policy/active", headers=h).status_code == 200
+    assert wclient.get("/v1/policy/presets", headers=h).status_code == 200
+    assert wclient.get("/v1/policy/overlay", headers=h).status_code == 200
+    assert wclient.get("/v1/policy/gate-status", headers=h).status_code == 200
+    assert wclient.get("/v1/policy", headers=h).status_code == 403  # needs policy:read-resolved
+
+
+def test_gate_token_cannot_write(wclient):
+    # policy:read-resolved (gate) token: 403 on any write, even the read of
+    # presets (it lacks policy:read). Coverage extension: it CAN post its
+    # own gate-status telemetry (that capability IS the gate-status POST
+    # cap), but GET gate-status needs policy:read, which it does not hold --
+    # confirms no privilege creep from the one capability it does carry.
+    tok = f"hma_agent_{pysecrets.token_hex(24)}"
+    th = hashlib.sha256(tok.encode()).hexdigest()
+    wclient.db.conn.execute(
+        "INSERT INTO tokens(id,name,role,token_hash,scopes,created_at,expires_at,"
+        "last_used_at,revoked_at) VALUES (?,?,?,?,?,?,NULL,NULL,NULL)",
+        (str(uuid.uuid4()), "gate", "agent", th,
+         json.dumps({"capabilities": ["policy:read-resolved"]}),
+         datetime.now(timezone.utc).isoformat()))
+    wclient.db.conn.commit()
+    wclient.env.control.add_route(th, "default")
+    h = {"Authorization": f"Bearer {tok}"}
+    assert wclient.get("/v1/policy", headers=h).status_code == 200        # read-resolved ok
+    assert wclient.get("/v1/policy/presets", headers=h).status_code == 403  # needs policy:read (app role)
+    assert wclient.post("/v1/policy/presets", headers=_step_headers(h),
+                        json={"name": "p", "block_patterns": ["rm -rf"],
+                              "tool_allowlist": ["run_shell"],
+                              "default_decision": "allow"}).status_code == 403
+    gs = wclient.post("/v1/policy/gate-status", headers=h,
+                      json={"version": 3, "etag": "abc123",
+                            "fetched_at": "2026-07-24T00:00:00+00:00",
+                            "most_restrictive": True})
+    assert gs.status_code == 200, gs.text
+    assert wclient.get("/v1/policy/gate-status", headers=h).status_code == 403  # no privilege creep
+
+
+def test_cross_tenant_policy_isolation(cfg, tmp_path):
+    cfg.auth.step_up_totp_secret = STEP_SECRET
+    from tests.conftest import build_registry_env
+    from arbiter.app import create_app
+    from fastapi.testclient import TestClient
+    env = build_registry_env(cfg, tmp_path)
+    env.provision("tenant-b")
+    app = create_app(cfg, env.registry, env.control)
+    c = TestClient(app); c.env = env
+    tok_a = env.mint("default", "app-a", "app")
+    tok_b = env.mint("tenant-b", "app-b", "app")
+    # author a preset in tenant-b:
+    c.post("/v1/policy/presets", headers=_step_headers({"Authorization": f"Bearer {tok_b}"}),
+           json={"name": "b-only", "block_patterns": ["rm -rf"],
+                 "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    # tenant-a must NOT see it (tenant derived from token, never a hint):
+    a_presets = c.get("/v1/policy/presets",
+                      headers={"Authorization": f"Bearer {tok_a}"}).json()
+    assert all(p["name"] != "b-only" for p in a_presets)
+    assert c.get("/v1/policy/presets/b-only",
+                 headers={"Authorization": f"Bearer {tok_a}"}).status_code == 404
+    # gate-status is tenant-scoped too, derived from the token (never a hint):
+    c.post("/v1/policy/gate-status", headers={"Authorization": f"Bearer {tok_b}"},
+           json={"version": 9, "etag": "b-etag",
+                 "fetched_at": "2026-07-24T00:00:00+00:00", "most_restrictive": False})
+    a_status = c.get("/v1/policy/gate-status",
+                     headers={"Authorization": f"Bearer {tok_a}"}).json()
+    assert a_status["etag"] != "b-etag"
+    assert a_status["version"] == 0
