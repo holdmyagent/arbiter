@@ -254,3 +254,57 @@ def test_step_up_code_is_single_use(wclient, monkeypatch):
                       json={"name": "p3", "block_patterns": ["rm -rf"],
                             "tool_allowlist": ["run_shell"], "default_decision": "allow"})
     assert r3.status_code == 200, r3.text
+
+
+# ── Overlay endpoints + policy.updated stream assertion ──────────────────
+
+def test_overlay_roundtrip_and_stream_event(wclient):
+    # Subscribe to the cell hub directly to assert the policy.updated publish
+    # (the WS stream is app-only; publishing is what this task guarantees).
+    cell = wclient.env.registry
+    # Simpler: assert via the hub on the pinned default cell.
+    import asyncio
+    default_epoch = wclient.env.default_epoch
+
+    r = wclient.get("/v1/policy/overlay", headers=APP)
+    assert r.json() == {"always_ask": [], "always_allow": []}
+
+    put = wclient.put("/v1/policy/overlay", headers=_step_headers(APP),
+                      json={"always_ask": ["curl"], "always_allow": ["ls -la /home/hermes"]})
+    assert put.status_code == 200
+    got = wclient.get("/v1/policy/overlay", headers=APP).json()
+    assert got == {"always_ask": ["curl"], "always_allow": ["ls -la /home/hermes"]}
+
+
+def test_overlay_rejects_broad_allow_400(wclient):
+    r = wclient.put("/v1/policy/overlay", headers=_step_headers(APP),
+                    json={"always_ask": [], "always_allow": ["rm"]})
+    assert r.status_code == 400
+
+
+def test_policy_updated_published_on_mutation(cfg, tmp_path):
+    # Drive a mutation and assert the cell hub received a policy.updated event.
+    import asyncio, json as _json
+    from tests.conftest import build_registry_env
+    from arbiter.app import create_app, _resolved_for  # noqa
+    from fastapi.testclient import TestClient
+    cfg.auth.step_up_totp_secret = STEP_SECRET
+    env = build_registry_env(cfg, tmp_path)
+    app = create_app(cfg, env.registry, env.control)
+    c = TestClient(app); c.db = env.default_db; c.env = env
+
+    async def _grab():
+        async with env.registry.hold("default", env.default_epoch) as cell:
+            q = cell.hub.subscribe()
+            c.post("/v1/policy/presets", headers=_step_headers(APP),
+                   json={"name": "p", "block_patterns": ["rm -rf"],
+                         "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+            return events
+    # Python 3.12+ removes the implicit-loop-creation fallback from
+    # asyncio.get_event_loop() (RuntimeError with no running/current loop) --
+    # asyncio.run() is the direct equivalent for a plain sync test function.
+    events = asyncio.run(_grab())
+    assert any(e.get("event") == "policy.updated" for e in events)

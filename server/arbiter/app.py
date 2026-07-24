@@ -16,7 +16,7 @@ from .enroll import resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
-from .models import RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody
+from .models import RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody, OverlayBody
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
@@ -724,6 +724,27 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         _commit_step_up(cell, counter)
         _policy_mutation(app, cell, identity, "delete_preset", {"preset": name})
         return {"deleted": name}
+
+    @app.get("/v1/policy/overlay")
+    def get_overlay(ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read")
+        return cell.db.policy_get_overlay()
+
+    @app.put("/v1/policy/overlay")
+    def set_overlay(body: OverlayBody, request: Request,
+                    ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:write")
+        counter = _check_step_up_single_use(request, cfg, cell)
+        try:
+            gate_policy.validate_overlay(body.always_ask, body.always_allow)
+        except gate_policy.PolicyValidationError as e:
+            raise HTTPException(400, e.message)
+        cell.db.policy_set_overlay(body.always_ask, body.always_allow)
+        _commit_step_up(cell, counter)
+        _policy_mutation(app, cell, identity, "set_overlay", {})
+        return cell.db.policy_get_overlay()
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
