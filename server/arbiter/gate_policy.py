@@ -143,3 +143,43 @@ def resolve_policy(active_preset: dict | None, overlay: dict, meta: dict) -> dic
         "active_preset": active_preset["name"],
     })
     return doc
+
+
+def _matches(pattern: str, command: str) -> bool:
+    """Advisory substring match (documented as advisory, NOT a security boundary
+    — evadable by quoting/whitespace; the default_decision backstop means an
+    evaded block lands in ASK, never allow). Empty pattern never matches."""
+    return bool(pattern) and pattern in command
+
+
+def evaluate(resolved: dict, tool_name: str, command: str = "") -> str:
+    """Fail-safe precedence -> "ask" | "allow":
+      1. categorical_ask contains tool_name        -> ask   (non-overridable)
+      2. tool_name not affirmatively safe          -> ask   (H3: a tool the
+                                                       active preset never
+                                                       vetted always asks --
+                                                       never follows a
+                                                       permissive default_decision
+                                                       set for OTHER, known tools)
+      3. any ask_pattern matches command           -> ask   (ask wins ties;
+                                                       override_allow cannot beat)
+      4. any override_allow_pattern matches command-> allow (escape hatch;
+                                                       write-time constrained)
+      5. any advisory_allow_pattern matches command-> allow
+      6. else                                        -> default_decision
+    """
+    if tool_name in resolved["categorical_ask"]:
+        return "ask"
+    if tool_name not in resolved["tool_allowlist"]:
+        # Unknown / non-affirmatively-safe tool: never affirmatively vetted by
+        # the active preset, so it asks unconditionally -- this must NOT be
+        # allowed to inherit an "allow" default_decision that only applies to
+        # tools the preset DID vet.
+        return "ask"
+    if any(_matches(p, command) for p in resolved["ask_patterns"]):
+        return "ask"
+    if any(_matches(p, command) for p in resolved["override_allow_patterns"]):
+        return "allow"
+    if any(_matches(p, command) for p in resolved["advisory_allow_patterns"]):
+        return "allow"
+    return resolved["default_decision"]

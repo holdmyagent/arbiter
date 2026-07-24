@@ -114,3 +114,91 @@ def test_policy_store_roundtrip():
     assert db.policy_delete_preset("dangerous-shell") is True
     assert db.policy_get_preset("dangerous-shell") is None
     assert db.policy_delete_preset("dangerous-shell") is False
+
+
+def _resolved(preset_name=None, overlay=None, meta=None):
+    overlay = overlay or {"always_ask": [], "always_allow": []}
+    meta = meta or {"version": 1, "epoch": 1}
+    preset = None
+    if preset_name is not None:
+        preset = {"name": preset_name, **gp.SEED_PRESETS[preset_name]}
+    return gp.resolve_policy(preset, overlay, meta)
+
+
+def test_matcher_most_restrictive_asks_unmatched_command():
+    # THE mutation-check: a no-policy fetch makes whoami ASK. RED if allow-all.
+    r = _resolved(None)
+    assert gp.evaluate(r, "run_shell", "whoami") == "ask"
+    assert gp.evaluate(r, "run_shell", "") == "ask"
+
+
+def test_matcher_categorical_ask_is_first_and_non_overridable():
+    # Even an override_allow whose text matches the payload cannot suppress a
+    # categorical-ask tool.
+    r = _resolved("dangerous-shell", overlay={"always_ask": [],
+                                              "always_allow": ["execute_code"]})
+    assert gp.evaluate(r, "execute_code", "execute_code") == "ask"
+
+
+def test_matcher_ask_wins_ties_over_advisory_allow():
+    # A command matching BOTH an ask pattern and an advisory allow -> ask.
+    preset = {"name": "p", "block_patterns": ["git push"], "allow_patterns": ["git push --dry-run"],
+              "tool_allowlist": ["run_shell"], "default_decision": "allow"}
+    r = gp.resolve_policy(preset, {"always_ask": [], "always_allow": []},
+                          {"version": 1, "epoch": 1})
+    assert gp.evaluate(r, "run_shell", "git push --dry-run origin") == "ask"
+
+
+def test_matcher_override_allow_cannot_beat_a_block():
+    preset = {"name": "p", "block_patterns": ["git push"], "allow_patterns": [],
+              "tool_allowlist": ["run_shell"], "default_decision": "allow"}
+    r = gp.resolve_policy(preset, {"always_ask": [], "always_allow": ["git push origin main"]},
+                          {"version": 1, "epoch": 1})
+    assert gp.evaluate(r, "run_shell", "git push origin main") == "ask"
+
+
+def test_matcher_override_allow_beats_default_ask_escape_hatch():
+    preset = {"name": "p", "block_patterns": [], "allow_patterns": [],
+              "tool_allowlist": ["run_shell"], "default_decision": "ask"}
+    # not "everything" (tool_allowlist non-empty) so override_allow is kept:
+    r = gp.resolve_policy(
+        preset, {"always_ask": [], "always_allow": ["ls -la /home/hermes"]},
+        {"version": 1, "epoch": 1})
+    assert gp.evaluate(r, "run_shell", "ls -la /home/hermes") == "allow"
+    assert gp.evaluate(r, "run_shell", "cat /etc/passwd") == "ask"   # default ask
+
+
+def test_matcher_unknown_tool_asks_under_everything():
+    # H3: a tool not affirmatively safe ASKS under everything/default.
+    r = _resolved("everything")
+    assert gp.evaluate(r, "some_new_mcp_tool", "anything") == "ask"
+
+
+def test_matcher_advisory_allow_beats_default_allow_context():
+    r = _resolved("dangerous-shell")            # default_decision "allow"
+    assert gp.evaluate(r, "run_shell", "ls -la") == "allow"        # unmatched, default allow
+    assert gp.evaluate(r, "run_shell", "rm -rf /data") == "ask"    # block matches
+
+
+def test_matcher_unknown_tool_asks_even_under_permissive_default_decision():
+    # H3: "any tool not affirmatively safe ASKS" is not conditioned on the
+    # active preset's default_decision. A preset like "dangerous-shell" sets
+    # default_decision "allow" for its KNOWN/vetted tool (run_shell) -- that
+    # must never leak into blanket-allowing a tool the preset never vetted at
+    # all. Unknown tool asks regardless of posture (do NOT default unknown
+    # tools to allow).
+    r = _resolved("dangerous-shell")             # default_decision "allow"
+    assert gp.evaluate(r, "some_brand_new_tool", "anything") == "ask"
+
+
+def test_matcher_bare_git_override_allow_does_not_shadow_git_push_block():
+    # H4: the earlier fail-open was "anchored always_allow beats ask" --
+    # always_allow:["git"] shadowing a "git push" block. A bare, broad
+    # override pattern must not punch through a block just because it also
+    # substring-matches the blocked command.
+    preset = {"name": "p", "block_patterns": ["git push"], "allow_patterns": [],
+              "tool_allowlist": ["run_shell"], "default_decision": "allow"}
+    r = gp.resolve_policy(preset, {"always_ask": [], "always_allow": ["git"]},
+                          {"version": 1, "epoch": 1})
+    assert gp.evaluate(r, "run_shell", "git push origin main") == "ask"
+    assert gp.evaluate(r, "run_shell", "git status") == "allow"  # override still works elsewhere
