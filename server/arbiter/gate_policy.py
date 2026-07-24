@@ -1,0 +1,123 @@
+"""Server-mediated gate policy: the RESOLVER + the MATCHER (pure).
+
+Two responsibilities, no I/O:
+  * resolve_policy(...) folds the active preset + personal overlay + a hardcoded
+    LOCAL FLOOR into the single resolved-policy dict the gate consumes. A tenant
+    with no policy resolves to MOST_RESTRICTIVE (never empty) — fail-closed.
+  * evaluate(resolved, tool_name, command) applies fail-safe precedence:
+    categorical-ask first & non-overridable; ask wins ties; split advisory vs
+    override allow. This is the SAME code GET /v1/policy/test runs, so the macOS
+    preview cannot lie (conformance seam).
+
+The server may only ADD asks/blocks: effective policy = local floor UNION server
+policy. No override/advisory allow can suppress a categorical-ask tool.
+"""
+import hashlib
+
+POLICY_SCHEMA_VERSION = 1
+
+# Hardcoded non-overridable ask tools. execute_code/delegate_task per the design;
+# the outward-effecting Hermes tools are enumerated so a server push can never
+# make them looser. Extend here (with a test) when a new outward tool is added.
+LOCAL_FLOOR_CATEGORICAL = (
+    "execute_code",
+    "delegate_task",
+    "send_message",       # iMessage/Discord replies
+    "dispatch",           # coder-bridge MCP dispatch
+    "write_file",
+    "edit_file",
+    "run_git",            # push/commit/etc.
+)
+
+# Seed catalog. Operator owns their copies; NOT auto-activated (a fresh tenant
+# resolves to MOST_RESTRICTIVE). default_decision "allow" means "only listed
+# block patterns ask"; "ask" means "unmatched gateable command asks".
+SEED_PRESETS = {
+    "dangerous-shell": {
+        "block_patterns": ["rm -rf", "git push", "curl", "kubectl", "ssh"],
+        "allow_patterns": [],
+        "tool_allowlist": ["run_shell"],
+        "default_decision": "allow",
+    },
+    "everything": {
+        "block_patterns": [],
+        "allow_patterns": [],
+        "tool_allowlist": [],
+        "default_decision": "ask",
+    },
+    "shell-and-messages": {
+        "block_patterns": ["rm -rf", "git push"],
+        "allow_patterns": [],
+        "tool_allowlist": ["run_shell"],
+        "default_decision": "allow",
+    },
+    "audit-only": {
+        "block_patterns": [],
+        "allow_patterns": [],
+        "tool_allowlist": ["run_shell"],
+        "default_decision": "allow",
+    },
+}
+
+
+def _etag(epoch: int, version: int) -> str:
+    return hashlib.sha256(f"{epoch}:{version}".encode()).hexdigest()[:16]
+
+
+def _base(meta: dict) -> dict:
+    epoch, version = int(meta["epoch"]), int(meta["version"])
+    return {
+        "policy_schema_version": POLICY_SCHEMA_VERSION,
+        "version": version,
+        "epoch": epoch,
+        "etag": _etag(epoch, version),
+        "match_mode": "substring",
+    }
+
+
+MOST_RESTRICTIVE_STATIC = {
+    "default_decision": "ask",
+    "categorical_ask": list(LOCAL_FLOOR_CATEGORICAL),
+    "tool_allowlist": [],
+    "ask_patterns": [],
+    "advisory_allow_patterns": [],
+    "override_allow_patterns": [],
+    "active_preset": None,
+}
+
+# Public symbol per the Produces contract (Task 3 / endpoints import this name).
+MOST_RESTRICTIVE = MOST_RESTRICTIVE_STATIC
+
+
+def resolve_policy(active_preset: dict | None, overlay: dict, meta: dict) -> dict:
+    """Fold active preset + overlay + local floor into the resolved wire doc.
+    active_preset None -> MOST_RESTRICTIVE. The categorical_ask list is ALWAYS
+    the local floor UNION any preset/overlay-declared categorical tools (the
+    floor can only grow, never shrink)."""
+    doc = _base(meta)
+    if active_preset is None:
+        doc.update(MOST_RESTRICTIVE_STATIC)
+        return doc
+
+    everything = active_preset["default_decision"] == "ask" and not active_preset["tool_allowlist"]
+    always_ask = list(overlay.get("always_ask", []))
+    always_allow = list(overlay.get("always_allow", []))
+
+    # ask_patterns = preset blocks UNION overlay always_ask (both are "ask").
+    ask_patterns = list(active_preset["block_patterns"]) + always_ask
+    # H3: under everything / most-restrictive posture, overlay always_allow holes
+    # are ignored so they cannot punch through "ask on everything".
+    override_allow = [] if everything else always_allow
+
+    categorical = list(LOCAL_FLOOR_CATEGORICAL)   # floor; only grows
+
+    doc.update({
+        "default_decision": active_preset["default_decision"],
+        "categorical_ask": categorical,
+        "tool_allowlist": list(active_preset["tool_allowlist"]),
+        "ask_patterns": ask_patterns,
+        "advisory_allow_patterns": list(active_preset["allow_patterns"]),
+        "override_allow_patterns": override_allow,
+        "active_preset": active_preset["name"],
+    })
+    return doc
