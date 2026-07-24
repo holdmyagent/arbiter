@@ -355,3 +355,75 @@ def test_policy_updated_published_on_mutation(cfg, tmp_path):
     # asyncio.run() is the direct equivalent for a plain sync test function.
     events = asyncio.run(_grab())
     assert any(e.get("event") == "policy.updated" for e in events)
+
+
+# ── gate-status report + readout (Task 9B, H11 closed-loop telemetry) ──────
+
+GATE_STATUS_BODY = {"version": 3, "etag": "abc123", "fetched_at": "2026-07-24T00:00:00+00:00",
+                     "most_restrictive": True}
+
+
+def test_gate_status_post_then_get_roundtrip(client):
+    # AGENT = the gate token (role "agent", default caps = {policy:read-resolved}).
+    r = client.post("/v1/policy/gate-status", headers=AGENT, json=GATE_STATUS_BODY)
+    assert r.status_code == 200, r.text
+    posted = r.json()
+    assert posted["version"] == 3
+    assert posted["etag"] == "abc123"
+    assert posted["fetched_at"] == "2026-07-24T00:00:00+00:00"      # echoed verbatim
+    assert posted["most_restrictive"] is True
+    assert posted["reported_at"]                                    # server-stamped
+
+    got = client.get("/v1/policy/gate-status", headers=APP).json()
+    assert got == {"version": 3, "etag": "abc123",
+                   "fetched_at": "2026-07-24T00:00:00+00:00",
+                   "reported_at": posted["reported_at"], "most_restrictive": True}
+
+
+def test_gate_status_get_default_before_any_report(client):
+    r = client.get("/v1/policy/gate-status", headers=APP)
+    assert r.status_code == 200
+    assert r.json() == {"version": 0, "etag": "", "fetched_at": None,
+                        "reported_at": None, "most_restrictive": True}
+
+
+def test_gate_status_post_rbac_requires_read_resolved(client):
+    # A token minted WITHOUT policy:read-resolved must be denied, generic 403.
+    tok = client.env.mint("default", "not-a-gate", "app",
+                          scopes={"capabilities": ["policy:read"]})
+    r = client.post("/v1/policy/gate-status", headers={"Authorization": f"Bearer {tok}"},
+                    json=GATE_STATUS_BODY)
+    assert r.status_code == 403
+    assert r.json()["detail"] == "forbidden"
+
+
+def test_gate_status_get_rbac_requires_read(client):
+    # AGENT (gate token) has only policy:read-resolved, not policy:read.
+    r = client.get("/v1/policy/gate-status", headers=AGENT)
+    assert r.status_code == 403
+    assert r.json()["detail"] == "forbidden"
+
+
+def test_gate_status_read_resolved_only_token_cannot_write_policy(client):
+    # H1 regression guard: the gate's narrow cap must never reach policy:write,
+    # even though it can now also POST gate-status.
+    r = client.post("/v1/policy/presets", headers=AGENT,
+                    json={"name": "p", "block_patterns": ["rm -rf"],
+                          "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    assert r.status_code == 403
+
+
+def test_gate_status_reported_at_is_parseable_iso8601(client):
+    r = client.post("/v1/policy/gate-status", headers=AGENT, json=GATE_STATUS_BODY)
+    reported_at = r.json()["reported_at"]
+    # Round-trips through the codebase's own date parser (datetime.fromisoformat
+    # is used throughout arbiter/*.py to parse its own _iso()-stamped fields).
+    parsed = datetime.fromisoformat(reported_at)
+    assert parsed.tzinfo is not None
+
+
+def test_gate_status_most_restrictive_true_stored_and_read_back(client):
+    client.post("/v1/policy/gate-status", headers=AGENT,
+               json={**GATE_STATUS_BODY, "most_restrictive": True})
+    got = client.get("/v1/policy/gate-status", headers=APP).json()
+    assert got["most_restrictive"] is True

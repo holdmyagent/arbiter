@@ -67,3 +67,9 @@ class ActiveBody(BaseModel):
 class OverlayBody(BaseModel):
     always_ask: list[str] = Field(default_factory=list)
     always_allow: list[str] = Field(default_factory=list)
+
+class GateStatusReport(BaseModel):
+    version: int
+    etag: str
+    fetched_at: str
+    most_restrictive: bool

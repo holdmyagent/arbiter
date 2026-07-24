@@ -16,7 +16,8 @@ from .enroll import resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
-from .models import RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody, OverlayBody
+from .models import (RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody,
+                     OverlayBody, GateStatusReport)
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
@@ -755,6 +756,35 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         decision = gate_policy.evaluate(resolved, tool, command)
         return {"tool": tool, "command": command, "decision": decision,
                 "version": resolved["version"], "etag": resolved["etag"]}
+
+    @app.post("/v1/policy/gate-status")
+    def post_gate_status(body: GateStatusReport,
+                         ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
+        # H11 closed-loop telemetry: the gate/policy-sync reports what it is
+        # enforcing. Capability is policy:read-resolved (the gate's narrow cap,
+        # same one that reads /v1/policy) -- NOT policy:write, and NO step-up
+        # (the gate cannot do step-up). This is advisory telemetry only, not
+        # enforcement -- see the brief's non-goals.
+        identity, cell = ctx
+        assert_cap(identity, "policy:read-resolved")
+        record = {"version": body.version, "etag": body.etag,
+                  "fetched_at": body.fetched_at, "most_restrictive": body.most_restrictive,
+                  "reported_at": datetime.now(timezone.utc).isoformat()}
+        cell.db.policy_set_gate_status(record)
+        return record
+
+    @app.get("/v1/policy/gate-status")
+    def get_gate_status(ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read")
+        status = cell.db.policy_get_gate_status()
+        if status is None:
+            # Safe default: most_restrictive:true is the honest "unknown/
+            # degraded" readout for "no report has ever been received" --
+            # never report a rosy default.
+            return {"version": 0, "etag": "", "fetched_at": None,
+                    "reported_at": None, "most_restrictive": True}
+        return status
 
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):

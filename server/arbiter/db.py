@@ -761,6 +761,13 @@ class Database:
         return {"version": int(self._policy_kv_get("version", "0")),
                 "epoch": int(self._policy_kv_get("epoch", "1"))}
 
+    def policy_get_gate_status(self) -> dict | None:
+        v = self._policy_kv_get("gate_status")
+        return json.loads(v) if v is not None else None
+
+    def policy_set_gate_status(self, d: dict) -> None:
+        self._policy_kv_set("gate_status", json.dumps(d))
+
     def policy_bump_version(self) -> int:
         with self._lock:
             cur = self.conn.execute(
