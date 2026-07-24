@@ -12,6 +12,7 @@ Two responsibilities, no I/O:
 The server may only ADD asks/blocks: effective policy = local floor UNION server
 policy. No override/advisory allow can suppress a categorical-ask tool.
 """
+import copy
 import hashlib
 
 POLICY_SCHEMA_VERSION = 1
@@ -93,12 +94,22 @@ def resolve_policy(active_preset: dict | None, overlay: dict, meta: dict) -> dic
     """Fold active preset + overlay + local floor into the resolved wire doc.
     active_preset None -> MOST_RESTRICTIVE. The categorical_ask list is ALWAYS
     the local floor UNION any preset/overlay-declared categorical tools (the
-    floor can only grow, never shrink)."""
+    floor can only grow, never shrink).
+    Partial/invalid input (missing keys, wrong types) raises (KeyError/TypeError)
+    by design — callers MUST treat a resolver exception as ask/deny, never
+    swallow it into allow."""
     doc = _base(meta)
     if active_preset is None:
-        doc.update(MOST_RESTRICTIVE_STATIC)
+        # deepcopy: MOST_RESTRICTIVE_STATIC's lists must never be handed out by
+        # reference — a caller mutating the returned doc would otherwise
+        # permanently corrupt the fail-closed default for every future call.
+        doc.update(copy.deepcopy(MOST_RESTRICTIVE_STATIC))
         return doc
 
+    # "everything" is detected by SHAPE (ask + no allowlist), matching the
+    # design's literal definition. This is intentional, not a proxy for a
+    # name check — the local floor (categorical_ask) holds regardless of how
+    # this posture is detected or misdetected.
     everything = active_preset["default_decision"] == "ask" and not active_preset["tool_allowlist"]
     always_ask = list(overlay.get("always_ask", []))
     always_allow = list(overlay.get("always_allow", []))
