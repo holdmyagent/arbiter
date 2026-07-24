@@ -282,6 +282,53 @@ def test_overlay_rejects_broad_allow_400(wclient):
     assert r.status_code == 400
 
 
+def test_policy_test_endpoint_runs_shared_matcher(wclient, monkeypatch):
+    # Two chained step-up-gated writes (POST preset + PUT active) need codes
+    # from DISTINCT TOTP windows -- see test_create_and_activate_preset for
+    # why (single-use anti-replay would otherwise 403 the second write on a
+    # same-window replay and silently leave no preset active).
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    wclient.post("/v1/policy/presets", headers=_step_headers(APP),
+                 json={"name": "dangerous-shell", "block_patterns": ["rm -rf"],
+                       "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    clock[0] += 30
+    wclient.put("/v1/policy/active", headers=_step_headers(APP),
+                json={"preset": "dangerous-shell"})
+    ask = wclient.get("/v1/policy/test", headers=APP,
+                      params={"command": "rm -rf /data", "tool": "run_shell"})
+    assert ask.status_code == 200 and ask.json()["decision"] == "ask"
+    allow = wclient.get("/v1/policy/test", headers=APP,
+                        params={"command": "ls -la", "tool": "run_shell"})
+    assert allow.json()["decision"] == "allow"
+    # categorical tool always asks:
+    cat = wclient.get("/v1/policy/test", headers=APP,
+                      params={"command": "print(1)", "tool": "execute_code"})
+    assert cat.json()["decision"] == "ask"
+
+
+def test_policy_test_matches_pure_matcher_corpus(wclient, monkeypatch):
+    # Conformance seam: the endpoint verdict == the pure gate_policy.evaluate
+    # verdict for a corpus. (Component 2's bash gate is fed the SAME corpus.)
+    # Distinct TOTP windows for the two chained step-up writes -- see
+    # test_create_and_activate_preset.
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    wclient.post("/v1/policy/presets", headers=_step_headers(APP),
+                 json={"name": "dangerous-shell", "block_patterns": ["rm -rf", "git push"],
+                       "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    clock[0] += 30
+    wclient.put("/v1/policy/active", headers=_step_headers(APP),
+                json={"preset": "dangerous-shell"})
+    resolved = wclient.get("/v1/policy", headers=APP).json()
+    corpus = [("run_shell", "rm -rf /"), ("run_shell", "ls"), ("run_shell", "git push"),
+              ("execute_code", "x"), ("unknown_tool", "y")]
+    for tool, cmd in corpus:
+        server = wclient.get("/v1/policy/test", headers=APP,
+                             params={"command": cmd, "tool": tool}).json()["decision"]
+        assert server == gp.evaluate(resolved, tool, cmd)
+
+
 def test_policy_updated_published_on_mutation(cfg, tmp_path):
     # Drive a mutation and assert the cell hub received a policy.updated event.
     import asyncio, json as _json

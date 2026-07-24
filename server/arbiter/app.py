@@ -746,6 +746,16 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         _policy_mutation(app, cell, identity, "set_overlay", {})
         return cell.db.policy_get_overlay()
 
+    @app.get("/v1/policy/test")
+    def policy_test(command: str = "", tool: str = "run_shell",
+                    ctx: tuple = Depends(require_cell("app"))):
+        identity, cell = ctx
+        assert_cap(identity, "policy:read")
+        resolved = _resolved_for(cell)
+        decision = gate_policy.evaluate(resolved, tool, command)
+        return {"tool": tool, "command": command, "decision": decision,
+                "version": resolved["version"], "etag": resolved["etag"]}
+
     @app.websocket("/v1/stream")
     async def stream(ws: WebSocket):
         await run_stream(ws, ws.app.state.registry, ws.app.state.control,
