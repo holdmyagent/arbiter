@@ -487,6 +487,7 @@ def test_every_mutation_denies_read_only_token(wclient, method, path):
     h = _step_headers({"Authorization": f"Bearer {tok}"})
     r = wclient.request(method.upper(), path, headers=h, json=_POLICY_MUTATION_BODY)
     assert r.status_code == 403
+    assert r.json()["detail"] == "forbidden"      # generic body (§11), not a detail leak
 
 
 def test_read_only_token_reads_what_it_holds(wclient):
@@ -574,3 +575,81 @@ def test_cross_tenant_policy_isolation(cfg, tmp_path):
                      headers={"Authorization": f"Bearer {tok_a}"}).json()
     assert a_status["etag"] != "b-etag"
     assert a_status["version"] == 0
+
+
+def test_cross_tenant_policy_isolation_write_denial(cfg, tmp_path, monkeypatch):
+    """Sibling of test_cross_tenant_policy_isolation above: that test proves
+    cross-tenant READ isolation; this proves WRITE isolation. Tenant A's
+    token -- even with full write caps for tenant A AND a valid step-up
+    code -- can never MUTATE tenant B's stored policy state, because tenant
+    is derived SOLELY from the token (via the control-plane route), never
+    from anything in the request. So every write A attempts either 404s (no
+    such resource in A's OWN cell) or lands in A's OWN cell under the same
+    name -- it can never reach B's row. Assert B's post-state == pre-state."""
+    cfg.auth.step_up_totp_secret = STEP_SECRET
+    from tests.conftest import build_registry_env
+    from arbiter.app import create_app
+    from fastapi.testclient import TestClient
+    env = build_registry_env(cfg, tmp_path)
+    env.provision("tenant-b")
+    app = create_app(cfg, env.registry, env.control)
+    c = TestClient(app); c.env = env
+    tok_a = env.mint("default", "app-a", "app")     # full caps (role default)
+    tok_b = env.mint("tenant-b", "app-b", "app")
+    a_headers = {"Authorization": f"Bearer {tok_a}"}
+    b_headers = {"Authorization": f"Bearer {tok_b}"}
+
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+
+    # Seed tenant B with a known preset + gate-status, via B's OWN token.
+    seed = c.post("/v1/policy/presets", headers=_step_headers(b_headers),
+                 json={"name": "b-only", "block_patterns": ["rm -rf"],
+                       "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    assert seed.status_code == 200, seed.text
+    clock[0] += 30
+    gs_seed = c.post("/v1/policy/gate-status", headers=b_headers,
+                     json={"version": 9, "etag": "b-etag",
+                           "fetched_at": "2026-07-24T00:00:00+00:00",
+                           "most_restrictive": False})
+    assert gs_seed.status_code == 200, gs_seed.text
+
+    presets_before = c.get("/v1/policy/presets", headers=b_headers).json()
+    preset_before = c.get("/v1/policy/presets/b-only", headers=b_headers).json()
+    gate_status_before = c.get("/v1/policy/gate-status", headers=b_headers).json()
+    assert preset_before is not None and preset_before["name"] == "b-only"
+
+    # Tenant A's token: full write caps + a valid step-up code (fresh TOTP
+    # window per write -- same single-use discipline as the writes above).
+    clock[0] += 30
+    put_active = c.put("/v1/policy/active", headers=_step_headers(a_headers),
+                       json={"preset": "b-only"})
+    # "b-only" does not exist in A's OWN cell (only in B's) -> 404, not a
+    # write to B's active preset.
+    assert put_active.status_code == 404
+
+    clock[0] += 30
+    put_preset = c.put("/v1/policy/presets/b-only", headers=_step_headers(a_headers),
+                       json={"name": "b-only", "block_patterns": ["A-side-pattern"],
+                             "tool_allowlist": ["run_shell"], "default_decision": "allow"})
+    # Lands in A's OWN "b-only" row -- same name, different tenant, different
+    # cell DB file. Never B's row.
+    assert put_preset.status_code == 200, put_preset.text
+
+    clock[0] += 30
+    delete_preset = c.delete("/v1/policy/presets/b-only", headers=_step_headers(a_headers))
+    assert delete_preset.status_code == 200, delete_preset.text
+
+    gate_status_post = c.post("/v1/policy/gate-status", headers=a_headers,
+                              json={"version": 99, "etag": "a-etag",
+                                    "fetched_at": "2026-07-24T00:00:00+00:00",
+                                    "most_restrictive": False})
+    assert gate_status_post.status_code == 200, gate_status_post.text
+
+    # Tenant B's stored state is UNCHANGED by any of A's writes above.
+    presets_after = c.get("/v1/policy/presets", headers=b_headers).json()
+    preset_after = c.get("/v1/policy/presets/b-only", headers=b_headers).json()
+    gate_status_after = c.get("/v1/policy/gate-status", headers=b_headers).json()
+    assert presets_after == presets_before
+    assert preset_after == preset_before
+    assert gate_status_after == gate_status_before
