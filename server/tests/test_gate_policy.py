@@ -227,3 +227,114 @@ def test_validate_overlay_specificity():
     with pytest.raises(gp.PolicyValidationError):
         gp.validate_overlay([""], [])                  # empty always_ask
     gp.validate_overlay(["curl"], ["ls -la /home/hermes"])   # ok
+
+
+# --- H9 adversarial-review fixups: proven authored fail-open holes -------
+#
+# The matcher is SUBSTRING (`pattern in command`, only the empty string
+# guarded -- see gp._matches). A low-content allow pattern that survives
+# validate_preset/validate_overlay therefore becomes a broad allow. Each test
+# below pins one proven hole as REJECTED at write time.
+
+def test_h9_rejects_whitespace_only_allow_pattern_preset():
+    # Hole 1 (CRITICAL): a whitespace-only preset allow pattern substring-
+    # matches almost any real command (the command also contains a space).
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("x", [], [" "], ["run_shell"], "ask")
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("x", [], ["   "], ["run_shell"], "ask")
+
+
+def test_h9_rejects_whitespace_only_overlay_always_allow():
+    # Hole 1 (CRITICAL), overlay surface: 8 spaces still clears the OLD
+    # unstripped `len>=8 and " " in p` floor.
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_overlay([], ["        "])
+
+
+def test_h9_rejects_whitespace_only_on_block_and_ask_surfaces_too():
+    # Whitespace-only must be rejected EVERYWHERE patterns are authored, not
+    # just on allow surfaces -- block_patterns and overlay always_ask included.
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("x", [" "], [], ["run_shell"], "ask")
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_overlay(["   "], [])
+
+
+def test_h9_rejects_single_char_or_punctuation_allow_pattern():
+    # Hole 2 (CRITICAL): a 1-char/punctuation advisory allow is a substring
+    # of almost any real command.
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("x", [], ["a"], ["run_shell"], "ask")
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("x", [], ["/"], ["run_shell"], "ask")
+
+
+def test_h9_rejects_bare_dangerous_verb_as_preset_advisory_allow():
+    # Hole 3 (CRITICAL): a bare dangerous-verb advisory allow (e.g. "rm")
+    # substring-matches "rm -rf /" and allows almost everything.
+    for verb in ("rm", "curl", "ssh", "kubectl", "sudo", "dd", "wget", "nc",
+                 "chmod", "chown"):
+        with pytest.raises(gp.PolicyValidationError):
+            gp.validate_preset("x", [], [verb], ["run_shell"], "ask")
+
+
+def test_h9_rejects_bare_dangerous_verb_as_overlay_always_allow():
+    # Hole 3 (CRITICAL), overlay surface.
+    for verb in ("rm", "curl", "ssh", "kubectl", "sudo", "dd", "wget", "nc",
+                 "chmod", "chown"):
+        with pytest.raises(gp.PolicyValidationError):
+            gp.validate_overlay([], [verb])
+
+
+def test_h9_rejects_padded_verb_that_bypassed_unstripped_overlay_floor():
+    # Hole 4 (HIGH): "kubectl " is 8 raw chars containing a space, so the OLD
+    # unstripped floor (len(p) >= 8 and " " in p) passed it. Stripped, it's
+    # just the bare verb "kubectl" (7 chars, no interior space) -- reject.
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_overlay([], ["kubectl "])
+
+
+def test_h9_legit_short_safe_allow_patterns_still_pass():
+    # MUST NOT BREAK: short, safe, legitimate advisory allow commands like
+    # "ls"/"pwd" must not be swept up by a blanket length floor -- only
+    # stripped-length>=2 and "not a bare dangerous verb" is required on
+    # preset allow_patterns (no >=8-char floor, that's overlay-only).
+    #
+    # NOTE: default_decision is "ask" here, not "allow". The literal shape
+    # block_patterns=[] + default_decision="allow" + tool_allowlist=
+    # ["run_shell"] independently trips the PRE-EXISTING (unrelated to this
+    # task's 4 holes) "gates nothing" guard in validate_preset, because it
+    # really would leave run_shell completely unrestricted -- a real,
+    # separate fail-open shape, not one of the four holes assigned here.
+    # default_decision="ask" exercises the identical allow_patterns
+    # specificity path this regression guards without colliding with that
+    # separate, correct guard.
+    gp.validate_preset("ok", [], ["ls", "pwd", "git status"], ["run_shell"], "ask")
+
+
+def test_h9_all_seed_presets_still_validate():
+    # MUST NOT BREAK: every entry in SEED_PRESETS must remain authorable
+    # through the write-time validator.
+    for name, p in gp.SEED_PRESETS.items():
+        gp.validate_preset(name, p["block_patterns"], p["allow_patterns"],
+                           p["tool_allowlist"], p["default_decision"])
+
+
+def test_h9_e2e_critical_whitespace_policy_rejected_before_it_can_reach_evaluate():
+    # End-to-end guard for the proven CRITICAL hole: this exact policy shape
+    # used to pass validate_preset, after which resolve_policy + evaluate
+    # would return "allow" for "rm -rf /home/hermes" (proven below by
+    # constructing the resolved doc directly, i.e. bypassing the validator
+    # the way the old fail-open path effectively did). The fix must make
+    # validate_preset raise so this shape can never be written in the first
+    # place -- it can never reach evaluate().
+    with pytest.raises(gp.PolicyValidationError):
+        gp.validate_preset("critical-hole", [], [" "], ["run_shell"], "ask")
+
+    exploit_preset = {"name": "critical-hole", "block_patterns": [],
+                       "allow_patterns": [" "], "tool_allowlist": ["run_shell"],
+                       "default_decision": "ask"}
+    r = gp.resolve_policy(exploit_preset, {"always_ask": [], "always_allow": []},
+                          {"version": 1, "epoch": 1})
+    assert gp.evaluate(r, "run_shell", "rm -rf /home/hermes") == "allow"
