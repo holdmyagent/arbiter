@@ -156,3 +156,20 @@ def test_verdict_response_missing_key_raises_unavailable(stub):
     _Stub.routes[("GET", "/v1/requests/rid-1/verdict")] = (200, {"kid": "abcd1234"})
     with pytest.raises(ArbiterUnavailable):
         ArbiterClient(stub, "t").get_verdict("rid-1")
+
+
+def test_report_execution_posts_mode_exec_result_body(stub):
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (200, {"recorded": True})
+    assert ArbiterClient(stub, "t").report_execution(
+        "rid-1", exit_code=0, ran="echo hello", output="hello\n", kind="command") is None
+    sent = _Stub.seen[-1]
+    assert sent["path"] == "/v1/requests/rid-1/consume"
+    assert sent["body"] == {"mode": "exec_result", "exit_code": 0, "ran": "echo hello",
+                            "output": "hello\n", "kind": "command"}
+
+
+def test_report_execution_non_200_raises_unavailable(stub):
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (422, {"detail": "already reported"})
+    with pytest.raises(ArbiterUnavailable, match="422"):
+        ArbiterClient(stub, "t").report_execution(
+            "rid-1", exit_code=0, ran="echo hello", output="hello\n", kind="command")

@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from arbiter.app import create_app
 
-from tests.conftest import build_registry_env
+from tests.conftest import build_registry_env, mint_cell_token
 
 class FakeSender:
     def __init__(self): self.calls=[]
@@ -18,6 +18,7 @@ def client(cfg, tmp_path):
     c = TestClient(app)
     c.sender = sender
     c.db = env.default_db
+    c.env = env
     return c
 
 def _create(c, tok="test-agent"):
@@ -62,6 +63,23 @@ def test_decision_by_legacy_token_is_not_attributed_to_a_device(client):
                     headers={"Authorization": "Bearer test-app"}, json={"decision": "approve"})
     assert d.status_code == 200
     assert d.json()["decided_by"] == "app (legacy token)"
+
+
+def test_decision_records_decided_via(client):
+    """decided_via (Level 2) is computed strictly from identity: a legacy
+    static [auth] token records 'legacy-token', a named app-role DB token
+    records 'app-token'. Never 'device' -- the server cannot distinguish a
+    phone tap from a script holding the same bearer token."""
+    rid = _create(client).json()["id"]
+    d = client.post(f"/v1/requests/{rid}/decision",
+                    headers={"Authorization": "Bearer test-app"}, json={"decision": "approve"})
+    assert d.status_code == 200 and d.json()["decided_via"] == "legacy-token"
+
+    tok = mint_cell_token(client.env, "default", "kevin-phone", "app")
+    rid2 = _create(client).json()["id"]
+    d2 = client.post(f"/v1/requests/{rid2}/decision",
+                     headers={"Authorization": f"Bearer {tok}"}, json={"decision": "approve"})
+    assert d2.status_code == 200 and d2.json()["decided_via"] == "app-token"
 
 
 def test_audit_does_not_resolve_a_legacy_decision_to_a_device(client):

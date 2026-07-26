@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -153,9 +153,29 @@ def _migrate_10_to_11(conn):
     conn.execute("INSERT OR IGNORE INTO policy_kv(k,v) VALUES ('overlay',?)",
                  (json.dumps({"always_ask": [], "always_allow": []}),))
 
+def _migrate_11_to_12(conn):
+    """Audit-receipt + provenance columns (feature: server-mediated audit
+    receipt). All seven columns nullable, no DEFAULT — the live DB has 87
+    rows and a DEFAULT would rewrite every one of them. device_keys is
+    append-only and keyed on device_id (not a public_key column on devices,
+    which is UPSERTed on apns_token) so a biometric re-enrolment doesn't
+    retroactively invalidate historical attestations."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+    for name, typ in (("exec_exit_code", "INTEGER"), ("exec_ran", "TEXT"),
+                      ("exec_output", "TEXT"), ("exec_kind", "TEXT"),
+                      ("decided_via", "TEXT"), ("attestation", "TEXT"),
+                      ("attest_key_id", "TEXT")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE requests ADD COLUMN {name} {typ}")
+    conn.execute("""CREATE TABLE IF NOT EXISTS device_keys (
+        id TEXT PRIMARY KEY, device_id TEXT NOT NULL, public_key TEXT NOT NULL,
+        alg TEXT NOT NULL, registered_at TEXT NOT NULL, retired_at TEXT)""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_device_keys_active
+        ON device_keys(device_id) WHERE retired_at IS NULL""")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
               _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10,
-              _migrate_10_to_11]
+              _migrate_10_to_11, _migrate_11_to_12]
 
 class Database:
     def __init__(self, path: str):
@@ -355,7 +375,8 @@ class Database:
                     "SELECT * FROM requests ORDER BY created_at DESC").fetchall()
             return [self._row_to_request(r) for r in rows]
 
-    def set_decision(self, rid: str, decision: str, by: str) -> dict | None:
+    def set_decision(self, rid: str, decision: str, by: str,
+                     decided_via: str | None = None) -> dict | None:
         """Single-shot and race-safe: the UPDATE itself guards on status='pending'
         AND a live deadline, so concurrent decisions (or a decide racing the 1s
         expiry sweeper) have exactly one winner. Returns None for the loser."""
@@ -363,9 +384,9 @@ class Database:
         now = _iso(_utcnow())
         with self._lock:
             cur = self.conn.execute(
-                "UPDATE requests SET status=?, decided_at=?, decided_by=?"
+                "UPDATE requests SET status=?, decided_at=?, decided_by=?, decided_via=?"
                 " WHERE id=? AND status='pending' AND expires_at > ?",
-                (status, now, by, rid, now))
+                (status, now, by, decided_via, rid, now))
             self.conn.commit()
             if cur.rowcount != 1:
                 return None
@@ -460,6 +481,18 @@ class Database:
             if row["status"] == "approved" and row["consumed_at"] is None:
                 return 410, row     # only staleness can fail the guard on this state
             return 409, row
+
+    def record_exec_result(self, rid: str, *, exit_code: int | None, ran: str | None,
+                           output: str | None, kind: str | None) -> None:
+        """Record the warden's execution outcome. Last report wins: never touches
+        status or consumed_at, so a re-report (retry, or a second callback) simply
+        overwrites the previous exec_* columns in place."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE requests SET exec_exit_code=?, exec_ran=?, exec_output=?,"
+                " exec_kind=? WHERE id=?",
+                (exit_code, ran, output, kind, rid))
+            self.conn.commit()
 
     def expire_stale_approvals(self, approval_ttl_seconds: int,
                                now: datetime | None = None) -> list[dict]:

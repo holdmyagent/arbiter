@@ -41,9 +41,23 @@ class ApprovalRequest(BaseModel):
     action_hash: str | None = None
     requested_by: str | None = None
     consumed_at: str | None = None
+    exec_exit_code: int | None = None
+    exec_ran: str | None = None
+    exec_output: str | None = None
+    exec_kind: str | None = None
+    decided_via: str | None = None
+    attestation: str | None = None
+    attest_key_id: str | None = None
 
 class Decision(BaseModel):
     decision: Literal["approve", "deny"]
+
+class ExecResult(BaseModel):
+    mode: Literal["exec_result"]                              # REQUIRED discriminator
+    exit_code: int | None = None
+    ran: str | None = Field(default=None, max_length=4096)
+    output: str | None = Field(default=None, max_length=32768)
+    kind: Literal["command", "http"] | None = None
 
 class DeviceRegister(BaseModel):
     apns_token: str

@@ -102,3 +102,10 @@ class ArbiterClient:
             raise ArbiterStale(f"approval stale: {resp.text}")
         if resp.status_code != 200:
             raise ArbiterUnavailable(f"consume failed ({resp.status_code}): {resp.text}")
+
+    def report_execution(self, rid: str, *, exit_code, ran: str, output: str, kind: str) -> None:
+        resp = self._request("POST", f"/v1/requests/{rid}/consume",
+                             {"mode": "exec_result", "exit_code": exit_code,
+                              "ran": ran, "output": output, "kind": kind})
+        if resp.status_code != 200:
+            raise ArbiterUnavailable(f"report_execution failed ({resp.status_code}): {resp.text}")

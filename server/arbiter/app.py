@@ -17,7 +17,7 @@ from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
 from .models import (RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody,
-                     OverlayBody, GateStatusReport)
+                     OverlayBody, GateStatusReport, ExecResult)
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
@@ -570,7 +570,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         # claim about who authorised an action, so it must not assert more than the
         # server can support. Named tokens carry a real identity and keep it.
         decided_by = LEGACY_DECIDER if identity.legacy else identity.name
-        updated = db.set_decision(rid, body.decision, decided_by)
+        # decided_via (§audit Level 2): strictly from identity, never inferred
+        # from role alone. A legacy static [auth] token cannot be told apart
+        # from a script holding a named DB token, so "device" is never emitted
+        # here -- only a verified attestation (a later phase) could support it.
+        decided_via = "legacy-token" if identity.legacy else "app-token"
+        updated = db.set_decision(rid, body.decision, decided_by, decided_via=decided_via)
         if not updated:
             cur = db.get_request(rid)
             # a pending row that refused the guarded UPDATE is expired-by-clock
@@ -595,10 +600,26 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         return updated
 
     @app.post("/v1/requests/{rid}/consume")
-    def consume(rid: str, ctx: tuple = Depends(require_cell("warden"))):
+    def consume(rid: str, body: ExecResult | None = None,
+                ctx: tuple = Depends(require_cell("warden"))):
         # Sync (not async) on purpose: it runs in the threadpool, so concurrent
         # consumes genuinely race and the guarded UPDATE decides the winner.
         identity, cell = ctx
+        if body is not None:                       # explicit mode - no inference
+            row = cell.db.get_request(rid)
+            if not row:
+                raise HTTPException(404, "not found")
+            if row["status"] != "approved" or row["consumed_at"] is None:
+                raise HTTPException(409, "cannot report execution result before consume")
+            if row["exec_ran"] is not None or row["exec_exit_code"] is not None \
+                    or row["exec_output"] is not None or row["exec_kind"] is not None:
+                raise HTTPException(409, "execution result already reported")
+            cell.db.record_exec_result(rid, exit_code=body.exit_code, ran=body.ran,
+                                       output=body.output, kind=body.kind)
+            cell.db.add_audit(rid, "exec_reported",
+                              {"by": identity.name, "exit_code": body.exit_code})
+            return {"consumed_at": row["consumed_at"]}
+        # classic path below - UNCHANGED
         code, row = cell.db.consume_request(
             rid, approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
         if code == 404:

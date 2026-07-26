@@ -4,6 +4,32 @@
 
 ### Added
 
+- **Audit receipt: what actually executed.** The warden now reports execution outcome back
+  to the arbiter, and the arbiter persists it (migration 12: `exec_exit_code`, `exec_ran`,
+  `exec_output`, `exec_kind`). Reporting is an explicit mode on the existing consume
+  endpoint — `POST /v1/requests/{rid}/consume` with `{"mode": "exec_result", ...}` — so it
+  cannot be confused with a consume. The `mode` discriminator is **required**: an empty
+  `{}` body is rejected `422` rather than falling through and burning the single-use
+  approval. Reporting is **write-once** (`409` on a second report), so a recorded outcome —
+  including a failure — cannot be blanked afterwards. Single-use consume semantics are
+  otherwise untouched, and the `exec_reported` audit row records only `{by, exit_code}` —
+  never command text or output.
+- **`exec_kind` — so a successful webhook is not rendered as a failure.** The `http` adapter
+  reports an HTTP status in the same field where the `command` adapter reports a process
+  exit code. Without a discriminator the universal "0 means success" rule renders a
+  successful HTTP 200 as a red failure. `exec_kind` lets a client apply the right rule per
+  adapter, and a legacy row with execution data but no `exec_kind` asserts neither success
+  nor failure.
+- **Level 2 provenance: `decided_via`.** Each decision records the class of authority that
+  authorised it — `legacy-token` (the shared pairing token, which carries no identity) or
+  `app-token` (a named credential) — written atomically with the pending→decided
+  transition. It is deliberately **never** `device`: the server cannot distinguish a phone
+  tap from a script holding the same bearer token, so it does not claim to.
+- **Level 3 schema (inert).** Migration 12 also adds `attestation` / `attest_key_id` and an
+  **append-only** `device_keys` table keyed on `device_id`, so device attestation needs no
+  second migration against the live database. Append-only is deliberate: a key column
+  UPSERTed on `devices` would make every historical attestation retroactively fail to
+  verify after one biometric re-enrolment.
 - Server-mediated **gate policy**: per-tenant presets + personal overlay + active
   selection, resolved fail-closed (`GET /v1/policy` always non-empty,
   most-restrictive default). New `/v1/policy*` endpoints, `policy:read-resolved` /
