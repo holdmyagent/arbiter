@@ -55,12 +55,26 @@ def test_device_register(client):
     devices = client.db.list_devices()
     assert len(devices) == 1 and devices[0]["apns_token"] == "abc123"
 
-def test_decision_records_device_name(client):
+def test_decision_by_legacy_token_is_not_attributed_to_a_device(client):
     client.db.register_device("tokX", "Kevins-iPhone")
     rid = _create(client).json()["id"]
     d = client.post(f"/v1/requests/{rid}/decision",
                     headers={"Authorization": "Bearer test-app"}, json={"decision": "approve"})
-    assert d.status_code == 200 and d.json()["decided_by"] == "Kevins-iPhone"
+    assert d.status_code == 200
+    assert d.json()["decided_by"] == "app (legacy token)"
+
+
+def test_audit_does_not_resolve_a_legacy_decision_to_a_device(client):
+    """decided_device resolves decided_by against the devices table. A legacy-token
+    decision is not a device decision, so it must resolve to nothing rather than
+    naming a device that was never involved."""
+    client.db.register_device("tokX", "Kevins-iPhone")
+    rid = _create(client).json()["id"]
+    client.post(f"/v1/requests/{rid}/decision",
+                headers={"Authorization": "Bearer test-app"}, json={"decision": "approve"})
+    rows = client.db.list_audit(request_id=rid)
+    assert rows, "expected audit rows for the decided request"
+    assert all(r["decided_device"] is None for r in rows)
 
 def test_create_invalid_severity_returns_422(client):
     r = client.post("/v1/requests", headers={"Authorization": "Bearer test-agent"},

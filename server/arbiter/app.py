@@ -172,6 +172,13 @@ def require_cell(*roles: str):
     return dep
 
 
+# Recorded as `decided_by` when the decision was authenticated by a legacy static
+# [auth] token, which carries no identity. Deliberately not a device name and not a
+# bare "app": it must be self-evidently a credential rather than a person, and it must
+# not collide with a device name in the audit view's decided_device lookup.
+LEGACY_DECIDER = "app (legacy token)"
+
+
 async def resolve_stream(ws, registry, control):
     """WS analog of /v1/audit/export's bearer-OR-cookie split (app.py, HTTP):
     the /v1/stream bearer path (resolve_identity, then an app-role check — the
@@ -554,11 +561,15 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         r = db.get_request(rid)
         if not r:
             raise HTTPException(404, "not found")
-        if identity.name == "app" and identity.role == "app":
-            devices = db.list_devices()
-            decided_by = devices[0]["name"] if len(devices) == 1 else "app"
-        else:
-            decided_by = identity.name
+        # PROVENANCE (§audit): record what is actually known about who decided.
+        # A legacy static [auth] token carries no identity of its own, so the server
+        # CANNOT know who decided with it. This previously resolved the sole paired
+        # device and stamped its name -- fabricating provenance: a decision made by a
+        # script holding the token was recorded as though the operator had tapped that
+        # device, and the audit trail could not distinguish the two. A receipt is a
+        # claim about who authorised an action, so it must not assert more than the
+        # server can support. Named tokens carry a real identity and keep it.
+        decided_by = LEGACY_DECIDER if identity.legacy else identity.name
         updated = db.set_decision(rid, body.decision, decided_by)
         if not updated:
             cur = db.get_request(rid)

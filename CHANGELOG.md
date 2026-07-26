@@ -10,6 +10,20 @@
   `policy:read` / `policy:write` capabilities, TOTP step-up on writes, mutation
   audit, and a `policy.updated` stream event. (migration 11)
 
+### Fixed
+
+- `decided_by` no longer **fabricates provenance**. A decision authenticated by a
+  legacy static `[auth]` token carries no identity, but the server resolved the sole
+  paired device and stamped its name — so a decision made by a script holding the
+  token was recorded as though the operator had tapped that device, and the audit
+  trail could not tell the two apart. Such decisions now record
+  `app (legacy token)`. Named tokens are unchanged and keep recording
+  `identity.name`. The audit view's `decided_device` consequently resolves to
+  `null` for these decisions rather than naming a device that was never involved.
+  Behaviour change: consumers that treated `decided_by` as a device name will now
+  see a credential label for legacy-token decisions — which is the point, since it
+  was never reliably a device.
+
 ### Security
 
 - `/v1/stream` now enforces the **app** role, matching the documented

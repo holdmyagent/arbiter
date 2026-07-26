@@ -99,13 +99,18 @@ def test_db_app_token_stamps_decided_by_with_identity_name(client):
                     headers=approver)
     assert d.status_code == 200 and d.json()["decided_by"] == "kevin-phone"
 
-def test_legacy_app_token_keeps_device_heuristic(client):
+def test_legacy_app_token_does_not_impersonate_a_device(client):
+    """A legacy static [auth] token carries no identity, so the server cannot know who
+    decided. It must say so rather than borrow the only paired device's name -- doing
+    that recorded a script's decision as though the operator had tapped their phone."""
     client.db.register_device("tokX", "Kevins-iPhone")
     rid = client.post("/v1/requests", json={"title": "t"},
                       headers={"Authorization": "Bearer test-agent"}).json()["id"]
     d = client.post(f"/v1/requests/{rid}/decision", json={"decision": "approve"},
                     headers={"Authorization": "Bearer test-app"})
-    assert d.status_code == 200 and d.json()["decided_by"] == "Kevins-iPhone"
+    assert d.status_code == 200
+    assert d.json()["decided_by"] == "app (legacy token)"
+    assert d.json()["decided_by"] != "Kevins-iPhone"   # the fabrication this replaces
 
 def test_revoked_db_token_gets_403_on_routes(client):
     hdr = _mint(client, "temp", "agent")
