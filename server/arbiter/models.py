@@ -51,6 +51,13 @@ class ApprovalRequest(BaseModel):
 
 class Decision(BaseModel):
     decision: Literal["approve", "deny"]
+    # Optional and deliberately UNVALIDATED (Any, not a nested model): a
+    # malformed attestation object must never 422 and block an otherwise-valid
+    # decision -- attestation is RECORDED, never REQUIRED (§F.1). Expected
+    # shape is {"key_id": str, "signature": str (base64), "signed_at": str
+    # (ISO8601)}; any other shape is classified 'attestation_failed' by
+    # app._classify_attestation, never rejected at the wire.
+    attestation: Any = None
 
 class ExecResult(BaseModel):
     mode: Literal["exec_result"]                              # REQUIRED discriminator
@@ -67,6 +74,11 @@ class DeviceRegister(BaseModel):
     sound: bool = True
     severities: dict[str, bool] | None = None
     badge: bool = False
+
+class DeviceKeyEnroll(BaseModel):
+    device_id: str
+    public_key: str                              # base64 X9.63 uncompressed EC point
+    alg: Literal["P-256"] = "P-256"
 
 class PresetBody(BaseModel):
     name: str

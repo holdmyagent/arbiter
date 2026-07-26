@@ -57,6 +57,23 @@ def test_list_audit_decided_device_none_when_no_match(db, make):
     assert rows["approved"]["decided_by"] == "app"
     assert rows["approved"]["decided_device"] is None
 
+def test_list_audit_decided_device_survives_device_rename_via_attest_key_id(db, make):
+    """F.1.5: decided_device must be keyed on devices.id (immutable), never
+    devices.name (user-renameable). Once a decision records a verified
+    attest_key_id, renaming the device must not lose or misattribute that
+    historical decision -- the old name-match join would go stale (None)
+    the moment the device is renamed; the id-based join follows the rename."""
+    dev = db.register_device("tok1", "Old Name")
+    key = db.enroll_device_key(dev["id"], "irrelevant-pubkey-b64")
+    r = db.create_request(make())
+    db.set_decision(r["id"], "approve", "someone")
+    db.set_attestation(r["id"], "attested", key["id"])
+    rows = {a["event"]: a for a in db.list_audit(r["id"])}
+    assert rows["approved"]["decided_device"] == "Old Name"
+    db.rename_device(dev["id"], "New Name")
+    rows2 = {a["event"]: a for a in db.list_audit(r["id"])}
+    assert rows2["approved"]["decided_device"] == "New Name"
+
 def test_list_audit_non_request_event_has_none_severity(db):
     db.add_audit("-", "token_rotated", {"which": "agent"})
     rows = db.list_audit()
