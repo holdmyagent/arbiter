@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import jwt
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 KEY_FILENAME = "verdict_signing_key.pem"
@@ -191,3 +192,50 @@ def sign_rotation_record(old_signer: Signer, *, new_kid: str, new_x: str, seq: i
     }
     return jwt.encode(payload, old_signer.signing_key, algorithm="EdDSA",
                       headers={"kid": old_signer.kid})
+
+
+# ── device attestation (Level 3, RECORDED never REQUIRED) ───────────────────
+#
+# A completely separate scheme from the verdict signing above: P-256 /
+# ECDSA-SHA256 over a raw byte string, not EdDSA-JWS. The Secure Enclave
+# cannot do Ed25519 at all, and — unlike verdict verification, which is the
+# warden's fail-CLOSED trust anchor — a missing or broken attestation must
+# never block a decision. verify_attestation() therefore returns a plain
+# bool and NEVER raises; the caller (the decision endpoint) turns that into
+# one of five recorded classifications, never an HTTP failure.
+
+ATTEST_PREFIX = "hma-attest.v1"
+
+
+def build_attestation_payload(*, request_id: str, decision: str,
+                              action_hash: str | None, signed_at: str) -> bytes:
+    """The exact bytes a device signs to attest a decision. Binds action_hash
+    (not just request_id) so the signature proves the device saw the SAME
+    command the operator approved -- signing only (request_id, decision,
+    timestamp) would prove nothing more than "the device approved request
+    r9". action_hash=None (a cooperative-tier request created without a
+    canonical action) signs the empty string in that slot -- still a
+    verifiable "no canonical action" claim, never a placeholder that could
+    collide with a real hash."""
+    return (f"{ATTEST_PREFIX}\n{request_id}\n{decision}\n"
+            f"{action_hash or ''}\n{signed_at}").encode()
+
+
+def verify_attestation(public_key_b64: str, signature_b64: str, payload: bytes) -> bool:
+    """Verify a P-256/ECDSA-SHA256 signature over PAYLOAD (see
+    build_attestation_payload). public_key_b64 is a base64 X9.63 uncompressed
+    point (0x04 || X || Y) -- what a Secure Enclave key exports, and what
+    device_keys.public_key stores. Returns False for ANY failure: bad
+    base64, wrong-length/garbage point, tampered signature, mismatched key.
+    NEVER raises -- attestation is recorded, never required, so a caller
+    resolving a classification for the decision endpoint must always get an
+    answer back, never an exception that could turn a missing or malformed
+    signature into a 500 and block an otherwise-valid approve/deny."""
+    try:
+        raw = base64.b64decode(public_key_b64)
+        pubkey = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw)
+        sig = base64.b64decode(signature_b64)
+        pubkey.verify(sig, payload, ec.ECDSA(hashes.SHA256()))
+        return True
+    except Exception:
+        return False

@@ -25,6 +25,19 @@
   `app-token` (a named credential) — written atomically with the pending→decided
   transition. It is deliberately **never** `device`: the server cannot distinguish a phone
   tap from a script holding the same bearer token, so it does not claim to.
+- **Level 3 device attestation — recorded, never required.** The decision endpoint accepts an
+  **optional** P-256 / ECDSA-SHA256 signature over a payload that binds `action_hash`, verifies it
+  against an enrolled key, and records one of `attested` / `unattested` / `attestation_failed` /
+  `key_unknown` / `key_retired`. **A decision is never rejected, delayed or 4xx'd for a missing,
+  malformed, invalid, unknown-key or retired-key attestation** — two guard-rail tests pin that both
+  cases still return 200. A Secure Enclave key bound to `biometryCurrentSet` is destroyed on
+  biometric re-enrolment, so requiring a valid signature would convert a security feature into a
+  total approval outage the operator could not clear from their phone. Losing the key weakens the
+  claim, never the ability to approve.
+  New `POST /v1/devices/keys` enrols a device public key — deliberately **not** `/v1/devices/enroll`,
+  which already exists for APNs registration. Rotation **retires and inserts**, never overwrites, so
+  historical attestations keep verifying. Attribution is keyed on `devices.id`, never the
+  user-renameable `devices.name`.
 - **Level 3 schema (inert).** Migration 12 also adds `attestation` / `attest_key_id` and an
   **append-only** `device_keys` table keyed on `device_id`, so device attestation needs no
   second migration against the live database. Append-only is deliberate: a key column

@@ -16,12 +16,12 @@ from .enroll import resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
 from .registry import CapacityExceeded, EpochChanged
-from .models import (RequestCreate, Decision, DeviceRegister, PresetBody, ActiveBody,
-                     OverlayBody, GateStatusReport, ExecResult)
+from .models import (RequestCreate, Decision, DeviceRegister, DeviceKeyEnroll,
+                     PresetBody, ActiveBody, OverlayBody, GateStatusReport, ExecResult)
 from .notify import callback_allowed
 from .notify.outbox import Outbox, drain_all_at_startup
 from .policy import evaluate_create
-from .signing import sign_verdict
+from .signing import sign_verdict, build_attestation_payload, verify_attestation
 from .stream import run_stream
 from .web import build_router, session_valid
 from . import step_up
@@ -177,6 +177,57 @@ def require_cell(*roles: str):
 # bare "app": it must be self-evidently a credential rather than a person, and it must
 # not collide with a device name in the audit view's decided_device lookup.
 LEGACY_DECIDER = "app (legacy token)"
+
+
+def _classify_attestation(db, att, *, request_id: str, decision: str,
+                          action_hash: str | None) -> tuple[str, str | None]:
+    """Classify an OPTIONAL, deliberately UNVALIDATED client-supplied
+    attestation for the decision endpoint (Decision.attestation is typed Any,
+    not a nested model -- see models.py). NEVER raises and NEVER changes the
+    decision's outcome -- attestation is RECORDED, never REQUIRED (§F.1): a
+    decision must not fail because a signature is missing, malformed,
+    invalid, unverifiable, or from an unknown or retired key. Returns
+    (classification, attest_key_id) for db.set_attestation.
+
+    unattested        -- no attestation was sent at all (att is None).
+    attestation_failed -- att was sent but is malformed (not a dict, missing/
+                         wrong-typed key_id/signature/signed_at), OR the key
+                         is active but the signature does not verify over the
+                         exact payload bound to this decision.
+    key_unknown       -- att carries a key_id with no device_keys row.
+    key_retired       -- the key exists but was rotated out (retired_at set):
+                         a decision made with a retired credential is real,
+                         but the credential is not current, so it never
+                         counts as 'attested'.
+    attested          -- the key is active and the signature verifies.
+    """
+    if att is None:
+        return "unattested", None
+    if not isinstance(att, dict):
+        return "attestation_failed", None
+    key_id = att.get("key_id")
+    if not isinstance(key_id, str) or not key_id:
+        return "attestation_failed", None
+    try:
+        key = db.get_device_key(key_id)
+        if key is None:
+            return "key_unknown", key_id
+        if key["retired_at"] is not None:
+            return "key_retired", key_id
+        signature, signed_at = att.get("signature"), att.get("signed_at")
+        if not isinstance(signature, str) or not isinstance(signed_at, str):
+            return "attestation_failed", key_id
+        payload = build_attestation_payload(request_id=request_id, decision=decision,
+                                            action_hash=action_hash, signed_at=signed_at)
+        if verify_attestation(key["public_key"], signature, payload):
+            return "attested", key_id
+        return "attestation_failed", key_id
+    except Exception:
+        # Belt-and-suspenders on top of verify_attestation's own no-raise
+        # contract: ANY unexpected failure here must still resolve to a
+        # classification, never propagate into decide() and turn a 200 into
+        # a 500 over something attestation-related.
+        return "attestation_failed", key_id
 
 
 async def resolve_stream(ws, registry, control):
@@ -581,6 +632,13 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             # a pending row that refused the guarded UPDATE is expired-by-clock
             shown = "expired" if cur["status"] == "pending" else cur["status"]
             raise HTTPException(409, f"not pending (status={shown})")
+        # Level 3 (§F.1): classify the OPTIONAL attestation and record it.
+        # This can NEVER fail the decision -- _classify_attestation never
+        # raises, and the decision has already committed above.
+        attestation, attest_key_id = _classify_attestation(
+            db, body.attestation, request_id=updated["id"], decision=body.decision,
+            action_hash=updated["action_hash"])
+        db.set_attestation(updated["id"], attestation, attest_key_id)
         jws = sign_verdict(cell.signer, request_id=updated["id"],
                            action_hash=updated["action_hash"],
                            decision=updated["status"],
@@ -664,6 +722,16 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
     def devices(ctx: tuple = Depends(require_cell("app"))):
         _identity, cell = ctx
         return cell.db.list_devices()
+
+    @app.post("/v1/devices/keys")
+    async def enroll_device_key(body: DeviceKeyEnroll, ctx: tuple = Depends(require_cell("app"))):
+        # Level 3 (§F.1.2): enrol or rotate a device's attestation public key.
+        # NOT /v1/devices/enroll -- that path is already the phone-facing APNs
+        # registration endpoint (pairing-credential auth); reusing it here
+        # would shadow it. Rotation is append-only (db.enroll_device_key):
+        # the prior active row is retired, never overwritten or deleted.
+        _identity, cell = ctx
+        return cell.db.enroll_device_key(body.device_id, body.public_key, body.alg)
 
     @app.get("/v1/notify/policy")
     def notify_policy(ctx: tuple = Depends(require_cell("app"))):
