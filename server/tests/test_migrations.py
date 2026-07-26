@@ -107,6 +107,23 @@ def test_migration_9_indexes_token_hash(tmp_path):
     assert "idx_tokens_token_hash" in names
 
 
+def test_migration_12_adds_receipt_and_provenance(tmp_path):
+    p = str(tmp_path / "m12.sqlite3")
+    _make_v1(p)                       # v1 DB with one pre-existing row 'r1'
+    db = Database(p)
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 12
+    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(requests)")}
+    assert {"exec_exit_code", "exec_ran", "exec_output", "exec_kind",
+            "decided_via", "attestation", "attest_key_id"} <= cols
+    tables = {r[0] for r in db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "device_keys" in tables
+    row = db.get_request("r1")
+    for k in ("exec_exit_code", "exec_ran", "exec_output", "exec_kind",
+              "decided_via", "attestation", "attest_key_id"):
+        assert row[k] is None
+
+
 def test_migration_10_collapses_dupes_and_enforces(tmp_path):
     p = str(tmp_path / "m10.sqlite3")
     db = Database(p)

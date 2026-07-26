@@ -1,5 +1,35 @@
 # Changelog — hold-warden
 
+## [Unreleased]
+
+### Added
+
+- **Execution-outcome reporting**: after a `command` or `http` adapter runs to
+  `"executed"`, the warden now best-effort reports what actually happened back
+  to the arbiter via `ArbiterClient.report_execution` (`POST
+  /v1/requests/{rid}/consume` with `{"mode": "exec_result", ...}`), so receipts
+  stop saying "outcome not reported" forever. `command` reports `kind:
+  "command"`, the joined argv as `ran`, `exit_code`, and stdout+stderr (tail-
+  capped per stream at 8192 bytes, matching the adapters' own truncation
+  semantics, then the combined output capped at 16384 bytes — tail, not head,
+  so a failing command's stderr survives even when stdout alone is at the
+  adapter's 4096-char cap). `http` reports `kind: "http"`, `method url` as
+  `ran`, and the HTTP status as `exit_code` (the `kind` field is what stops a
+  successful webhook's `200` from being misread as a failure under the
+  universal "0 means success" convention). The `secret` adapter (and any
+  unknown adapter) reports nothing — the resolved secret value is never sent
+  to the arbiter. The report fires strictly after `set_status(..., "executed",
+  ...)` and outside the execution `try:` block, and any reporting failure is
+  swallowed with a warning log — it never changes the proposal's terminal
+  status and never raises into `tick()`.
+
+  **Known accepted limitation**: the report is best-effort and fires after
+  `set_status`. If the warden dies in that exact window, the outcome is lost
+  permanently — crash recovery only revisits rows still `executing`, not rows
+  already marked `executed`. This is accepted; the client compensates by
+  rendering "Outcome not reported" rather than "Not executed". No retry queue
+  is planned — out of scope.
+
 ## [0.1.1] - 2026-07-18
 
 ### Added

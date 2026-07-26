@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -153,9 +153,29 @@ def _migrate_10_to_11(conn):
     conn.execute("INSERT OR IGNORE INTO policy_kv(k,v) VALUES ('overlay',?)",
                  (json.dumps({"always_ask": [], "always_allow": []}),))
 
+def _migrate_11_to_12(conn):
+    """Audit-receipt + provenance columns (feature: server-mediated audit
+    receipt). All seven columns nullable, no DEFAULT — the live DB has 87
+    rows and a DEFAULT would rewrite every one of them. device_keys is
+    append-only and keyed on device_id (not a public_key column on devices,
+    which is UPSERTed on apns_token) so a biometric re-enrolment doesn't
+    retroactively invalidate historical attestations."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+    for name, typ in (("exec_exit_code", "INTEGER"), ("exec_ran", "TEXT"),
+                      ("exec_output", "TEXT"), ("exec_kind", "TEXT"),
+                      ("decided_via", "TEXT"), ("attestation", "TEXT"),
+                      ("attest_key_id", "TEXT")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE requests ADD COLUMN {name} {typ}")
+    conn.execute("""CREATE TABLE IF NOT EXISTS device_keys (
+        id TEXT PRIMARY KEY, device_id TEXT NOT NULL, public_key TEXT NOT NULL,
+        alg TEXT NOT NULL, registered_at TEXT NOT NULL, retired_at TEXT)""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_device_keys_active
+        ON device_keys(device_id) WHERE retired_at IS NULL""")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
               _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10,
-              _migrate_10_to_11]
+              _migrate_10_to_11, _migrate_11_to_12]
 
 class Database:
     def __init__(self, path: str):
@@ -355,7 +375,8 @@ class Database:
                     "SELECT * FROM requests ORDER BY created_at DESC").fetchall()
             return [self._row_to_request(r) for r in rows]
 
-    def set_decision(self, rid: str, decision: str, by: str) -> dict | None:
+    def set_decision(self, rid: str, decision: str, by: str,
+                     decided_via: str | None = None) -> dict | None:
         """Single-shot and race-safe: the UPDATE itself guards on status='pending'
         AND a live deadline, so concurrent decisions (or a decide racing the 1s
         expiry sweeper) have exactly one winner. Returns None for the loser."""
@@ -363,9 +384,9 @@ class Database:
         now = _iso(_utcnow())
         with self._lock:
             cur = self.conn.execute(
-                "UPDATE requests SET status=?, decided_at=?, decided_by=?"
+                "UPDATE requests SET status=?, decided_at=?, decided_by=?, decided_via=?"
                 " WHERE id=? AND status='pending' AND expires_at > ?",
-                (status, now, by, rid, now))
+                (status, now, by, decided_via, rid, now))
             self.conn.commit()
             if cur.rowcount != 1:
                 return None
@@ -461,6 +482,33 @@ class Database:
                 return 410, row     # only staleness can fail the guard on this state
             return 409, row
 
+    def set_attestation(self, rid: str, attestation: str, attest_key_id: str | None) -> None:
+        """Record a decision's attestation classification. Write-once: guarded
+        on attestation IS NULL, so a decision's classification -- once
+        recorded -- can never be silently blanked or downgraded by a later
+        call (the decision endpoint calls this exactly once, immediately
+        after set_decision succeeds, so no legitimate second call for the
+        same rid should ever occur; the guard makes that invariant explicit
+        at the SQL layer rather than relying only on caller discipline)."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE requests SET attestation=?, attest_key_id=?"
+                " WHERE id=? AND attestation IS NULL",
+                (attestation, attest_key_id, rid))
+            self.conn.commit()
+
+    def record_exec_result(self, rid: str, *, exit_code: int | None, ran: str | None,
+                           output: str | None, kind: str | None) -> None:
+        """Record the warden's execution outcome. Last report wins: never touches
+        status or consumed_at, so a re-report (retry, or a second callback) simply
+        overwrites the previous exec_* columns in place."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE requests SET exec_exit_code=?, exec_ran=?, exec_output=?,"
+                " exec_kind=? WHERE id=?",
+                (exit_code, ran, output, kind, rid))
+            self.conn.commit()
+
     def expire_stale_approvals(self, approval_ttl_seconds: int,
                                now: datetime | None = None) -> list[dict]:
         """Flip approved, unconsumed rows whose decided_at is older than the
@@ -528,6 +576,41 @@ class Database:
         with self._lock:
             return [self._row_to_device(r) for r in self.conn.execute("SELECT * FROM devices").fetchall()]
 
+    # ── device attestation keys (Level 3, append-only) ──────────────────────
+
+    def enroll_device_key(self, device_id: str, public_key: str, alg: str = "P-256") -> dict:
+        """Enrol (or rotate) a device's attestation public key. APPEND-ONLY:
+        rotation retires the current active row (retired_at set) and INSERTS
+        a fresh one -- it never overwrites or deletes, so a historical
+        attestation verified against a since-retired key can still be
+        verified after the fact. idx_device_keys_active (migration 12)
+        enforces at most one active (retired_at IS NULL) row per device."""
+        kid = str(uuid.uuid4())
+        with self._lock:
+            self.conn.execute(
+                "UPDATE device_keys SET retired_at=? WHERE device_id=? AND retired_at IS NULL",
+                (_iso(_utcnow()), device_id))
+            self.conn.execute(
+                "INSERT INTO device_keys(id,device_id,public_key,alg,registered_at,retired_at)"
+                " VALUES (?,?,?,?,?,NULL)",
+                (kid, device_id, public_key, alg, _iso(_utcnow())))
+            self.conn.commit()
+            return dict(self.conn.execute(
+                "SELECT * FROM device_keys WHERE id=?", (kid,)).fetchone())
+
+    def get_device_key(self, key_id: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM device_keys WHERE id=?", (key_id,)).fetchone()
+            return dict(r) if r else None
+
+    def get_active_device_key(self, device_id: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM device_keys WHERE device_id=? AND retired_at IS NULL",
+                (device_id,)).fetchone()
+            return dict(r) if r else None
+
     def get_audit(self, rid: str) -> list[dict]:
         with self._lock:
             return [dict(r) for r in self.conn.execute(
@@ -537,11 +620,23 @@ class Database:
         # LEFT JOIN requests for severity/title/decided_by, plus a scalar subquery
         # (not a JOIN on devices.name) to resolve the deciding device: a JOIN on
         # name could fan out an audit row if two devices ever shared a name.
+        #
+        # decided_device prefers the immutable chain attest_key_id ->
+        # device_keys.device_id -> devices.id whenever a verified attestation
+        # recorded a key (§Level 3 F.1.5): devices.id never changes, so this
+        # resolves correctly even after the operator renames the device.
+        # Falls back to the legacy name-match (decided_by == devices.name) for
+        # decisions with no attestation -- a user-renameable field, kept only
+        # for back-compat with rows/tests that predate attestation.
         base = (
             "SELECT a.id, a.request_id, a.event, a.at, a.detail,"
             " r.severity AS severity, r.title AS req_title, r.status AS req_status,"
             " r.decided_by AS decided_by,"
-            " (SELECT d.name FROM devices d WHERE d.name = r.decided_by LIMIT 1) AS decided_device"
+            " COALESCE("
+            "  (SELECT dv.name FROM device_keys dk JOIN devices dv ON dv.id = dk.device_id"
+            "   WHERE dk.id = r.attest_key_id),"
+            "  (SELECT d.name FROM devices d WHERE d.name = r.decided_by LIMIT 1)"
+            " ) AS decided_device"
             " FROM audit a LEFT JOIN requests r ON a.request_id = r.id"
         )
         with self._lock:

@@ -31,6 +31,15 @@ log = logging.getLogger("hold_warden.service")
 
 EXEC_TIMEOUT_S = 60  # adapter execution timeout (command and http), seconds
 
+EXEC_OUTPUT_MAX_BYTES = 16384
+_STREAM_MAX_BYTES = 8192
+_RAN_MAX_CHARS = 4096  # matches the server model's ExecResult.ran max_length
+
+
+def _cap(s: str) -> str:               # TAIL, matching the adapters' own semantics
+    b = (s or "").encode("utf-8", "replace")
+    return b[-_STREAM_MAX_BYTES:].decode("utf-8", "replace")
+
 
 class ProposeError(Exception):
     """Base class for propose-time validation failures (API maps these to 4xx)."""
@@ -293,6 +302,29 @@ class Orchestrator:
                 "error": f"adapter error: {exc}"})
             return
         self.db.set_status(pid, "executed", result=result, receipt=receipt)
+        self._report_exec_result(receipt["request_id"], spec, resolved, result)
+
+    def _report_exec_result(self, rid, spec, resolved, result) -> None:
+        if spec.adapter == "command":
+            kind = "command"
+            ran = " ".join(resolved.get("argv") or [])
+            output = ("--- stdout ---\n" + _cap(result.get("stdout_tail"))
+                      + "\n--- stderr ---\n" + _cap(result.get("stderr_tail")))
+            exit_code = result.get("exit_code")
+        elif spec.adapter == "http":
+            kind = "http"
+            ran = f"{resolved.get('method')} {resolved.get('url')}"
+            output = _cap(result.get("body_head"))
+            exit_code = result.get("http_status")      # kind disambiguates
+        else:
+            return                                     # secret / unknown: nothing safe to report
+        output = output.encode("utf-8", "replace")[-EXEC_OUTPUT_MAX_BYTES:].decode("utf-8", "replace")
+        ran = ran[:_RAN_MAX_CHARS]                      # head cap: stay under the model's max_length
+        try:
+            self.arbiter.report_execution(rid, exit_code=exit_code, ran=ran,
+                                          output=output, kind=kind)
+        except Exception as exc:
+            log.warning("exec-result report failed for %s: %s", rid, exc)   # NEVER raises
 
     def _resolve_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """Header values are literals or 'secret:<name>' refs into [secrets]."""

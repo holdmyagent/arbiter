@@ -84,6 +84,8 @@ class FakeArbiter:
         self.verdict_error: Exception | None = None
         self.consume_error: Exception | None = None
         self.consumed: list[str] = []
+        self.reported: list[dict] = []
+        self.report_error: Exception | None = None
 
     def create_request(self, *, title, description, action_type, severity,
                        ttl_seconds, payload, canonical_action, action_hash,
@@ -112,6 +114,12 @@ class FakeArbiter:
         if self.consume_error is not None:
             raise self.consume_error
         self.consumed.append(rid)
+
+    def report_execution(self, rid, *, exit_code, ran, output, kind):
+        if self.report_error is not None:
+            raise self.report_error
+        self.reported.append(dict(rid=rid, exit_code=exit_code, ran=ran,
+                                  output=output, kind=kind))
 
 
 class FakeVerifier:
@@ -368,6 +376,96 @@ def test_tick_executing_row_from_crash_fails_closed(orch, fake_command):
     assert row["status"] == "failed"
     assert "outcome unknown" in row["result"]["error"]
     assert fake_command == []
+
+
+# ---------------------------------------------------- exec-result reporting
+
+def test_tick_approved_reports_exec_result(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    assert len(orch.arbiter.reported) == 1
+    rep = orch.arbiter.reported[0]
+    assert rep["rid"] == out["request_id"]
+    assert rep["exit_code"] == 0
+    assert rep["ran"] == "echo hello"
+    assert "hello" in rep["output"]
+    assert rep["kind"] == "command"
+
+
+def test_report_failure_does_not_change_executed_status(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.arbiter.report_error = ArbiterUnavailable("boom")
+    orch.tick()  # must not raise
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+
+
+def test_secret_adapter_never_reports_exec_output(orch, monkeypatch):
+    monkeypatch.setenv("TEST_DEPLOY_KEY", "s3cr3t-value")
+    out = orch.propose("hermes", "release_key", {}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    assert orch.arbiter.reported == []
+
+
+def test_http_adapter_success_reports_kind_http(orch, monkeypatch):
+    from hold_warden.adapters import HttpResult
+    monkeypatch.setenv("TEST_API_BEARER", "bearer-value")
+
+    def fake_http(method, url, headers, body, timeout_s):
+        return HttpResult(status=200, body_sha256="cafe" * 16, body_head="ok")
+
+    monkeypatch.setattr(service, "run_http", fake_http)
+    out = orch.propose("hermes", "post_status", {"text": "hello world"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    rep = orch.arbiter.reported[0]
+    assert rep["kind"] == "http"
+    assert rep["exit_code"] == 200
+
+
+def test_stderr_survives_when_stdout_at_cap(orch, monkeypatch):
+    """Regression for the outer combined-output cap: it must be a TAIL slice,
+    not a HEAD slice, or it chops the tail-most stderr bytes that the
+    per-stream tail cap immediately above was written to preserve.
+
+    Both streams are sized to hit the per-stream cap (_STREAM_MAX_BYTES),
+    so the combined output genuinely exceeds EXEC_OUTPUT_MAX_BYTES and the
+    outer cap actually engages - a stdout under the per-stream cap (as in
+    the previous version of this test) never reaches the outer cap at all,
+    so it proves nothing about which end gets sliced. The marker sits in
+    the last bytes of stderr, i.e. exactly where a head slice would drop
+    it and a tail slice would keep it."""
+    from hold_warden.adapters import CommandResult
+
+    marker = "boom: something failed"
+    stdout_tail = "x" * (service._STREAM_MAX_BYTES + 500)
+    stderr_tail = "y" * (service._STREAM_MAX_BYTES - len(marker)) + marker
+
+    def fake(argv, timeout_s, extra_env=None, cwd=None):
+        return CommandResult(exit_code=1, stdout_tail=stdout_tail,
+                             stderr_tail=stderr_tail, duration_ms=5)
+
+    monkeypatch.setattr(service, "run_command", fake)
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    rep = orch.arbiter.reported[0]
+    # Sanity: confirm this test actually exercises the outer cap.
+    combined_len = (len("--- stdout ---\n") + service._STREAM_MAX_BYTES
+                    + len("\n--- stderr ---\n") + service._STREAM_MAX_BYTES)
+    assert combined_len > service.EXEC_OUTPUT_MAX_BYTES
+    assert marker in rep["output"]
 
 
 # ------------------------------------------------------- http + secret
