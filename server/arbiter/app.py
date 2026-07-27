@@ -741,11 +741,15 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             # are unaffected. A mint failure must never fail the pairing — the
             # phone keeps whatever credential it already has (R1/R2), so this
             # entire block degrades to "no token field" on any error. Mint the
-            # NEW token before revoking the predecessor, never the reverse.
+            # NEW token before revoking the predecessor, never the reverse, and
+            # attach it to the response immediately after a successful mint —
+            # before the revoke/link writes — so the phone still receives its
+            # working new token even if one of those later steps degrades.
             try:
                 minted = mint_device_token(request.app.state.control, cell, dev, body.name)
                 if minted is not None:
                     new_name, value = minted
+                    resp["token"] = value
                     prev = dev.get("token_name")
                     if prev and prev != new_name:
                         try:
@@ -753,7 +757,8 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                         except KeyError:
                             pass          # predecessor already gone — nothing to revoke
                     cell.db.set_device_token_name(dev["id"], new_name)
-                    resp["token"] = value
+                    dev["token_name"] = new_name       # keep the hub event in sync
+                    resp["token_name"] = new_name      # keep the response in sync
             except Exception:
                 log.exception("device token mint failed; enrolment continues without one")
             cell.hub.publish({"event": "device.updated", "device": dev})
