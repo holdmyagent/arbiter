@@ -508,9 +508,9 @@ class Database:
 
     def record_exec_result(self, rid: str, *, exit_code: int | None, ran: str | None,
                            output: str | None, kind: str | None) -> None:
-        """Record the warden's execution outcome. Last report wins: never touches
-        status or consumed_at, so a re-report (retry, or a second callback) simply
-        overwrites the previous exec_* columns in place."""
+        """Write the four exec_* columns. Write-once is enforced at the route (409
+        'execution result already reported'); this method never touches status or
+        consumed_at."""
         with self._lock:
             self.conn.execute(
                 "UPDATE requests SET exec_exit_code=?, exec_ran=?, exec_output=?,"

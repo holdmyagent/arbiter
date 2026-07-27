@@ -340,6 +340,8 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 registry.try_evict_idle(), _loop).result(timeout=timeout)
 
         app.state.evict_tick = evict_tick
+        # sync handlers (consume) hop publishes onto this loop threadsafely
+        app.state.loop = _loop
         sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
         if scheduler is not None:
             # §16 test/ops seam: a SYNCHRONOUS, clock-injectable one-shot that
@@ -696,6 +698,21 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                                        output=body.output, kind=body.kind)
             cell.db.add_audit(rid, "exec_reported",
                               {"by": identity.name, "exit_code": body.exit_code})
+            updated = cell.db.get_request(rid)
+            # iOS 0.6 A2: a phone with the screen open sees the outcome without
+            # refetching. Payload is unredacted like request.decided because the
+            # stream is app-role only (resolve_stream) — if stream ever admits
+            # agent role, _redact_for MUST be applied to event payloads too (R6;
+            # the #25 disclosure existed on a second non-obvious route as well).
+            # consume runs sync in the threadpool: hop onto the lifespan loop —
+            # hub queues and create_task are loop-thread-only.
+            hub, tenant_id, epoch = cell.hub, cell.tenant_id, cell.epoch
+
+            def _publish_executed():
+                hub.publish({"event": "request.executed", "request": updated})
+                _spawn_publish(app, tenant_id, epoch, "request.executed", updated)
+
+            app.state.loop.call_soon_threadsafe(_publish_executed)
             return {"consumed_at": row["consumed_at"]}
         # classic path below - UNCHANGED
         code, row = cell.db.consume_request(

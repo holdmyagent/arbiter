@@ -77,6 +77,8 @@ class Outbox:
     async def _dispatch(self, event: str, req: dict) -> None:
         if event == "request.created":
             await self.dispatcher.request_created(req)
+        elif event == "request.executed":
+            await self.dispatcher.request_executed(req)
         else:  # request.decided | request.expired — Dispatcher derives from req["status"]
             await self.dispatcher.request_decided(req)
 

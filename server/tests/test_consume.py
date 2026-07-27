@@ -58,7 +58,13 @@ def _client(cfg, tmp_path):
 
 @pytest.fixture
 def client(cfg, tmp_path):
-    return _client(cfg, tmp_path)
+    # Enter the TestClient context so lifespan startup runs (sets app.state.loop,
+    # which the exec-report branch's threadsafe hop now requires) -- _client()
+    # itself stays bare for this file's other direct-construction callers, which
+    # never exercise that branch.
+    c = _client(cfg, tmp_path)
+    with c:
+        yield c
 
 
 @pytest.fixture
