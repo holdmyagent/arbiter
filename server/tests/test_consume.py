@@ -252,6 +252,25 @@ def test_oversized_exec_output_is_rejected(client, warden_headers):
     r = client.post(f"/v1/requests/{rid}/consume", headers=warden_headers,
                     json={"mode": "exec_result", "exit_code": 0, "output": "x" * 32769})
     assert r.status_code == 422
+    # the 422 must mean nothing was written -- otherwise this test would still
+    # pass even if an oversized value were stored before validation ran.
+    assert client.db.get_request(rid)["exec_output"] is None
+
+
+def test_oversized_by_bytes_but_not_by_chars_exec_output_is_rejected(client, warden_headers):
+    """max_length=32768 on ExecResult.output counts CHARACTERS, not bytes: a
+    32768-character multi-byte string is under that limit but lands on disk
+    at 4x the intended ~32 KB cap. A byte-length field_validator must catch
+    what the character-count max_length lets through."""
+    rid = _approved_request(client)
+    client.post(f"/v1/requests/{rid}/consume", headers=warden_headers)
+    oversized = "\U0001F600" * 32768                    # 32768 chars, 131072 bytes (utf-8)
+    assert len(oversized) == 32768
+    assert len(oversized.encode("utf-8")) == 131072
+    r = client.post(f"/v1/requests/{rid}/consume", headers=warden_headers,
+                    json={"mode": "exec_result", "exit_code": 0, "output": oversized})
+    assert r.status_code == 422
+    assert client.db.get_request(rid)["exec_output"] is None
 
 
 def test_second_exec_report_is_409_and_does_not_blank(client, warden_headers):

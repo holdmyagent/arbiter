@@ -1,5 +1,5 @@
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Severity = Literal["low", "medium", "high", "critical"]
 Status = Literal["pending", "approved", "denied", "expired"]
@@ -65,6 +65,18 @@ class ExecResult(BaseModel):
     ran: str | None = Field(default=None, max_length=4096)
     output: str | None = Field(default=None, max_length=32768)
     kind: Literal["command", "http"] | None = None
+
+    @field_validator("output")
+    @classmethod
+    def _output_bytes_bounded(cls, v: str | None) -> str | None:
+        # max_length above counts CHARACTERS, not bytes -- a multi-byte string
+        # (e.g. "😀" * 32768) passes that check while landing on disk at 4x
+        # the intended ~32 KB cap. This is now bounded by the write-once rule
+        # (one report per request, ever), so it is not a growth vector -- but
+        # the stated intent was a 32 KB cap, so enforce bytes too.
+        if v is not None and len(v.encode("utf-8")) > 32768:
+            raise ValueError("output exceeds 32768 bytes")
+        return v
 
 class DeviceRegister(BaseModel):
     apns_token: str

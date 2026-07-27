@@ -179,6 +179,22 @@ def require_cell(*roles: str):
 LEGACY_DECIDER = "app (legacy token)"
 
 
+def _redact_for(identity, row: dict | None) -> dict | None:
+    """Redact, do not restrict (FIX3 finding 1): an agent-role bearer is
+    precisely the credential this whole system is designed to distrust, so
+    handing it exec_ran/exec_output would hand the sandboxed agent process
+    the argv and output of commands a human only approved for someone else to
+    run -- inverting the trust model. exec_kind/exec_exit_code stay: an agent
+    may reasonably learn WHETHER its own action succeeded, and neither field
+    can carry command text or output. warden (wrote the data) and app (the
+    operator's phone) keep the row unchanged. Applied at every return site
+    that can hand a request row to an agent-role caller -- never role-gated
+    with a 403: agents must keep reading their own request's status."""
+    if row is None or identity.role != "agent":
+        return row
+    return {**row, "exec_ran": None, "exec_output": None}
+
+
 def _classify_attestation(db, att, *, request_id: str, decision: str,
                           action_hash: str | None) -> tuple[str, str | None]:
     """Classify an OPTIONAL, deliberately UNVALIDATED client-supplied
@@ -533,7 +549,10 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         if body.idempotency_key:
             existing = db.get_request_by_idem(requested_by, body.idempotency_key)
             if existing:
-                return existing
+                # replay can hand back a row decided+consumed+exec-reported
+                # since the original create -- redact for agent-role callers
+                # exactly as GET /v1/requests/{rid} does (FIX3 finding 1).
+                return _redact_for(identity, existing)
         if (body.canonical_action is None) != (body.action_hash is None):
             raise HTTPException(422, "canonical_action and action_hash must be supplied together")
         if body.canonical_action is not None:
@@ -545,7 +564,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         # unbound creates (action_hash NULL) match on title.
         dup = db.find_duplicate_pending(requested_by, body.action_hash, body.title)
         if dup:
-            return dup
+            return _redact_for(identity, dup)
         try:
             req = db.create_request(body, requested_by=requested_by)
         except sqlite3.IntegrityError:
@@ -555,16 +574,16 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             existing = db.get_request_by_idem(requested_by, body.idempotency_key) \
                 if body.idempotency_key else None
             if existing:
-                return existing
+                return _redact_for(identity, existing)
             dup = db.find_duplicate_pending(requested_by, body.action_hash, body.title)
             if dup:
-                return dup
+                return _redact_for(identity, dup)
             raise
         if scheduler is not None:
             scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
         cell.hub.publish({"event": "request.created", "request": req})
-        return req
+        return _redact_for(identity, req)
 
     @app.get("/v1/requests")
     def list_(status: str | None = None, ctx: tuple = Depends(require_cell("app"))):
@@ -586,7 +605,7 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                     raise HTTPException(404, "not found")
             elif r.get("requested_by") != identity.name:
                 raise HTTPException(404, "not found")
-        return r
+        return _redact_for(identity, r)
 
     @app.get("/v1/requests/{rid}/verdict")
     def get_verdict(rid: str, ctx: tuple = Depends(require_cell("agent", "warden", "app"))):
