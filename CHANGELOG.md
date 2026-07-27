@@ -51,6 +51,23 @@
 
 ### Fixed
 
+- **An agent-role credential can no longer read the argv or output of executed
+  actions.** Storing execution outcome (previous entry) created a disclosure surface that did
+  not exist before: `exec_ran` carries the exact argv that ran and `exec_output` its
+  stdout+stderr, and both were readable by an **agent**-role bearer — the credential this
+  system exists to distrust, and on a real deployment the most exposed component. Those two
+  fields are now **redacted for agent-role callers** at every return site that can hand an
+  agent a request row. `exec_kind` and `exec_exit_code` are kept — an agent may reasonably
+  learn *whether* its action succeeded, and neither can carry command text or output; `warden`
+  (which wrote the data) and `app` (the operator's phone) see the row unchanged.
+  Deliberately a **redaction, not a role restriction**: revoking an agent's ability to read its
+  own request would be a fail-closed outage, which is strictly worse than the disclosure.
+  This also closes a second, non-obvious path — `POST /v1/requests`'s idempotency-replay branch
+  is not status-filtered, so replaying an old key returned the since-decided-and-executed row,
+  exec data included, to the same agent.
+- `ExecResult.output`'s cap is now enforced in **bytes** as well as characters. `max_length`
+  counts characters, so 32768 multi-byte characters were accepted and stored as up to 128 KiB.
+
 - `decided_by` no longer **fabricates provenance**. A decision authenticated by a
   legacy static `[auth]` token carries no identity, but the server resolved the sole
   paired device and stamped its name — so a decision made by a script holding the

@@ -111,7 +111,12 @@ def test_migration_12_adds_receipt_and_provenance(tmp_path):
     p = str(tmp_path / "m12.sqlite3")
     _make_v1(p)                       # v1 DB with one pre-existing row 'r1'
     db = Database(p)
-    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 12
+    # split (not `== SCHEMA_VERSION >= 12`, a chained comparison that means
+    # `uv == SCHEMA_VERSION and SCHEMA_VERSION >= 12` -- accidentally correct
+    # today but permanently misleading to the next reader)
+    user_version = db.conn.execute("PRAGMA user_version").fetchone()[0]
+    assert user_version == SCHEMA_VERSION
+    assert SCHEMA_VERSION >= 12
     cols = {r[1] for r in db.conn.execute("PRAGMA table_info(requests)")}
     assert {"exec_exit_code", "exec_ran", "exec_output", "exec_kind",
             "decided_via", "attestation", "attest_key_id"} <= cols
