@@ -6,7 +6,6 @@ redaction lands on every route that can hand an agent-role caller a request
 row carrying execution data, while app/warden keep the full row and the
 agent's own read access is not narrowed (no new 403/404).
 """
-import pytest
 
 AGENT = {"Authorization": "Bearer test-agent"}
 APP = {"Authorization": "Bearer test-app"}
