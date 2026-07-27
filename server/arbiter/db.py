@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -173,9 +173,18 @@ def _migrate_11_to_12(conn):
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_device_keys_active
         ON device_keys(device_id) WHERE retired_at IS NULL""")
 
+def _migrate_12_to_13(conn):
+    # iOS 0.6 A1: link a device row to the app token minted for it at enrolment,
+    # so a re-pair can revoke the predecessor. Nullable and additive: NULL means
+    # "no enrolment-minted token" (every pre-0.6 row), and no DEFAULT rewrites
+    # any existing row.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+    if "token_name" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN token_name TEXT")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
               _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10,
-              _migrate_10_to_11, _migrate_11_to_12]
+              _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13]
 
 class Database:
     def __init__(self, path: str):
@@ -575,6 +584,12 @@ class Database:
     def list_devices(self) -> list[dict]:
         with self._lock:
             return [self._row_to_device(r) for r in self.conn.execute("SELECT * FROM devices").fetchall()]
+
+    def set_device_token_name(self, device_id: str, token_name: str | None) -> None:
+        with self._lock:
+            self.conn.execute("UPDATE devices SET token_name=? WHERE id=?",
+                              (token_name, device_id))
+            self.conn.commit()
 
     # ── device attestation keys (Level 3, append-only) ──────────────────────
 
