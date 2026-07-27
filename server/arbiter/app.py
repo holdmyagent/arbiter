@@ -705,14 +705,20 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             # agent role, _redact_for MUST be applied to event payloads too (R6;
             # the #25 disclosure existed on a second non-obvious route as well).
             # consume runs sync in the threadpool: hop onto the lifespan loop —
-            # hub queues and create_task are loop-thread-only.
-            hub, tenant_id, epoch = cell.hub, cell.tenant_id, cell.epoch
+            # hub queues and create_task are loop-thread-only. Best-effort: the
+            # write above already committed, so a hop failure (no lifespan loop,
+            # loop closed mid-shutdown) must never fail this response -- same
+            # philosophy as outbox.py's own guarded dispatch.
+            try:
+                hub, tenant_id, epoch = cell.hub, cell.tenant_id, cell.epoch
 
-            def _publish_executed():
-                hub.publish({"event": "request.executed", "request": updated})
-                _spawn_publish(app, tenant_id, epoch, "request.executed", updated)
+                def _publish_executed():
+                    _spawn_publish(app, tenant_id, epoch, "request.executed", updated)
+                    hub.publish({"event": "request.executed", "request": updated})
 
-            app.state.loop.call_soon_threadsafe(_publish_executed)
+                app.state.loop.call_soon_threadsafe(_publish_executed)
+            except Exception as exc:
+                log.warning("request.executed publish failed for %s: %s", rid, exc)
             return {"consumed_at": row["consumed_at"]}
         # classic path below - UNCHANGED
         code, row = cell.db.consume_request(

@@ -3,6 +3,7 @@ import time
 
 import httpx
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 
 def _approved_request(client, agent_headers, app_headers):
@@ -132,9 +133,44 @@ def test_agent_role_still_cannot_subscribe_stream(client):
     its unredacted payload (exec_* included) never reaches an agent credential.
     Deliberately mirrors test_stream.py::test_stream_db_agent_token_rejected --
     that test proves the general guarantee; this one names it next to the new
-    event so the suite documents the two together."""
+    event so the suite documents the two together. Concrete here (WebSocketDisconnect
+    + the 4401 auth/role-failure close code from stream.py's run_stream), rather
+    than a bare pytest.raises(Exception), so a future refactor that started
+    accepting the connection couldn't silently pass by raising some OTHER
+    exception during the session."""
     tok = client.env.mint("default", "worker", "agent")
-    with pytest.raises(Exception):
+    with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect("/v1/stream",
                                       headers={"Authorization": f"Bearer {tok}"}):
             pass
+    assert exc_info.value.code == 4401
+
+
+class _BoomLoop:
+    """Stands in for app.state.loop when the hop itself must fail (e.g. the
+    real loop closed mid-shutdown)."""
+    def call_soon_threadsafe(self, *a, **kw):
+        raise RuntimeError("event loop is closed")
+
+
+def test_exec_report_survives_publish_hop_failure(client, agent_headers, app_headers,
+                                                   monkeypatch):
+    """The exec_* write already committed by the time the notify hop runs -- a
+    best-effort publish failure (no loop, loop closed) must never turn a landed
+    write into a 500: the warden would treat 5xx as retryable, retry, and hit the
+    write-once 409 for a report that in fact succeeded. Same guarded philosophy
+    as outbox.py's own dispatch."""
+    warden_headers = _warden_headers(client)
+    rid = _approved_request(client, agent_headers, app_headers)
+    assert client.post(f"/v1/requests/{rid}/consume",
+                       headers=warden_headers).status_code == 200
+    monkeypatch.setattr(client.app_ref.state, "loop", _BoomLoop())
+
+    r = client.post(f"/v1/requests/{rid}/consume", headers=warden_headers,
+                    json={"mode": "exec_result", "exit_code": 0,
+                          "ran": "x", "output": "y", "kind": "command"})
+    assert r.status_code == 200
+
+    row = client.db.get_request(rid)
+    assert row["exec_exit_code"] == 0
+    assert row["exec_ran"] == "x"
