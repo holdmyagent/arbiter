@@ -782,6 +782,10 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                     cell.db.set_device_token_name(dev["id"], new_name)
                     dev["token_name"] = new_name       # keep the hub event in sync
                     resp["token_name"] = new_name      # keep the response in sync
+                else:
+                    log.warning(
+                        "device token mint exhausted all name candidates for %r; "
+                        "enrolment continues without a token", body.name)
             except Exception:
                 log.exception("device token mint failed; enrolment continues without one")
             cell.hub.publish({"event": "device.updated", "device": dev})

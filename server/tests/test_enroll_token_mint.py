@@ -13,8 +13,10 @@ def test_sanitise_basic():
 def test_sanitise_collapses_runs_and_trims():
     assert _sanitise_token_name("  --Wild  ***  Name--  ") == "wild-name"
 
-def test_sanitise_caps_at_64():
-    assert len(_sanitise_token_name("x" * 200)) <= 64
+def test_sanitise_caps_at_62():
+    # capped below 64 so a mint's "-N" rotation suffix never pushes the final
+    # minted name past the documented 64-char cap
+    assert len(_sanitise_token_name("x" * 200)) <= 62
 
 def test_sanitise_empty_falls_back():
     assert _sanitise_token_name("!!!") == "device"

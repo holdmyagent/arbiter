@@ -54,15 +54,16 @@ _NAME_KEEP = re.compile(r"[^a-z0-9-]+")
 def _sanitise_token_name(raw: str) -> str:
     """Sanitise a device name to the token-name charset used across this
     project (^[a-z0-9-]{1,64}$): lowercase, runs of anything else become one
-    dash, trimmed, capped at 64. Falls back to 'device' so a mint is always
-    attempted."""
+    dash, trimmed, capped at 62 so a mint's "-N" rotation suffix (up to
+    "-9") can never push the final minted name past the documented 64-char
+    cap. Falls back to 'device' so a mint is always attempted."""
     s = _NAME_KEEP.sub("-", raw.lower()).strip("-")
     while "--" in s:
         s = s.replace("--", "-")
-    return s[:64].rstrip("-") or "device"
+    return s[:62].rstrip("-") or "device"
 
 
-def mint_device_token(control, cell, device: dict, requested_name: str):
+def mint_device_token(control, cell, device: dict, requested_name: str) -> tuple[str, str] | None:
     """Mint an app-role token named for DEVICE at enrolment; returns
     (token_name, token_value) or None if no candidate name is free.
     Reserved names are treated as taken (suffixed), never minted verbatim.
