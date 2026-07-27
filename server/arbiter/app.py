@@ -12,9 +12,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_client_id
-from .enroll import resolve_pairing
+from .enroll import mint_device_token, resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
+from .provisioning import revoke_cell_token
 from .registry import CapacityExceeded, EpochChanged
 from .models import (RequestCreate, Decision, DeviceRegister, DeviceKeyEnroll,
                      PresetBody, ActiveBody, OverlayBody, GateStatusReport, ExecResult)
@@ -339,6 +340,8 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 registry.try_evict_idle(), _loop).result(timeout=timeout)
 
         app.state.evict_tick = evict_tick
+        # sync handlers (consume) hop publishes onto this loop threadsafely
+        app.state.loop = _loop
         sched_task = asyncio.create_task(scheduler.run()) if scheduler is not None else None
         if scheduler is not None:
             # §16 test/ops seam: a SYNCHRONOUS, clock-injectable one-shot that
@@ -695,6 +698,27 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                                        output=body.output, kind=body.kind)
             cell.db.add_audit(rid, "exec_reported",
                               {"by": identity.name, "exit_code": body.exit_code})
+            updated = cell.db.get_request(rid)
+            # iOS 0.6 A2: a phone with the screen open sees the outcome without
+            # refetching. Payload is unredacted like request.decided because the
+            # stream is app-role only (resolve_stream) — if stream ever admits
+            # agent role, _redact_for MUST be applied to event payloads too (R6;
+            # the #25 disclosure existed on a second non-obvious route as well).
+            # consume runs sync in the threadpool: hop onto the lifespan loop —
+            # hub queues and create_task are loop-thread-only. Best-effort: the
+            # write above already committed, so a hop failure (no lifespan loop,
+            # loop closed mid-shutdown) must never fail this response -- same
+            # philosophy as outbox.py's own guarded dispatch.
+            try:
+                hub, tenant_id, epoch = cell.hub, cell.tenant_id, cell.epoch
+
+                def _publish_executed():
+                    _spawn_publish(app, tenant_id, epoch, "request.executed", updated)
+                    hub.publish({"event": "request.executed", "request": updated})
+
+                app.state.loop.call_soon_threadsafe(_publish_executed)
+            except Exception as exc:
+                log.warning("request.executed publish failed for %s: %s", rid, exc)
             return {"consumed_at": row["consumed_at"]}
         # classic path below - UNCHANGED
         code, row = cell.db.consume_request(
@@ -734,8 +758,38 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 body.apns_token, body.name, body.min_severity,
                 body.notifications_enabled, body.sound,
                 severities=body.severities, badge=body.badge)
+            resp = {**dev, "tenant_id": cell.tenant_id}
+            # iOS 0.6 A1: mint a per-device named app token, returned ONCE (only
+            # its sha256 is stored). Additive: clients that ignore unknown keys
+            # are unaffected. A mint failure must never fail the pairing — the
+            # phone keeps whatever credential it already has (R1/R2), so this
+            # entire block degrades to "no token field" on any error. Mint the
+            # NEW token before revoking the predecessor, never the reverse, and
+            # attach it to the response immediately after a successful mint —
+            # before the revoke/link writes — so the phone still receives its
+            # working new token even if one of those later steps degrades.
+            try:
+                minted = mint_device_token(request.app.state.control, cell, dev, body.name)
+                if minted is not None:
+                    new_name, value = minted
+                    resp["token"] = value
+                    prev = dev.get("token_name")
+                    if prev and prev != new_name:
+                        try:
+                            revoke_cell_token(request.app.state.control, cell.db, prev)
+                        except KeyError:
+                            pass          # predecessor already gone — nothing to revoke
+                    cell.db.set_device_token_name(dev["id"], new_name)
+                    dev["token_name"] = new_name       # keep the hub event in sync
+                    resp["token_name"] = new_name      # keep the response in sync
+                else:
+                    log.warning(
+                        "device token mint exhausted all name candidates for %r; "
+                        "enrolment continues without a token", body.name)
+            except Exception:
+                log.exception("device token mint failed; enrolment continues without one")
             cell.hub.publish({"event": "device.updated", "device": dev})
-            return {**dev, "tenant_id": cell.tenant_id}
+            return resp
 
     @app.get("/v1/devices")
     def devices(ctx: tuple = Depends(require_cell("app"))):

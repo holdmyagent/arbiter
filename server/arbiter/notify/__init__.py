@@ -230,6 +230,15 @@ class Dispatcher:
             await self._guard("callback", req["id"],
                               self._deliver_checked(req["callback_url"], event, req))
 
+    async def request_executed(self, req: dict) -> None:
+        # iOS 0.6 A2. Deliberately NO APNs push and NO agent callback here: the
+        # phone-with-screen-open case is served by the stream, and re-firing the
+        # decided callback for an exec report could re-trigger its consumer.
+        if self.cfg.webhook.enabled:
+            await self._guard("webhook", req["id"],
+                              self._deliver_checked(self.cfg.webhook.url,
+                                                    "request.executed", req))
+
     async def _deliver_checked(self, url: str, event: str, req: dict):
         if not await self.webhook.deliver(url, event, req):
             raise RuntimeError(f"delivery to {url} failed after retries")

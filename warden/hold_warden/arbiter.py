@@ -9,6 +9,11 @@ Exception mapping (the orchestrator's fail-closed table keys off these):
 - consume 410        -> ArbiterStale       (approval older than approval_ttl: never execute)
 - any other unexpected status (404 "no verdict yet", 422, non-JSON body, ...)
                      -> ArbiterUnavailable with the status + body text in the message.
+- report_execution 409 -> ArbiterConflict     (result already reported: terminal, never retry)
+- report_execution 404 -> ArbiterNotFound     (request row gone: terminal, never retry)
+- report_execution other non-200/non-5xx      -> ArbiterReportRejected (our payload, not the
+                                                 network - identical bytes can't succeed later:
+                                                 terminal, never retry)
 """
 from __future__ import annotations
 
@@ -30,6 +35,15 @@ class ArbiterConflict(Exception):
 
 class ArbiterStale(Exception):
     """Consume returned 410 (approval older than approval_ttl_seconds). Never execute."""
+
+
+class ArbiterNotFound(Exception):
+    """report_execution got 404 - the request row is gone; a retry is pointless (terminal)."""
+
+
+class ArbiterReportRejected(Exception):
+    """report_execution got a non-retryable rejection (e.g. 422): our payload, not the
+    network - retrying identical bytes cannot succeed (terminal)."""
 
 
 class ArbiterClient:
@@ -107,5 +121,13 @@ class ArbiterClient:
         resp = self._request("POST", f"/v1/requests/{rid}/consume",
                              {"mode": "exec_result", "exit_code": exit_code,
                               "ran": ran, "output": output, "kind": kind})
-        if resp.status_code != 200:
-            raise ArbiterUnavailable(f"report_execution failed ({resp.status_code}): {resp.text}")
+        if resp.status_code == 200:
+            return
+        if resp.status_code == 409:
+            # Covers both "already reported" and "not yet approved/consumed" -
+            # resp.text carries the distinction. Either way: the server's
+            # write-once answer. TERMINAL - retrying loops forever.
+            raise ArbiterConflict(f"report refused (409): {resp.text}")
+        if resp.status_code == 404:
+            raise ArbiterNotFound(f"request gone ({resp.status_code})")
+        raise ArbiterReportRejected(f"report rejected ({resp.status_code}): {resp.text}")
