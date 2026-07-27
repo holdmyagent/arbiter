@@ -12,6 +12,8 @@ backdated straight in SQL, same trick as test_db.py's purge_older_than test.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -290,3 +292,75 @@ def test_secret_adapter_sets_no_flag(orch, monkeypatch):
     assert row["status"] == "executed"
     assert row["report_pending"] == 0
     assert orch.arbiter.reported == []
+
+
+def test_survives_process_restart(tmp_path):
+    """The scenario this task exists for: the warden dies between
+    set_status(executed) and a landed report. A fresh process (fresh WardenDB
+    + Orchestrator over the same file) must still land the owed report on its
+    first tick. Also exercises reports_due's NULL-next_at branch and the
+    idempotent-ALTER path re-running against an already-migrated DB."""
+    db_path = tmp_path / "warden.sqlite3"
+    seed_db = WardenDB(db_path)
+    payload = {"exit_code": 0, "ran": "echo hello", "output": "hello\n", "kind": "command"}
+    seed_db._conn.execute(
+        "INSERT INTO proposals(id, agent, action, params, canonical, action_hash,"
+        " request_id, idempotency_key, status, report_pending, report_next_at,"
+        " report_payload, created_at, updated_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("prop-1", "hermes", "greet", '{"word": "hello"}', "canon", "ab" * 32,
+         "req-1", None, "executed", 1, None, json.dumps(payload),
+         "2026-07-06T00:00:00+00:00", "2026-07-06T00:00:00+00:00"))
+    seed_db._conn.commit()
+    seed_db._conn.close()  # simulate the warden process exiting
+
+    fresh_db = WardenDB(db_path)  # re-runs the idempotent ALTERs against a migrated DB
+    orch = Orchestrator(make_cfg(), fresh_db, FakeArbiter(), FakeVerifier())
+    orch.tick()
+
+    row = orch.db.get("prop-1")
+    assert row["report_pending"] == 0
+    assert len(orch.arbiter.reported) == 1
+    assert orch.arbiter.reported[0]["rid"] == "req-1"
+
+
+def test_report_bookkeeping_error_never_fails_the_proposal(orch, fake_command, monkeypatch):
+    """A DB error while persisting/attempting the report (locked db, disk full)
+    must not unwind into tick()'s except-clause, which would set_status(failed)
+    on a proposal that already ran - a stricter regression than a mere
+    "report failure doesn't change status", since this path raises from
+    inside _report_exec_result itself, called directly from _execute."""
+    def _boom(*a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(orch.db, "mark_report_pending", _boom)
+
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.tick()  # must not raise
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"
+    assert row["report_pending"] == 0
+    assert orch.arbiter.reported == []
+
+
+def test_corrupt_report_payload_is_self_limiting(orch, fake_command):
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed" and row["report_pending"] == 0
+    assert len(orch.arbiter.reported) == 1
+
+    # Simulate a corrupt report_payload on a still-pending row (belt-and-braces:
+    # this shouldn't happen via mark_report_pending, which always json.dumps a
+    # real dict, but the sweep must not spin forever if it ever does).
+    orch.db._conn.execute(
+        "UPDATE proposals SET report_pending=1, report_payload=? WHERE id=?",
+        ("not valid json", out["id"]))
+    orch.db._conn.commit()
+
+    orch.tick()
+    row = orch.db.get(out["id"])
+    assert row["report_pending"] == 0
+    assert row["report_attempts"] == 0  # never counted as a retry attempt

@@ -124,9 +124,10 @@ class ArbiterClient:
         if resp.status_code == 200:
             return
         if resp.status_code == 409:
-            # "execution result already reported" (or pre-consume state): the
-            # server's write-once answer. TERMINAL - retrying loops forever.
-            raise ArbiterConflict(f"report already recorded ({resp.status_code}): {resp.text}")
+            # Covers both "already reported" and "not yet approved/consumed" -
+            # resp.text carries the distinction. Either way: the server's
+            # write-once answer. TERMINAL - retrying loops forever.
+            raise ArbiterConflict(f"report refused (409): {resp.text}")
         if resp.status_code == 404:
             raise ArbiterNotFound(f"request gone ({resp.status_code})")
         raise ArbiterReportRejected(f"report rejected ({resp.status_code}): {resp.text}")

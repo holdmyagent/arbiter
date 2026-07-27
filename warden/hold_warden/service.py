@@ -171,8 +171,15 @@ class Orchestrator:
                     "error": "internal warden error; see warden logs"})
         for row in self.db.reports_due(_utcnow().isoformat()):
             try:
-                self._attempt_report(row["id"], row["request_id"],
-                                     json.loads(row["report_payload"]))
+                payload = json.loads(row["report_payload"])
+                self._attempt_report(row["id"], row["request_id"], payload)
+            except (TypeError, ValueError):
+                # Corrupt report_payload: retrying identical bytes can't ever
+                # succeed - self-limit instead of looping forever without
+                # ever counting an attempt.
+                log.exception("report retry: corrupt report_payload for proposal %s;"
+                              " giving up", row["id"])
+                self.db.clear_report_pending(row["id"])
             except Exception:  # noqa: BLE001 - the daemon must survive any row
                 log.exception("report retry: unexpected error on proposal %s", row["id"])
 
@@ -348,8 +355,17 @@ class Orchestrator:
         # iOS 0.6 A3: persist the owed report BEFORE attempting it, so a warden
         # death between set_status(executed) and a landed report is no longer a
         # permanently lost outcome - tick() sweeps report_pending rows.
-        self.db.mark_report_pending(pid, payload)
-        self._attempt_report(pid, rid, payload)
+        try:
+            self.db.mark_report_pending(pid, payload)
+            self._attempt_report(pid, rid, payload)
+        except Exception:  # noqa: BLE001 - this proposal already executed; a DB
+            # hiccup here (locked/disk full) must never unwind into tick()'s
+            # set_status(failed) - that would violate "a failed report never
+            # changes proposal status". Worst case: the report is missed until
+            # an operator notices the log; report_pending never got set, so
+            # the sweep can't pick it up either, but the proposal stays
+            # 'executed' either way.
+            log.exception("exec-result report bookkeeping failed for %s", rid)
 
     def _current_attempts(self, pid: str) -> int:
         row = self.db.get(pid)
