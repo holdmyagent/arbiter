@@ -12,6 +12,8 @@ from hold_warden.arbiter import (
     ArbiterAuthError,
     ArbiterClient,
     ArbiterConflict,
+    ArbiterNotFound,
+    ArbiterReportRejected,
     ArbiterStale,
     ArbiterUnavailable,
 )
@@ -168,8 +170,24 @@ def test_report_execution_posts_mode_exec_result_body(stub):
                             "output": "hello\n", "kind": "command"}
 
 
-def test_report_execution_non_200_raises_unavailable(stub):
-    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (422, {"detail": "already reported"})
-    with pytest.raises(ArbiterUnavailable, match="422"):
+def test_report_execution_409_raises_conflict(stub):
+    # The server's write-once answer for an exec result already recorded: terminal.
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (409, {"detail": "already reported"})
+    with pytest.raises(ArbiterConflict):
+        ArbiterClient(stub, "t").report_execution(
+            "rid-1", exit_code=0, ran="echo hello", output="hello\n", kind="command")
+
+
+def test_report_execution_404_raises_not_found(stub):
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (404, {"detail": "no such request"})
+    with pytest.raises(ArbiterNotFound):
+        ArbiterClient(stub, "t").report_execution(
+            "rid-1", exit_code=0, ran="echo hello", output="hello\n", kind="command")
+
+
+def test_report_execution_other_non_200_raises_rejected(stub):
+    # Any other non-200/non-5xx (e.g. 422): our payload, not the network - terminal.
+    _Stub.routes[("POST", "/v1/requests/rid-1/consume")] = (422, {"detail": "bad payload"})
+    with pytest.raises(ArbiterReportRejected, match="422"):
         ArbiterClient(stub, "t").report_execution(
             "rid-1", exit_code=0, ran="echo hello", output="hello\n", kind="command")

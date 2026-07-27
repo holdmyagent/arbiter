@@ -38,6 +38,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_idem
   ON proposals(agent, idempotency_key) WHERE idempotency_key IS NOT NULL;
 """
 
+# iOS 0.6 A3: the warden has no migration ladder, so new columns land as
+# idempotent ALTERs applied at every startup - "duplicate column" is the
+# already-applied signal, not an error.
+_REPORT_COLUMNS = [
+    "ALTER TABLE proposals ADD COLUMN report_pending INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE proposals ADD COLUMN report_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE proposals ADD COLUMN report_next_at TEXT",
+    "ALTER TABLE proposals ADD COLUMN report_payload TEXT",
+]
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -53,6 +63,13 @@ class WardenDB:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(_SCHEMA)
+            self._conn.commit()
+            for stmt in _REPORT_COLUMNS:
+                try:
+                    self._conn.execute(stmt)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             self._conn.commit()
 
     @staticmethod
@@ -112,6 +129,43 @@ class WardenDB:
                  proposal_id),
             )
             self._conn.commit()
+
+    def mark_report_pending(self, proposal_id: str, payload: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE proposals SET report_pending=1, report_payload=?, updated_at=?"
+                " WHERE id=?",
+                (json.dumps(payload), _now(), proposal_id))
+            self._conn.commit()
+
+    def clear_report_pending(self, proposal_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE proposals SET report_pending=0, updated_at=? WHERE id=?",
+                (_now(), proposal_id))
+            self._conn.commit()
+
+    def bump_report_attempt(self, proposal_id: str, next_at: str) -> int:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE proposals SET report_attempts=report_attempts+1,"
+                " report_next_at=?, updated_at=? WHERE id=?",
+                (next_at, _now(), proposal_id))
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT report_attempts FROM proposals WHERE id=?",
+                (proposal_id,)).fetchone()
+            return int(row["report_attempts"]) if row else 0
+
+    def reports_due(self, now: str) -> list[dict]:
+        # ISO-8601 UTC strings compare lexicographically - same convention as
+        # the rest of this file.
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM proposals WHERE status='executed' AND report_pending=1"
+                " AND (report_next_at IS NULL OR report_next_at <= ?)"
+                " ORDER BY created_at", (now,)).fetchall()
+            return [dict(r) for r in rows]
 
     def purge_older_than(self, days: int) -> int:
         """Startup retention (spec §4.5): serve calls this once at boot with

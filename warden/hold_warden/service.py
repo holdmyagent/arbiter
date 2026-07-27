@@ -18,6 +18,8 @@ from hold_warden.arbiter import (
     ArbiterAuthError,
     ArbiterClient,
     ArbiterConflict,
+    ArbiterNotFound,
+    ArbiterReportRejected,
     ArbiterStale,
     ArbiterUnavailable,
 )
@@ -35,10 +37,21 @@ EXEC_OUTPUT_MAX_BYTES = 16384
 _STREAM_MAX_BYTES = 8192
 _RAN_MAX_CHARS = 4096  # matches the server model's ExecResult.ran max_length
 
+REPORT_MAX_ATTEMPTS = 10
+REPORT_BACKOFF_S = [5, 15, 60, 300, 600]   # capped at 10 min between attempts
+
 
 def _cap(s: str) -> str:               # TAIL, matching the adapters' own semantics
     b = (s or "").encode("utf-8", "replace")
     return b[-_STREAM_MAX_BYTES:].decode("utf-8", "replace")
+
+
+def _next_report_at(attempt_index: int) -> str:
+    """attempt_index is the CURRENT (pre-bump) attempt count - 0 for the first
+    retry. Backoff is REPORT_BACKOFF_S, capped at its last entry once attempts
+    outrun the table (attempts can still climb to REPORT_MAX_ATTEMPTS)."""
+    delay = REPORT_BACKOFF_S[min(attempt_index, len(REPORT_BACKOFF_S) - 1)]
+    return (_utcnow() + timedelta(seconds=delay)).isoformat()
 
 
 class ProposeError(Exception):
@@ -156,6 +169,12 @@ class Orchestrator:
                 log.exception("tick: unexpected error on proposal %s", row["id"])
                 self.db.set_status(row["id"], "failed", result={
                     "error": "internal warden error; see warden logs"})
+        for row in self.db.reports_due(_utcnow().isoformat()):
+            try:
+                self._attempt_report(row["id"], row["request_id"],
+                                     json.loads(row["report_payload"]))
+            except Exception:  # noqa: BLE001 - the daemon must survive any row
+                log.exception("report retry: unexpected error on proposal %s", row["id"])
 
     def _advance(self, row: dict) -> None:
         pid = row["id"]
@@ -302,9 +321,9 @@ class Orchestrator:
                 "error": f"adapter error: {exc}"})
             return
         self.db.set_status(pid, "executed", result=result, receipt=receipt)
-        self._report_exec_result(receipt["request_id"], spec, resolved, result)
+        self._report_exec_result(pid, receipt["request_id"], spec, resolved, result)
 
-    def _report_exec_result(self, rid, spec, resolved, result) -> None:
+    def _compute_report(self, spec, resolved, result) -> dict | None:
         if spec.adapter == "command":
             kind = "command"
             ran = " ".join(resolved.get("argv") or [])
@@ -317,14 +336,45 @@ class Orchestrator:
             output = _cap(result.get("body_head"))
             exit_code = result.get("http_status")      # kind disambiguates
         else:
-            return                                     # secret / unknown: nothing safe to report
+            return None                                # secret / unknown: nothing safe to report
         output = output.encode("utf-8", "replace")[-EXEC_OUTPUT_MAX_BYTES:].decode("utf-8", "replace")
         ran = ran[:_RAN_MAX_CHARS]                      # head cap: stay under the model's max_length
+        return {"exit_code": exit_code, "ran": ran, "output": output, "kind": kind}
+
+    def _report_exec_result(self, pid: str, rid: str, spec, resolved, result) -> None:
+        payload = self._compute_report(spec, resolved, result)
+        if payload is None:
+            return                       # secret/unknown: nothing safe to report
+        # iOS 0.6 A3: persist the owed report BEFORE attempting it, so a warden
+        # death between set_status(executed) and a landed report is no longer a
+        # permanently lost outcome - tick() sweeps report_pending rows.
+        self.db.mark_report_pending(pid, payload)
+        self._attempt_report(pid, rid, payload)
+
+    def _current_attempts(self, pid: str) -> int:
+        row = self.db.get(pid)
+        return int(row["report_attempts"]) if row else 0
+
+    def _attempt_report(self, pid: str, rid: str, payload: dict) -> None:
         try:
-            self.arbiter.report_execution(rid, exit_code=exit_code, ran=ran,
-                                          output=output, kind=kind)
+            self.arbiter.report_execution(rid, **payload)
+        except (ArbiterConflict, ArbiterNotFound, ArbiterReportRejected, ArbiterAuthError) as exc:
+            # Terminal: 409/404/4xx/auth. Never retried - a 409 loop and an
+            # auth error masked as retryable are both already-paid-for bugs.
+            log.warning("exec-result report for %s terminal (%s); not retrying", rid, exc)
+            self.db.clear_report_pending(pid)
         except Exception as exc:
-            log.warning("exec-result report failed for %s: %s", rid, exc)   # NEVER raises
+            attempts = self.db.bump_report_attempt(
+                pid, _next_report_at(self._current_attempts(pid)))
+            if attempts >= REPORT_MAX_ATTEMPTS:
+                log.warning("exec-result report for %s failed %d times; giving up: %s",
+                            rid, attempts, exc)
+                self.db.clear_report_pending(pid)
+            else:
+                log.warning("exec-result report for %s failed (attempt %d/%d): %s",
+                            rid, attempts, REPORT_MAX_ATTEMPTS, exc)
+        else:
+            self.db.clear_report_pending(pid)
 
     def _resolve_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """Header values are literals or 'secret:<name>' refs into [secrets]."""
