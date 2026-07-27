@@ -12,9 +12,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_client_id
-from .enroll import resolve_pairing
+from .enroll import mint_device_token, resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
+from .provisioning import revoke_cell_token
 from .registry import CapacityExceeded, EpochChanged
 from .models import (RequestCreate, Decision, DeviceRegister, DeviceKeyEnroll,
                      PresetBody, ActiveBody, OverlayBody, GateStatusReport, ExecResult)
@@ -734,8 +735,29 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 body.apns_token, body.name, body.min_severity,
                 body.notifications_enabled, body.sound,
                 severities=body.severities, badge=body.badge)
+            resp = {**dev, "tenant_id": cell.tenant_id}
+            # iOS 0.6 A1: mint a per-device named app token, returned ONCE (only
+            # its sha256 is stored). Additive: clients that ignore unknown keys
+            # are unaffected. A mint failure must never fail the pairing — the
+            # phone keeps whatever credential it already has (R1/R2), so this
+            # entire block degrades to "no token field" on any error. Mint the
+            # NEW token before revoking the predecessor, never the reverse.
+            try:
+                minted = mint_device_token(request.app.state.control, cell, dev, body.name)
+                if minted is not None:
+                    new_name, value = minted
+                    prev = dev.get("token_name")
+                    if prev and prev != new_name:
+                        try:
+                            revoke_cell_token(request.app.state.control, cell.db, prev)
+                        except KeyError:
+                            pass          # predecessor already gone — nothing to revoke
+                    cell.db.set_device_token_name(dev["id"], new_name)
+                    resp["token"] = value
+            except Exception:
+                log.exception("device token mint failed; enrolment continues without one")
             cell.hub.publish({"event": "device.updated", "device": dev})
-            return {**dev, "tenant_id": cell.tenant_id}
+            return resp
 
     @app.get("/v1/devices")
     def devices(ctx: tuple = Depends(require_cell("app"))):
