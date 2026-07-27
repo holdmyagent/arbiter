@@ -24,6 +24,10 @@ from .signing import load_or_create_signer
 
 _TENANT_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
+# Fixed identity names of the legacy config tokens ("agent"/"app"). Shared with
+# the CLI's create-time rejection and enroll-time suffixing — one source of truth.
+RESERVED_TOKEN_NAMES = {"agent", "app"}
+
 
 class TenantDirError(Exception):
     """A tenant dir is off-charset, escapes the root, or overlaps another tenant."""

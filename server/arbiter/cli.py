@@ -11,6 +11,7 @@ import click
 import httpx
 
 from .config import Config
+from .provisioning import RESERVED_TOKEN_NAMES as _RESERVED_TOKEN_NAMES
 
 class _JsonFormatter(logging.Formatter):
     def format(self, rec):
@@ -263,8 +264,6 @@ def ask(title, severity, target, ttl, description, url_option, config_path):
     sys.exit(code)
 
 # ── per-identity tokens (stored hashed; see `tokens` table, migration 4) ────
-
-_RESERVED_TOKEN_NAMES = {"agent", "app"}  # fixed identity names of the legacy config tokens
 
 def _hash_token(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
