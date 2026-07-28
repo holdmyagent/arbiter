@@ -872,6 +872,36 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         cell.db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
 
+    # ── grants (scoped auto-approval) ────────────────────────────────────────
+
+    @app.get("/v1/grants")
+    def grants_list(ctx: tuple = Depends(require_cell("app"))):
+        """Active grants, plus any that expired or were revoked in the last
+        24 h. App role only, like every other operator surface. A grant row
+        carries names and timestamps and no request content at all, so there
+        is nothing here for _redact_for to do."""
+        _identity, cell = ctx
+        return {"grants": cell.db.list_grants()}
+
+    @app.post("/v1/grants/{grant_id}/revoke")
+    async def grants_revoke(grant_id: str, ctx: tuple = Depends(require_cell("app"))):
+        """Revoke a grant. Idempotent: revoking an already-revoked grant is a
+        200 with the current row, no second audit row and no second event.
+        Takes effect at the next create's match-time check -- nothing already
+        approved or in flight is disturbed, which is the honest semantics
+        (the operator withdraws future cover, not a past decision)."""
+        _identity, cell = ctx
+        result = cell.db.revoke_grant(grant_id)
+        if result is None:
+            raise HTTPException(404, "not found")
+        grant, changed = result
+        if changed:
+            # Not request-scoped: the '-' convention every non-request audit
+            # row uses (token_created, policy_updated, rate_limited).
+            cell.db.add_audit("-", "grant_revoked", {"grant_id": grant_id})
+            cell.hub.publish({"event": "grant.revoked", "grant": grant})
+        return grant
+
     @app.post("/v1/devices")
     async def register(body: DeviceRegister, ctx: tuple = Depends(require_cell("app"))):
         _identity, cell = ctx
