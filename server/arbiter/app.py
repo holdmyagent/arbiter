@@ -773,15 +773,30 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 if minted is not None:
                     new_name, value = minted
                     resp["token"] = value
-                    prev = dev.get("token_name")
-                    if prev and prev != new_name:
-                        try:
-                            revoke_cell_token(request.app.state.control, cell.db, prev)
-                        except KeyError:
-                            pass          # predecessor already gone — nothing to revoke
-                    cell.db.set_device_token_name(dev["id"], new_name)
-                    dev["token_name"] = new_name       # keep the hub event in sync
-                    resp["token_name"] = new_name      # keep the response in sync
+                    resp["token_name"] = new_name      # names the token just minted
+                    # 0.7 S1 (F-B1-1): device rows are keyed on apns_token, so
+                    # EVERY enrolment that sends "" (a pairing done before the
+                    # phone has an APNs token, or any Simulator, which never
+                    # gets one) lands on the SAME device row. Linking that
+                    # shared row to this mint would make the NEXT such
+                    # enrolment read this device's token_name off it and revoke
+                    # it -- an approval outage on an innocent, working phone.
+                    # So an empty-apns enrolment is mint-only: the token is
+                    # returned exactly as before, the row is never linked, and
+                    # no predecessor is ever revoked. Rotation semantics apply
+                    # only to rows with a real APNs token.
+                    if not body.apns_token:
+                        log.info("enrolment with empty apns_token for %r: minted %s "
+                                 "(no token_name link, no revoke)", body.name, new_name)
+                    else:
+                        prev = dev.get("token_name")
+                        if prev and prev != new_name:
+                            try:
+                                revoke_cell_token(request.app.state.control, cell.db, prev)
+                            except KeyError:
+                                pass      # predecessor already gone — nothing to revoke
+                        cell.db.set_device_token_name(dev["id"], new_name)
+                        dev["token_name"] = new_name       # keep the hub event in sync
                 else:
                     log.warning(
                         "device token mint exhausted all name candidates for %r; "

@@ -79,6 +79,14 @@
   Behaviour change: consumers that treated `decided_by` as a device name will now
   see a credential label for legacy-token decisions — which is the point, since it
   was never reliably a device.
+- **A second phone pairing can no longer revoke the first phone's token.** Device rows are
+  keyed on `apns_token`, so two enrolments that both send `""` — a pairing completed before
+  the phone has an APNs token, and every Simulator, which never gets one — land on the same
+  row. The 0.6 rotation step read that shared row's `token_name` and revoked it, taking a
+  working, innocent device's ability to approve with it. An enrolment with an empty
+  `apns_token` is now **mint-only**: it still returns a freshly minted named token, but it
+  neither links the device row (`devices.token_name`) nor revokes any predecessor, and logs
+  that it did so at INFO. Rotation semantics are unchanged for rows with a real APNs token.
 
 ### Security
 
