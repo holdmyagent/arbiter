@@ -42,12 +42,14 @@ Create an approval request and block until it is decided.
 | `--target TEXT` | none | What is being acted on. |
 | `--ttl N` | `300` | Request TTL in seconds (server-clamped to `[policy]` bounds). |
 | `--description TEXT` | `""` | Longer detail / push body. |
+| `--payload-json JSON` | none | Structured payload for the request, as a JSON **object** (e.g. `'{"agent":"hermes","tool":"skill_manage"}'`). Anything that is not a JSON object — including valid JSON arrays, strings and numbers — is rejected with exit `2` **before** any request is sent, so a caller that treats nonzero as "no" fails closed. |
 | `--url URL` | `http://127.0.0.1:<port>` | Arbiter base URL; falls back to `HMA_URL` env, then the localhost default. |
 | `--config PATH` | default config | Where to read the agent token (or set `HMA_AGENT_TOKEN`). |
 
 Exit codes: `0` approved, `1` denied or expired, `2` error — **fail-closed**:
-treat any nonzero as "no". With `--url`/`HMA_URL` plus `HMA_AGENT_TOKEN` in
-the environment, `hma ask` needs no local config file at all.
+treat any nonzero as "no". A malformed `--payload-json` is an error (`2`),
+raised before the request is created. With `--url`/`HMA_URL` plus
+`HMA_AGENT_TOKEN` in the environment, `hma ask` needs no local config file at all.
 
 ### `hma token create NAME --role ROLE [options]` (0.4.0)
 

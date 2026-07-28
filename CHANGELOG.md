@@ -62,6 +62,11 @@
   it deleted; `hma audit prune --days N` does the same on demand and prints the count.
   Neither ever touches `requests` — the approval record itself is never pruned. A retention
   below 1 day is refused at startup.
+- **`hma ask --payload-json`** attaches a structured payload (a JSON object) to the request it
+  creates, so a caller that shells out to the CLI — the approval gate does — can carry the
+  content an approver actually needs to see instead of filing a bare title. Malformed or
+  non-object JSON is rejected with exit `2` before anything is sent, so the caller fails
+  closed. Without the flag the request body is unchanged.
 
 ### Fixed
 

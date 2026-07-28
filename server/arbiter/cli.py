@@ -224,13 +224,37 @@ def status(config_path, url_option):
         click.echo(f"  - {d['name']} (min severity {d['min_severity']})")
     click.echo(f"pending requests: {len(pending)}")
 
-def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
-         target: str | None, ttl: int, description: str) -> tuple[int, dict]:
-    hdr = {"Authorization": f"Bearer {agent_token}"}
+def _parse_payload_json(raw: str | None) -> dict | None:
+    """Parse --payload-json into a request payload, or None when not supplied.
+
+    Fail-closed and BEFORE anything is posted: a malformed or non-object value
+    raises, so a gate that shells out to `hma ask` blocks (any nonzero exit)
+    instead of filing a contentless ask. UsageError, not a bare ClickException,
+    because its exit code is 2 — this command's "error" code — where a plain
+    ClickException would exit 1, which means "denied".
+    """
+    if raw is None:
+        return None
     try:
-        r = client.post("/v1/requests", headers=hdr, json={
-            "title": title, "description": description, "severity": severity,
-            "target": target, "ttl_seconds": ttl})
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise click.UsageError(f"--payload-json is not valid JSON: {exc}")
+    if not isinstance(value, dict):
+        raise click.UsageError(
+            f"--payload-json must be a JSON object, got {type(value).__name__}")
+    return value
+
+def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
+         target: str | None, ttl: int, description: str,
+         payload: dict | None = None) -> tuple[int, dict]:
+    hdr = {"Authorization": f"Bearer {agent_token}"}
+    body = {"title": title, "description": description, "severity": severity,
+            "target": target, "ttl_seconds": ttl}
+    if payload is not None:
+        body["payload"] = payload      # omitted entirely when absent: the
+                                       # default wire body is unchanged
+    try:
+        r = client.post("/v1/requests", headers=hdr, json=body)
         r.raise_for_status()
         req = r.json()
         deadline = time.time() + ttl + 5
@@ -251,19 +275,24 @@ def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
 @click.option("--target", default=None)
 @click.option("--ttl", type=int, default=300)
 @click.option("--description", default="")
+@click.option("--payload-json", "payload_json", default=None,
+              help='Structured payload as a JSON object, e.g. \'{"agent":"hermes"}\'.')
 @click.option("--url", "url_option", default=None,
               help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
 @click.option("--config", "config_path", default=None)
-def ask(title, severity, target, ttl, description, url_option, config_path):
+def ask(title, severity, target, ttl, description, payload_json, url_option, config_path):
     """Create an approval request and block until it is decided.
 
     Exit codes: 0 approved · 1 denied/expired · 2 error (fail-closed: treat nonzero as no).
+    A malformed --payload-json is an error (2) raised before any request is sent.
     """
+    payload = _parse_payload_json(payload_json)     # fail-closed: nothing posted on bad input
     cfg = Config.load(config_path)
     base = _base_url(url_option, cfg)
     with httpx.Client(base_url=base, timeout=10) as client:
         code, decision = _ask(client, cfg.auth.agent_token, title=title,
-                              severity=severity, target=target, ttl=ttl, description=description)
+                              severity=severity, target=target, ttl=ttl,
+                              description=description, payload=payload)
     click.echo(json.dumps(decision, indent=2))
     sys.exit(code)
 
