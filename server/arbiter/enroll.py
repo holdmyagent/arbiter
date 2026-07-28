@@ -10,6 +10,7 @@ caller cannot distinguish route-miss / disabled / in-cell-invalid.
 """
 import hashlib
 import re
+import secrets
 import sqlite3
 from contextlib import asynccontextmanager
 
@@ -63,15 +64,34 @@ def _sanitise_token_name(raw: str) -> str:
     return s[:62].rstrip("-") or "device"
 
 
+_HEX_ATTEMPTS = 3
+
+
+def _candidate_names(base: str):
+    """Mint-name candidates in order: the sanitised base, then -2..-9, then
+    _HEX_ATTEMPTS random 8-hex suffixes (0.7 S3) for when the numeric run is
+    exhausted — nine same-named devices, or nine revoked predecessors, which
+    keep their UNIQUE names. Lazy on purpose: a first-try success burns no
+    randomness. The hex candidates truncate the base to 55 chars so
+    "<base>-<8 hex>" (55 + 1 + 8) stays inside the documented 64-char
+    token-name cap; the numeric candidates rely on _sanitise_token_name's own
+    62-char cap ("<62>-9" = 64)."""
+    yield base
+    for i in range(2, 10):
+        yield f"{base}-{i}"
+    hex_base = base[:55].rstrip("-") or "device"
+    for _ in range(_HEX_ATTEMPTS):
+        yield f"{hex_base}-{secrets.token_hex(4)}"
+
+
 def mint_device_token(control, cell, device: dict, requested_name: str) -> tuple[str, str] | None:
     """Mint an app-role token named for DEVICE at enrolment; returns
-    (token_name, token_value) or None if no candidate name is free.
+    (token_name, token_value), or None only if the base, every -2..-9 suffix
+    AND three random 8-hex suffixes are all taken.
     Reserved names are treated as taken (suffixed), never minted verbatim.
     The caller revokes the device's previous token AFTER a successful mint —
     a failed mint must leave the old credential untouched (R1)."""
-    base = _sanitise_token_name(requested_name)
-    candidates = [base] + [f"{base}-{i}" for i in range(2, 10)]
-    for cand in candidates:
+    for cand in _candidate_names(_sanitise_token_name(requested_name)):
         if cand in RESERVED_TOKEN_NAMES:
             continue
         try:

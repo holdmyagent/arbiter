@@ -48,6 +48,11 @@
   most-restrictive default). New `/v1/policy*` endpoints, `policy:read-resolved` /
   `policy:read` / `policy:write` capabilities, TOTP step-up on writes, mutation
   audit, and a `policy.updated` stream event. (migration 11)
+- **Enrolment mint-name widening.** A device token name that collides falls back to `-2`…`-9`
+  and now, if those are all taken (nine re-pairs of one device name — revoked tokens keep
+  their unique name), to three attempts at `<name>-<8 random hex>` before giving up. Giving
+  up is still logged and still completes the enrolment without a token. All candidates stay
+  inside the documented 64-character token-name cap.
 
 ### Fixed
 
