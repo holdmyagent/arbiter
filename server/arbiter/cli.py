@@ -43,6 +43,9 @@ ttl_max_seconds = 86400
 approval_ttl_seconds = 600  # how long an approval stays consumable
 rate_limit_per_minute = 30  # per-identity create rate limit
 deny_action_types = []      # e.g. ["db.drop"]
+# audit_retention_days = 90 # prune audit rows older than N days (daily sweep on
+                            # the scheduler + `hma audit prune`). Unset = keep
+                            # forever. NEVER prunes requests.
 # [policy.severity_floors]  # e.g. deploy = "high"
 # [policy.gate] is not a TOML table — gate policy (presets/overlay/active
 # selection) is stored in the per-cell DB (migration 11), not this file.
@@ -150,7 +153,8 @@ def serve(config_path, lan, log_json):
     sender = APNsSender(cfg)
     registry = TenantRegistry(control, cfg=cfg, sender=sender)
     scheduler = ExpiryScheduler(registry, control,
-                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds,
+                                audit_retention_days=cfg.policy.audit_retention_days)
     app = create_app(cfg, registry, control, sender=sender, scheduler=scheduler)
     # log_config=None: leave uvicorn's loggers unconfigured so they propagate to
     # the root handler set up above (JSON or plain) instead of uvicorn's own
@@ -582,6 +586,35 @@ def audit_export(fmt, out_path, url_option, config_path):
         raise click.ClickException(f"export failed against {base}: {exc}")
     if out_path:
         click.echo(f"wrote {n} audit events to {out_path}")
+
+
+@audit.command("prune")
+@click.option("--days", type=int, required=True,
+              help="Delete audit rows older than N days.")
+@click.option("--tenant", "tenant_id", default=None, help="Tenant cell (default 'default').")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def audit_prune(days, tenant_id, config_path):
+    """Delete audit rows older than N days. NEVER touches `requests`.
+
+    Local twin of the scheduler's daily sweep (config policy.audit_retention_days):
+    it reads the database directly, so it runs on the arbiter host — unlike
+    `hma audit export`, which goes over HTTP.
+    """
+    from .db import Database
+    from .provisioning import control_path_for
+    if days < 1:
+        raise click.ClickException("--days must be >= 1")
+    cfg = Config.load(config_path)
+    control_path = control_path_for(cfg)
+    if tenant_id or control_path.exists():
+        tid = tenant_id or "default"
+        control = _control(cfg)
+        if control.epoch_of(tid) is None:
+            raise click.ClickException(f"no such tenant '{tid}'")
+        db = _cell_db_for(control, tid)
+    else:
+        db = Database(cfg.db_path_expanded())
+    click.echo(f"pruned {db.prune_audit(days)} audit rows older than {days} days")
 
 if __name__ == "__main__":
     main()

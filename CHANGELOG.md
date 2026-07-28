@@ -56,6 +56,12 @@
 - **`hma tenant pair-code --quiet`** prints only the pairing deep-link payload — one line, no
   banner — so provisioning scripts can consume it without parsing human-facing output. The
   default output is unchanged.
+- **Audit retention.** New optional config `policy.audit_retention_days` (unset by default =
+  keep forever). When set, the scheduler sweeps once shortly after startup and daily
+  thereafter, deleting `audit` rows older than N days in every tenant cell and logging what
+  it deleted; `hma audit prune --days N` does the same on demand and prints the count.
+  Neither ever touches `requests` — the approval record itself is never pruned. A retention
+  below 1 day is refused at startup.
 
 ### Fixed
 

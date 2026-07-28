@@ -687,6 +687,18 @@ class Database:
                 yield d
             last_at, last_id = rows[-1]["at"], rows[-1]["id"]
 
+    def prune_audit(self, days: int, now: datetime | None = None) -> int:
+        """Delete audit rows older than `days` (0.7 S6, config
+        policy.audit_retention_days). AUDIT ONLY — `requests` is never pruned;
+        an approval's own history is this product's evidence (R5). ISO-8601 UTC
+        strings compare lexicographically, the same convention the rest of this
+        file relies on. `now` is injectable for tests. Returns the row count."""
+        cutoff = _iso((now or _utcnow()) - timedelta(days=days))
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM audit WHERE at < ?", (cutoff,))
+            self.conn.commit()
+            return cur.rowcount
+
     def rename_device(self, device_id: str, name: str) -> dict | None:
         with self._lock:
             self.conn.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))

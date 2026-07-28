@@ -33,5 +33,6 @@ ensure_default_cell(cfg, control, tenants_root)
 sender = APNsSender(cfg)
 registry = TenantRegistry(control, cfg=cfg, sender=sender)
 scheduler = ExpiryScheduler(registry, control,
-                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+                            approval_ttl_seconds=cfg.policy.approval_ttl_seconds,
+                            audit_retention_days=cfg.policy.audit_retention_days)
 app = create_app(cfg, registry, control, sender=sender, scheduler=scheduler)

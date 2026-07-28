@@ -89,6 +89,15 @@ writes to a file instead of stdout. `--url` follows the same resolution
 order as `hma ask`/`hma status` (`--url`, then `HMA_URL`, then
 `http://127.0.0.1:<port>`), so it can export from a remote arbiter.
 
+### `hma audit prune --days N [--tenant TID] [--config PATH]`
+
+Deletes `audit` rows older than N days and prints how many went, for a single
+tenant cell (default `default`). Never touches `requests`. Unlike
+`hma audit export`, this reads the database directly, so it runs on the arbiter
+host. It is the manual twin of the daily sweep configured by
+`policy.audit_retention_days` ([`config.md`](config.md)); either can be used
+without the other.
+
 ## `hma-warden` — the enforcement daemon CLI
 
 See [`warden.md`](warden.md) for concepts and `warden.toml` structure.

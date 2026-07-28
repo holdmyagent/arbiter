@@ -182,3 +182,33 @@ def test_iter_audit_tiebreaks_on_id_within_same_at(db):
     for batch in (1, 2, 3):
         paged = list(db.iter_audit(batch=batch))
         assert [r["id"] for r in paged] == ids        # same order at every batch size
+
+
+def test_prune_audit_deletes_only_rows_older_than_the_window(db):
+    """0.7 S6. No sleeping: backdate `at` directly in SQL to simulate age.
+    (`_dt`, `timedelta` and `timezone` are already imported at the top of this
+    file.)"""
+    db.add_audit("-", "stale")
+    db.add_audit("-", "fresh")
+    old = (_dt.now(timezone.utc) - timedelta(days=40)).isoformat()
+    with db._lock:
+        db.conn.execute("UPDATE audit SET at=? WHERE event='stale'", (old,))
+        db.conn.commit()
+
+    assert db.prune_audit(30) == 1
+    assert [r["event"] for r in db.list_audit()] == ["fresh"]
+    assert db.prune_audit(30) == 0                     # idempotent
+
+
+def test_prune_audit_never_touches_requests(db, make):
+    """R5: the audit table only. A request row — the product's evidence — is
+    never deleted, however old it is."""
+    req = db.create_request(make(title="ancient"))
+    old = (_dt.now(timezone.utc) - timedelta(days=400)).isoformat()
+    with db._lock:
+        db.conn.execute("UPDATE requests SET created_at=? WHERE id=?", (old, req["id"]))
+        db.conn.execute("UPDATE audit SET at=?", (old,))
+        db.conn.commit()
+
+    assert db.prune_audit(30) >= 1
+    assert db.get_request(req["id"]) is not None

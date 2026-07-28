@@ -57,6 +57,7 @@ class PolicyCfg:
     rate_limit_per_minute: int = 30
     deny_action_types: list[str] = field(default_factory=list)
     severity_floors: dict[str, str] = field(default_factory=dict)
+    audit_retention_days: int | None = None      # None = keep audit rows forever
 
 _DEFAULT_TOKENS = {"dev-agent-token", "dev-app-token"}
 
@@ -118,6 +119,10 @@ class Config:
                       "rate_limit_per_minute"):
                 if k in pol:
                     setattr(cfg.policy, k, int(pol[k]))
+            # Optional int: absent means "keep forever", so it needs its own
+            # guarded read rather than a slot in the required-int loop above.
+            if "audit_retention_days" in pol:
+                cfg.policy.audit_retention_days = int(pol["audit_retention_days"])
             if "deny_action_types" in pol:
                 cfg.policy.deny_action_types = [str(x) for x in pol["deny_action_types"]]
             for k, v in pol.get("severity_floors", {}).items():
@@ -156,6 +161,10 @@ class Config:
             p.append("refusing to run with default dev tokens")
         if a.agent_token and a.agent_token == a.app_token:
             p.append("agent_token and app_token must differ")
+        days = self.policy.audit_retention_days
+        if days is not None and days < 1:
+            p.append("policy.audit_retention_days must be >= 1 "
+                     "(omit the key to keep audit rows forever)")
         return p
 
     def db_path_expanded(self) -> str:

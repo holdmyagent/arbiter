@@ -19,6 +19,8 @@ from .signing import sign_verdict
 
 log = logging.getLogger("arbiter.scheduler")
 
+AUDIT_SWEEP_INTERVAL_S = 86400.0        # daily (0.7 S6)
+
 
 def _ts(iso: str) -> float:
     return datetime.fromisoformat(iso).timestamp()
@@ -31,19 +33,23 @@ def _now() -> datetime:
 class ExpiryScheduler:
     def __init__(self, registry, control, *, approval_ttl_seconds: int,
                  rescan_interval: float = 30.0, seed_batch: int = 32,
-                 per_tenant_batch: int = 16):
+                 per_tenant_batch: int = 16, audit_retention_days: int | None = None,
+                 audit_sweep_interval: float = AUDIT_SWEEP_INTERVAL_S):
         self.registry = registry
         self.control = control
         self.approval_ttl_seconds = approval_ttl_seconds
         self.rescan_interval = rescan_interval
         self.seed_batch = seed_batch
         self.per_tenant_batch = per_tenant_batch
+        self.audit_retention_days = audit_retention_days
+        self.audit_sweep_interval = audit_sweep_interval
         self._heap: list[tuple[float, int, str, str]] = []
         self._seq = itertools.count()
         self._wake = asyncio.Event()
         self._bg: set[asyncio.Task] = set()
         self._rescan_cursor = 0
         self._last_rescan = 0.0
+        self._last_audit_sweep: float | None = None      # None = never swept
         self._stopped = False
 
     def schedule(self, expires_at: str, tenant_id: str, request_id: str) -> None:
@@ -221,6 +227,7 @@ class ExpiryScheduler:
             if time.monotonic() - self._last_rescan >= self.rescan_interval:
                 self._last_rescan = time.monotonic()
                 await self._rescan_tick()
+                await self._audit_sweep_tick()
 
     async def _rescan_tick(self) -> None:
         """Bounded level-triggered rescan: a rolling slice of tenants per tick,
@@ -293,3 +300,41 @@ class ExpiryScheduler:
             except Exception as exc:
                 log.warning("recover seam failed tenant=%s: %s", t["tenant_id"], exc)
         return recovered
+
+    async def audit_sweep(self, now: datetime | None = None) -> int:
+        """0.7 S6: delete audit rows older than `audit_retention_days` in EVERY
+        cell and return the total deleted. A no-op returning 0 when retention is
+        unset (the default: keep forever). Deletes from `audit` only — `requests`
+        is never pruned (R5). Clock-injectable like the seams above. A per-tenant
+        failure is logged and skipped: housekeeping must never take the scheduler
+        down, and the next daily pass retries it."""
+        days = self.audit_retention_days
+        if days is None:
+            return 0
+        deleted = 0
+        for t in self.control.list_tenants():
+            try:
+                async with self.registry.hold(t["tenant_id"], t["epoch"]) as cell:
+                    n = cell.db.prune_audit(days, now=now)
+                    if n:
+                        log.info("audit prune: deleted %d rows older than %d days"
+                                 " for tenant=%s", n, days, t["tenant_id"])
+                    deleted += n
+            except Exception as exc:
+                log.warning("audit prune failed tenant=%s: %s", t["tenant_id"], exc)
+            await asyncio.sleep(0)
+        return deleted
+
+    async def _audit_sweep_tick(self) -> None:
+        """Watermark gate riding the rescan cadence (run() calls this right after
+        _rescan_tick): sweep on the first rescan after startup, then at most once
+        per audit_sweep_interval. A monotonic watermark, so a clock step cannot
+        trigger a storm of sweeps."""
+        if self.audit_retention_days is None:
+            return
+        elapsed = time.monotonic()
+        if self._last_audit_sweep is not None \
+                and elapsed - self._last_audit_sweep < self.audit_sweep_interval:
+            return
+        self._last_audit_sweep = elapsed
+        await self.audit_sweep()

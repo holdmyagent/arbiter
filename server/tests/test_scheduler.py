@@ -329,3 +329,61 @@ async def test_two_tenant_scheduler_isolation_and_durability():
     # each cell only ever saw its own expiry events on its own hub
     assert all(e["request"]["id"] in a_ids for e in A.hub.events)
     assert all(e["request"]["id"] == b_id for e in B.hub.events)
+
+
+# ── 0.7 S6: audit retention sweep ────────────────────────────────────────
+def _aged_audit(cell, event, at):
+    cell.db.add_audit("-", event)
+    with cell.db._lock:
+        cell.db.conn.execute("UPDATE audit SET at=? WHERE event=?", (at, event))
+        cell.db.conn.commit()
+
+
+@pytest.mark.asyncio
+async def test_audit_sweep_prunes_every_cell():
+    a, b = _Cell("default", 1), _Cell("acme", 1)
+    for cell in (a, b):
+        _aged_audit(cell, "stale", _iso(_now() - timedelta(days=40)))
+        _aged_audit(cell, "fresh", _iso(_now()))
+    sched, _, _ = _mk(a, b, audit_retention_days=30)
+    assert await sched.audit_sweep() == 2
+    for cell in (a, b):
+        assert [r["event"] for r in cell.db.list_audit()] == ["fresh"]
+
+
+@pytest.mark.asyncio
+async def test_audit_sweep_never_touches_requests():
+    cell = _Cell("default", 1)
+    row = _add_pending(cell, _iso(_now() - timedelta(days=90)))
+    _aged_audit(cell, "stale", _iso(_now() - timedelta(days=40)))
+    sched, _, _ = _mk(cell, audit_retention_days=30)
+    assert await sched.audit_sweep() >= 1
+    assert cell.db.get_request(row["id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_audit_sweep_is_a_no_op_when_retention_is_unset():
+    cell = _Cell("default", 1)
+    _aged_audit(cell, "ancient", _iso(_now() - timedelta(days=400)))
+    sched, _, _ = _mk(cell)                      # default: keep forever
+    assert await sched.audit_sweep() == 0
+    assert len(cell.db.list_audit()) == 1
+
+
+@pytest.mark.asyncio
+async def test_audit_sweep_tick_sweeps_once_then_waits_for_the_watermark():
+    cell = _Cell("default", 1)
+    sched, _, _ = _mk(cell, audit_retention_days=30)
+    calls: list[object] = []
+
+    async def _record(now=None):
+        calls.append(now)
+        return 0
+
+    sched.audit_sweep = _record
+    await sched._audit_sweep_tick()              # first tick after startup: sweeps
+    await sched._audit_sweep_tick()              # inside the 24 h window: does not
+    assert len(calls) == 1
+    sched._last_audit_sweep -= sched.audit_sweep_interval    # a day later
+    await sched._audit_sweep_tick()
+    assert len(calls) == 2
