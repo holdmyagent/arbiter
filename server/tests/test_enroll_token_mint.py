@@ -1,6 +1,8 @@
 """iOS 0.6 A1 — per-device token minted at enrolment. Unit half: sanitise + mint."""
 import re
+import sqlite3
 
+from arbiter import enroll
 from arbiter.cli import _mint_pair_code
 from arbiter.enroll import _sanitise_token_name
 
@@ -115,3 +117,61 @@ def test_reserved_device_name_is_suffixed_not_minted_verbatim(client):
     assert "app-2" in tok_names        # never a minted token literally named "app"
     dev_names = {d["apns_token"]: d["token_name"] for d in client.db.list_devices()}
     assert dev_names["apns-reserved"] == "app-2"
+
+
+# ── 0.7 S3: candidate widening (base, -2..-9, then three 8-hex attempts) ──
+
+class _FakeCell:
+    """mint_device_token only ever passes cell.db and cell.tenant_id through to
+    mint_cell_token, which these tests replace — so both can be inert."""
+    db = None
+    tenant_id = "default"
+
+
+def test_candidate_names_order_and_hex_tail(monkeypatch):
+    seq = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
+    monkeypatch.setattr(enroll.secrets, "token_hex", lambda n: next(seq))
+    assert list(enroll._candidate_names("kevin")) == [
+        "kevin", "kevin-2", "kevin-3", "kevin-4", "kevin-5",
+        "kevin-6", "kevin-7", "kevin-8", "kevin-9",
+        "kevin-aaaaaaaa", "kevin-bbbbbbbb", "kevin-cccccccc"]
+
+
+def test_candidate_names_never_exceed_the_64_char_cap():
+    base = _sanitise_token_name("x" * 200)          # the pinned 62-char base cap
+    assert len(base) == 62
+    names = list(enroll._candidate_names(base))
+    assert max(len(n) for n in names) == 64         # "<62>-9" and "<55>-<8 hex>"
+    assert all(re.fullmatch(r"[a-z0-9-]{1,64}", n) for n in names)
+
+
+def test_mint_falls_back_to_a_hex_suffix_when_the_numeric_run_is_taken(monkeypatch):
+    taken = {"kevin-s-iphone-17"} | {f"kevin-s-iphone-17-{i}" for i in range(2, 10)}
+    tried: list[str] = []
+
+    def _mint(control, cell_db, tenant_id, name, role):
+        tried.append(name)
+        if name in taken:
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: tokens.name")
+        return f"hma_{role}_" + "0" * 48
+
+    monkeypatch.setattr(enroll, "mint_cell_token", _mint)
+    name, value = enroll.mint_device_token(None, _FakeCell(), {}, "Kevin's iPhone 17")
+    assert re.fullmatch(r"kevin-s-iphone-17-[0-9a-f]{8}", name)
+    assert TOKEN_RE.fullmatch(value)
+    assert len(tried) == 10                         # base + -2..-9 + one hex attempt
+
+
+def test_mint_gives_up_after_exactly_three_hex_attempts(monkeypatch):
+    tried: list[str] = []
+
+    def _always_taken(control, cell_db, tenant_id, name, role):
+        tried.append(name)
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: tokens.name")
+
+    monkeypatch.setattr(enroll, "mint_cell_token", _always_taken)
+    monkeypatch.setattr(enroll.secrets, "token_hex", lambda n: "abcd1234")
+    assert enroll.mint_device_token(None, _FakeCell(), {}, "Kevin's iPhone 17") is None
+    assert tried == (["kevin-s-iphone-17"]
+                     + [f"kevin-s-iphone-17-{i}" for i in range(2, 10)]
+                     + ["kevin-s-iphone-17-abcd1234"] * 3)

@@ -48,6 +48,25 @@
   most-restrictive default). New `/v1/policy*` endpoints, `policy:read-resolved` /
   `policy:read` / `policy:write` capabilities, TOTP step-up on writes, mutation
   audit, and a `policy.updated` stream event. (migration 11)
+- **Enrolment mint-name widening.** A device token name that collides falls back to `-2`…`-9`
+  and now, if those are all taken (nine re-pairs of one device name — revoked tokens keep
+  their unique name), to three attempts at `<name>-<8 random hex>` before giving up. Giving
+  up is still logged and still completes the enrolment without a token. All candidates stay
+  inside the documented 64-character token-name cap.
+- **`hma tenant pair-code --quiet`** prints only the pairing deep-link payload — one line, no
+  banner — so provisioning scripts can consume it without parsing human-facing output. The
+  default output is unchanged.
+- **Audit retention.** New optional config `policy.audit_retention_days` (unset by default =
+  keep forever). When set, the scheduler sweeps once shortly after startup and daily
+  thereafter, deleting `audit` rows older than N days in every tenant cell and logging what
+  it deleted; `hma audit prune --days N` does the same on demand and prints the count.
+  Neither ever touches `requests` — the approval record itself is never pruned. A retention
+  below 1 day is refused at startup.
+- **`hma ask --payload-json`** attaches a structured payload (a JSON object) to the request it
+  creates, so a caller that shells out to the CLI — the approval gate does — can carry the
+  content an approver actually needs to see instead of filing a bare title. Malformed or
+  non-object JSON is rejected with exit `2` before anything is sent, so the caller fails
+  closed. Without the flag the request body is unchanged.
 
 ### Fixed
 
@@ -79,6 +98,25 @@
   Behaviour change: consumers that treated `decided_by` as a device name will now
   see a credential label for legacy-token decisions — which is the point, since it
   was never reliably a device.
+- **A second phone pairing can no longer revoke the first phone's token.** Device rows are
+  keyed on `apns_token`, so two enrolments that both send `""` — a pairing completed before
+  the phone has an APNs token, and every Simulator, which never gets one — land on the same
+  row. The 0.6 rotation step read that shared row's `token_name` and revoked it, taking a
+  working, innocent device's ability to approve with it. An enrolment with an empty
+  `apns_token` is now **mint-only**: it still returns a freshly minted named token, but it
+  neither links the device row (`devices.token_name`) nor revokes any predecessor, and logs
+  that it did so at INFO. Rotation semantics are unchanged for rows with a real APNs token.
+- **The warden's last lost-outcome window is closed.** `status='executed'` and the owed
+  execution report (`report_pending`, `report_payload`) were two UPDATEs in two commits; a
+  warden killed between them left a proposal that had run, was marked executed, and owed
+  nothing — so the retry sweep could never find it. `WardenDB.set_status` now takes an
+  optional `report_payload` and writes all three in **one statement**. Callers that pass no
+  payload (failed / denied / expired / executing) leave the report bookkeeping untouched.
+- **A dropped `request.executed` publish now leaves an audit row.** The exec-report
+  publish hop's failure path only logged, while every other notification failure records
+  `notify_failed`. It now records one too (`{"notifier": "stream", "error": …}`, error
+  truncated to 200 characters), inside a nested guard so an audit-write failure can never
+  turn an already-committed execution report into a 500.
 
 ### Security
 

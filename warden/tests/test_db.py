@@ -1,6 +1,7 @@
 """hold_warden.db — WardenDB proposals store (SQLite, WAL, single-read secrets)."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -156,3 +157,45 @@ def test_take_secret_result_two_threads_exactly_one_wins(db):
         t.join()
     assert results.count(None) == 1
     assert {"secret": "hunter2"} in results
+
+
+def test_set_status_executed_with_payload_is_a_single_update(db):
+    """0.7 S2: 'executed' and the owed report used to be two UPDATEs in two
+    commits — a kill between them lost the outcome forever. Trace every
+    statement the call issues and prove exactly one UPDATE carries both."""
+    p = _mk(db)
+    payload = {"exit_code": 0, "ran": "echo hi", "output": "hi\n", "kind": "command"}
+    seen: list[str] = []
+    db._conn.set_trace_callback(seen.append)
+    db.set_status(p["id"], "executed", result={"exit_code": 0},
+                  receipt={"request_id": "req-1"}, report_payload=payload)
+    db._conn.set_trace_callback(None)
+
+    updates = [s for s in seen if s.strip().upper().startswith("UPDATE")]
+    assert len(updates) == 1
+    # sqlite3's trace callback reports the expanded statement (bound params
+    # substituted in), never the literal "?" placeholders - assert on the
+    # substituted form.
+    assert "status='executed'" in updates[0] and "report_pending=" in updates[0]
+    row = db.get(p["id"])
+    assert row["status"] == "executed"
+    assert row["report_pending"] == 1
+    assert json.loads(row["report_payload"]) == payload
+    assert row["report_next_at"] is None
+    # …and that is exactly the shape reports_due filters on, so the retry sweep
+    # picks the row up immediately (status='executed' AND report_pending=1).
+    due = db.reports_due(datetime.now(timezone.utc).isoformat())
+    assert [r["id"] for r in due] == [p["id"]]
+
+
+def test_set_status_without_payload_leaves_report_bookkeeping_alone(db):
+    """Every other set_status caller (failed/denied/expired/executing) passes no
+    payload and must neither arm nor clear the report flag."""
+    p = _mk(db)
+    payload = {"exit_code": 0, "ran": "echo hi", "output": "hi\n", "kind": "command"}
+    db.set_status(p["id"], "executed", report_payload=payload)
+    db.set_status(p["id"], "failed")
+    row = db.get(p["id"])
+    assert row["status"] == "failed"
+    assert row["report_pending"] == 1
+    assert json.loads(row["report_payload"]) == payload

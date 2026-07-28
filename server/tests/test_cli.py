@@ -116,3 +116,87 @@ def test_cli_audit_export_unreachable_fails(monkeypatch, tmp_path):
     monkeypatch.delenv("HMA_URL", raising=False)
     r = CliRunner().invoke(main, ["audit", "export", "--url", "http://127.0.0.1:1"])
     assert r.exit_code != 0 and "export failed" in r.output
+
+
+# ── 0.7 S7: --payload-json ────────────────────────────────────────────────
+class _Resp:
+    """Minimal httpx.Response stand-in for the wire-body tests."""
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._body
+
+
+class _CapturingClient:
+    """Minimal httpx.Client stand-in: records every create body, then reports
+    the request as already approved so _ask returns on its first poll."""
+    def __init__(self):
+        self.bodies = []
+
+    def post(self, url, headers=None, json=None):
+        self.bodies.append(json)
+        return _Resp({"id": "r-1", "status": "pending"})
+
+    def get(self, url, headers=None, params=None):
+        return _Resp({"id": "r-1", "status": "approved"})
+
+
+def test_ask_omits_payload_from_the_wire_body_when_the_flag_is_absent():
+    """The default body must stay byte-for-byte what it has always been."""
+    c = _CapturingClient()
+    code, _ = _ask(c, "tok", title="t", severity="low", target=None, ttl=5, description="")
+    assert code == 0
+    assert set(c.bodies[0]) == {"title", "description", "severity", "target", "ttl_seconds"}
+
+
+def test_ask_includes_payload_in_the_wire_body_when_given():
+    c = _CapturingClient()
+    payload = {"agent": "hermes", "tool": "skill_manage", "verb": "create"}
+    code, _ = _ask(c, "tok", title="t", severity="low", target=None, ttl=5,
+                   description="", payload=payload)
+    assert code == 0
+    assert c.bodies[0]["payload"] == payload
+
+
+def test_ask_payload_reaches_the_created_request(client, cfg, app_headers):
+    """End to end against the real server: the payload lands on the row and
+    comes back on the read the caller polls."""
+    payload = {"agent": "hermes", "tool": "skill_manage", "verb": "create",
+               "args_preview": "{\"name\": \"web-scraper\"}"}
+
+    def approve_soon():
+        time.sleep(0.3)
+        rid = client.get("/v1/requests", headers=app_headers).json()[0]["id"]
+        client.post(f"/v1/requests/{rid}/decision", headers=app_headers,
+                    json={"decision": "approve"})
+
+    threading.Thread(target=approve_soon).start()
+    code, decision = _ask(client, cfg.auth.agent_token, title="Hermes: skill_manage create",
+                          severity="low", target=None, ttl=30, description="creates a skill",
+                          payload=payload)
+    assert code == 0
+    assert decision["payload"] == payload
+    assert client.db.get_request(decision["id"])["payload"] == payload
+
+
+@pytest.mark.parametrize("bad", ["not json", '["list"]', '"a string"', "42", ""])
+def test_ask_rejects_a_malformed_payload_before_posting_anything(bad, monkeypatch, tmp_path):
+    """Fail-closed: exit 2 (the `ask` error code, not 1 = denied) and NOTHING is
+    posted — a gate shelling out here blocks instead of filing a contentless ask."""
+    import arbiter.cli as cli_mod
+
+    monkeypatch.setenv("HMA_CONFIG", str(tmp_path / "nope.toml"))
+    monkeypatch.delenv("HMA_URL", raising=False)
+    calls = []
+    monkeypatch.setattr(cli_mod, "_ask",
+                        lambda *a, **kw: calls.append(kw) or (0, {"status": "approved"}))
+
+    r = CliRunner().invoke(main, ["ask", "t", "--payload-json", bad])
+    assert r.exit_code == 2, r.output
+    assert ("--payload-json is not valid JSON" in r.output
+            or "--payload-json must be a JSON object" in r.output)
+    assert calls == []

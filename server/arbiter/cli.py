@@ -43,6 +43,9 @@ ttl_max_seconds = 86400
 approval_ttl_seconds = 600  # how long an approval stays consumable
 rate_limit_per_minute = 30  # per-identity create rate limit
 deny_action_types = []      # e.g. ["db.drop"]
+# audit_retention_days = 90 # prune audit rows older than N days (daily sweep on
+                            # the scheduler + `hma audit prune`). Unset = keep
+                            # forever. NEVER prunes requests.
 # [policy.severity_floors]  # e.g. deploy = "high"
 # [policy.gate] is not a TOML table — gate policy (presets/overlay/active
 # selection) is stored in the per-cell DB (migration 11), not this file.
@@ -150,7 +153,8 @@ def serve(config_path, lan, log_json):
     sender = APNsSender(cfg)
     registry = TenantRegistry(control, cfg=cfg, sender=sender)
     scheduler = ExpiryScheduler(registry, control,
-                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds)
+                                approval_ttl_seconds=cfg.policy.approval_ttl_seconds,
+                                audit_retention_days=cfg.policy.audit_retention_days)
     app = create_app(cfg, registry, control, sender=sender, scheduler=scheduler)
     # log_config=None: leave uvicorn's loggers unconfigured so they propagate to
     # the root handler set up above (JSON or plain) instead of uvicorn's own
@@ -220,13 +224,37 @@ def status(config_path, url_option):
         click.echo(f"  - {d['name']} (min severity {d['min_severity']})")
     click.echo(f"pending requests: {len(pending)}")
 
-def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
-         target: str | None, ttl: int, description: str) -> tuple[int, dict]:
-    hdr = {"Authorization": f"Bearer {agent_token}"}
+def _parse_payload_json(raw: str | None) -> dict | None:
+    """Parse --payload-json into a request payload, or None when not supplied.
+
+    Fail-closed and BEFORE anything is posted: a malformed or non-object value
+    raises, so a gate that shells out to `hma ask` blocks (any nonzero exit)
+    instead of filing a contentless ask. UsageError, not a bare ClickException,
+    because its exit code is 2 — this command's "error" code — where a plain
+    ClickException would exit 1, which means "denied".
+    """
+    if raw is None:
+        return None
     try:
-        r = client.post("/v1/requests", headers=hdr, json={
-            "title": title, "description": description, "severity": severity,
-            "target": target, "ttl_seconds": ttl})
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise click.UsageError(f"--payload-json is not valid JSON: {exc}")
+    if not isinstance(value, dict):
+        raise click.UsageError(
+            f"--payload-json must be a JSON object, got {type(value).__name__}")
+    return value
+
+def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
+         target: str | None, ttl: int, description: str,
+         payload: dict | None = None) -> tuple[int, dict]:
+    hdr = {"Authorization": f"Bearer {agent_token}"}
+    body = {"title": title, "description": description, "severity": severity,
+            "target": target, "ttl_seconds": ttl}
+    if payload is not None:
+        body["payload"] = payload      # omitted entirely when absent: the
+                                       # default wire body is unchanged
+    try:
+        r = client.post("/v1/requests", headers=hdr, json=body)
         r.raise_for_status()
         req = r.json()
         deadline = time.time() + ttl + 5
@@ -247,19 +275,24 @@ def _ask(client: httpx.Client, agent_token: str, *, title: str, severity: str,
 @click.option("--target", default=None)
 @click.option("--ttl", type=int, default=300)
 @click.option("--description", default="")
+@click.option("--payload-json", "payload_json", default=None,
+              help='Structured payload as a JSON object, e.g. \'{"agent":"hermes"}\'.')
 @click.option("--url", "url_option", default=None,
               help="Server base URL (or HMA_URL env; default http://127.0.0.1:<port>).")
 @click.option("--config", "config_path", default=None)
-def ask(title, severity, target, ttl, description, url_option, config_path):
+def ask(title, severity, target, ttl, description, payload_json, url_option, config_path):
     """Create an approval request and block until it is decided.
 
     Exit codes: 0 approved · 1 denied/expired · 2 error (fail-closed: treat nonzero as no).
+    A malformed --payload-json is an error (2) raised before any request is sent.
     """
+    payload = _parse_payload_json(payload_json)     # fail-closed: nothing posted on bad input
     cfg = Config.load(config_path)
     base = _base_url(url_option, cfg)
     with httpx.Client(base_url=base, timeout=10) as client:
         code, decision = _ask(client, cfg.auth.agent_token, title=title,
-                              severity=severity, target=target, ttl=ttl, description=description)
+                              severity=severity, target=target, ttl=ttl,
+                              description=description, payload=payload)
     click.echo(json.dumps(decision, indent=2))
     sys.exit(code)
 
@@ -498,8 +531,10 @@ def tenant_delete(tenant_id, config_path):
 @click.argument("tenant_id")
 @click.option("--minutes", type=int, default=15, help="Credential lifetime (default 15).")
 @click.option("--host", "host_url", default=None, help="Server base URL for the QR payload.")
+@click.option("--quiet", is_flag=True,
+              help="Print ONLY the deep-link payload (one line, for scripting).")
 @click.option("--config", "config_path", default=None, help="Path to config.toml")
-def tenant_pair_code(tenant_id, minutes, host_url, config_path):
+def tenant_pair_code(tenant_id, minutes, host_url, quiet, config_path):
     """Mint a single-use pairing credential for TENANT_ID and print its deep-link."""
     from .pair import build_pairing_payload, local_ip
     cfg = Config.load(config_path)
@@ -509,8 +544,12 @@ def tenant_pair_code(tenant_id, minutes, host_url, config_path):
     except (KeyError, ValueError) as exc:
         raise click.ClickException(f"cannot mint pairing code for '{tenant_id}': {exc}")
     base = host_url or f"http://{local_ip()}:{cfg.server.port}"
+    payload = build_pairing_payload(base, code)
+    if quiet:
+        click.echo(payload)          # exactly one line: the whole point of --quiet
+        return
     click.echo(f"pairing code: {code}")
-    click.echo(f"deep-link:    {build_pairing_payload(base, code)}")
+    click.echo(f"deep-link:    {payload}")
     click.echo(f"Single-use, expires in {minutes} min. Shown once.")
 
 
@@ -576,6 +615,35 @@ def audit_export(fmt, out_path, url_option, config_path):
         raise click.ClickException(f"export failed against {base}: {exc}")
     if out_path:
         click.echo(f"wrote {n} audit events to {out_path}")
+
+
+@audit.command("prune")
+@click.option("--days", type=int, required=True,
+              help="Delete audit rows older than N days.")
+@click.option("--tenant", "tenant_id", default=None, help="Tenant cell (default 'default').")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def audit_prune(days, tenant_id, config_path):
+    """Delete audit rows older than N days. NEVER touches `requests`.
+
+    Local twin of the scheduler's daily sweep (config policy.audit_retention_days):
+    it reads the database directly, so it runs on the arbiter host — unlike
+    `hma audit export`, which goes over HTTP.
+    """
+    from .db import Database
+    from .provisioning import control_path_for
+    if days < 1:
+        raise click.ClickException("--days must be >= 1")
+    cfg = Config.load(config_path)
+    control_path = control_path_for(cfg)
+    if tenant_id or control_path.exists():
+        tid = tenant_id or "default"
+        control = _control(cfg)
+        if control.epoch_of(tid) is None:
+            raise click.ClickException(f"no such tenant '{tid}'")
+        db = _cell_db_for(control, tid)
+    else:
+        db = Database(cfg.db_path_expanded())
+    click.echo(f"pruned {db.prune_audit(days)} audit rows older than {days} days")
 
 if __name__ == "__main__":
     main()

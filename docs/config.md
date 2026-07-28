@@ -27,6 +27,7 @@ approval_ttl_seconds = 600 # approval freshness: consume refuses (410) older app
                            # the sweeper flips stale unconsumed approvals to expired
 rate_limit_per_minute = 30 # per-identity request-creation limit (429 beyond it)
 deny_action_types = []     # e.g. ["db.drop"] — auto-deny at create (403 "policy: …")
+# audit_retention_days = 90 # prune `audit` rows older than N days; unset = keep forever
 
 [policy.severity_floors]   # per-action_type minimum severity;
                            # effective severity = max(agent-claimed, floor)
@@ -92,6 +93,13 @@ Enforced at request creation, in this order: identity resolution ->
 TTL clamp -> idempotency replay / duplicate-collapse (200 with the existing
 row). `approval_ttl_seconds` bounds how long an approval stays consumable —
 the single-use consume returns 410 past it.
+
+`audit_retention_days` is **unset by default — audit rows are kept forever**. When set to
+`N >= 1`, the scheduler sweeps once shortly after startup and daily thereafter, deleting
+`audit` rows older than N days in every tenant cell, and logs a line per cell that deleted
+anything. It **never** touches `requests`: an approval's own history is the record this
+product exists to keep. `hma audit prune --days N` runs the same delete manually and prints
+the count. A value below 1 is refused at startup.
 
 ### `[notify]` and `callback_allowlist`
 

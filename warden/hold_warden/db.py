@@ -118,24 +118,26 @@ class WardenDB:
         return [self._to_dict(r) for r in rows]
 
     def set_status(self, proposal_id: str, status: str, *, result: dict | None = None,
-                   receipt: dict | None = None) -> None:
+                   receipt: dict | None = None, report_payload: dict | None = None) -> None:
+        """One UPDATE, one commit. 0.7 S2: `report_payload` arms the owed
+        execution report in the SAME statement that flips the status, so there
+        is no window in which a proposal reads 'executed' while owing nothing —
+        a kill in that window used to lose the outcome permanently. Passing no
+        payload leaves report_pending/report_payload exactly as they were, so
+        every other caller (failed/denied/expired/executing) is unaffected."""
+        payload_json = json.dumps(report_payload) if report_payload is not None else None
         with self._lock:
             self._conn.execute(
                 "UPDATE proposals SET status=?, updated_at=?,"
-                " result=COALESCE(?, result), receipt=COALESCE(?, receipt) WHERE id=?",
+                " result=COALESCE(?, result), receipt=COALESCE(?, receipt),"
+                " report_payload=COALESCE(?, report_payload),"
+                " report_pending=CASE WHEN ? IS NULL THEN report_pending ELSE 1 END"
+                " WHERE id=?",
                 (status, _now(),
                  json.dumps(result) if result is not None else None,
                  json.dumps(receipt) if receipt is not None else None,
-                 proposal_id),
+                 payload_json, payload_json, proposal_id),
             )
-            self._conn.commit()
-
-    def mark_report_pending(self, proposal_id: str, payload: dict) -> None:
-        with self._lock:
-            self._conn.execute(
-                "UPDATE proposals SET report_pending=1, report_payload=?, updated_at=?"
-                " WHERE id=?",
-                (json.dumps(payload), _now(), proposal_id))
             self._conn.commit()
 
     def clear_report_pending(self, proposal_id: str) -> None:

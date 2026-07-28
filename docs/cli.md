@@ -42,12 +42,14 @@ Create an approval request and block until it is decided.
 | `--target TEXT` | none | What is being acted on. |
 | `--ttl N` | `300` | Request TTL in seconds (server-clamped to `[policy]` bounds). |
 | `--description TEXT` | `""` | Longer detail / push body. |
+| `--payload-json JSON` | none | Structured payload for the request, as a JSON **object** (e.g. `'{"agent":"hermes","tool":"skill_manage"}'`). Anything that is not a JSON object — including valid JSON arrays, strings and numbers — is rejected with exit `2` **before** any request is sent, so a caller that treats nonzero as "no" fails closed. |
 | `--url URL` | `http://127.0.0.1:<port>` | Arbiter base URL; falls back to `HMA_URL` env, then the localhost default. |
 | `--config PATH` | default config | Where to read the agent token (or set `HMA_AGENT_TOKEN`). |
 
 Exit codes: `0` approved, `1` denied or expired, `2` error — **fail-closed**:
-treat any nonzero as "no". With `--url`/`HMA_URL` plus `HMA_AGENT_TOKEN` in
-the environment, `hma ask` needs no local config file at all.
+treat any nonzero as "no". A malformed `--payload-json` is an error (`2`),
+raised before the request is created. With `--url`/`HMA_URL` plus
+`HMA_AGENT_TOKEN` in the environment, `hma ask` needs no local config file at all.
 
 ### `hma token create NAME --role ROLE [options]` (0.4.0)
 
@@ -72,6 +74,14 @@ revocation state. Never prints hashes or token values.
 Immediately revokes the named token (sets `revoked_at`; auth refuses it from
 then on).
 
+### `hma tenant pair-code TENANT_ID [--minutes N] [--host URL] [--quiet]`
+
+Mints a single-use, short-expiry pairing credential for a tenant and prints
+its `holdmyagent://pair?…` deep-link. `--quiet` prints **only** that payload,
+one line, with no "pairing code:" prefix and no expiry banner — the form to
+pipe into a QR generator or a provisioning script. The credential is single-use
+and shown once either way.
+
 ### `hma audit export [--format jsonl] [--out PATH] [--url URL]`
 
 Dump the append-only audit table as JSON Lines (the CLI twin of
@@ -80,6 +90,15 @@ configured app token, rather than reading the database directly). `--out`
 writes to a file instead of stdout. `--url` follows the same resolution
 order as `hma ask`/`hma status` (`--url`, then `HMA_URL`, then
 `http://127.0.0.1:<port>`), so it can export from a remote arbiter.
+
+### `hma audit prune --days N [--tenant TID] [--config PATH]`
+
+Deletes `audit` rows older than N days and prints how many went, for a single
+tenant cell (default `default`). Never touches `requests`. Unlike
+`hma audit export`, this reads the database directly, so it runs on the arbiter
+host. It is the manual twin of the daily sweep configured by
+`policy.audit_retention_days` ([`config.md`](config.md)); either can be used
+without the other.
 
 ## `hma-warden` — the enforcement daemon CLI
 

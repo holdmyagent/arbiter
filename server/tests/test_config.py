@@ -121,3 +121,24 @@ def test_callback_allowlist_parsed_and_defaults_empty(tmp_path):
     p.write_text('[notify]\ncallback_allowlist = ["10.0.0.0/8", "https://hooks.example/*"]\n')
     cfg = Config.load(str(p))
     assert cfg.callback_allowlist == ["10.0.0.0/8", "https://hooks.example/*"]
+
+
+def test_audit_retention_days_defaults_to_none(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(TOML)
+    assert Config.load(str(p)).policy.audit_retention_days is None
+
+
+def test_audit_retention_days_is_read_and_int_cast(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(TOML + "[policy]\naudit_retention_days = 90\n")
+    cfg = Config.load(str(p))
+    assert cfg.policy.audit_retention_days == 90
+    assert cfg.policy.ttl_min_seconds == 30          # untouched defaults
+
+
+def test_audit_retention_days_below_one_refuses_to_serve(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(TOML + "[policy]\naudit_retention_days = 0\n")
+    problems = Config.load(str(p)).validate_for_serve()
+    assert any("audit_retention_days" in x for x in problems)

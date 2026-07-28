@@ -174,3 +174,54 @@ def test_exec_report_survives_publish_hop_failure(client, agent_headers, app_hea
     row = client.db.get_request(rid)
     assert row["exec_exit_code"] == 0
     assert row["exec_ran"] == "x"
+
+
+def test_publish_hop_failure_records_a_notify_failed_audit_row(client, agent_headers,
+                                                                app_headers, monkeypatch):
+    """0.7 S4 — parity with the notifier path (Dispatcher._guard): a dropped
+    request.executed publish is visible in the audit log, not only in stderr."""
+    warden_headers = _warden_headers(client)
+    rid = _approved_request(client, agent_headers, app_headers)
+    assert client.post(f"/v1/requests/{rid}/consume",
+                       headers=warden_headers).status_code == 200
+    monkeypatch.setattr(client.app_ref.state, "loop", _BoomLoop())
+
+    r = client.post(f"/v1/requests/{rid}/consume", headers=warden_headers,
+                    json={"mode": "exec_result", "exit_code": 0,
+                          "ran": "x", "output": "y", "kind": "command"})
+    assert r.status_code == 200
+
+    rows = [a for a in client.db.get_audit(rid) if a["event"] == "notify_failed"]
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["notifier"] == "stream"
+    assert "event loop is closed" in detail["error"]
+    assert len(detail["error"]) <= 200
+
+
+def test_notify_failed_audit_write_failure_still_returns_200(client, agent_headers,
+                                                              app_headers, monkeypatch):
+    """The nested guard: even if the audit write itself explodes, the already
+    committed exec_* write must not become a 500 — the warden treats 5xx as
+    retryable and would hit the write-once 409 for a report that succeeded."""
+    from arbiter.db import Database
+
+    real_add_audit = Database.add_audit
+
+    def _boom_on_notify_failed(self, request_id, event, detail=None):
+        if event == "notify_failed":
+            raise RuntimeError("audit down")
+        return real_add_audit(self, request_id, event, detail)
+
+    warden_headers = _warden_headers(client)
+    rid = _approved_request(client, agent_headers, app_headers)
+    assert client.post(f"/v1/requests/{rid}/consume",
+                       headers=warden_headers).status_code == 200
+    monkeypatch.setattr(client.app_ref.state, "loop", _BoomLoop())
+    monkeypatch.setattr(Database, "add_audit", _boom_on_notify_failed)
+
+    r = client.post(f"/v1/requests/{rid}/consume", headers=warden_headers,
+                    json={"mode": "exec_result", "exit_code": 0,
+                          "ran": "x", "output": "y", "kind": "command"})
+    assert r.status_code == 200
+    assert client.db.get_request(rid)["exec_exit_code"] == 0

@@ -86,3 +86,20 @@ def test_tenant_create_then_pair_code_share_one_control_db(tmp_path, monkeypatch
     assert paired.exit_code == 0, paired.output
     assert "pairing code:" in paired.output
     assert "deep-link:" in paired.output
+
+def test_pair_code_quiet_prints_only_the_deep_link(tmp_path, monkeypatch):
+    """0.7 S5: exactly one line on stdout — the deep-link payload — so a script
+    can consume it without parsing banners. The default output is unchanged
+    (see test_tenant_create_then_pair_code_share_one_control_db above)."""
+    _env(tmp_path, monkeypatch)
+    assert CliRunner().invoke(main, ["init"]).exit_code == 0
+    assert CliRunner().invoke(main, ["tenant", "create", "acme"]).exit_code == 0
+
+    r = CliRunner().invoke(main, ["tenant", "pair-code", "acme", "--quiet"])
+    assert r.exit_code == 0, r.output
+    lines = r.output.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("holdmyagent://pair?host=")
+    assert "token=hma_pair_" in lines[0]
+    assert "pairing code:" not in r.output
+    assert "Single-use" not in r.output
