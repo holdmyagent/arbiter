@@ -20,7 +20,7 @@ def test_ladder_rerun_is_a_no_op_and_preserves_grant_rows(tmp_path):
     db = Database(path)
     g = db.create_grant(agent="hermes", tool="skill_manage", granted_by="kevin-phone",
                         granted_via="app-token", request_id="r1", ttl_seconds=300)
-    again = Database(path)                     # re-open: every migration re-runs
+    again = Database(path)      # re-open at v==SCHEMA_VERSION: range(14,14) runs nothing
     row = again.conn.execute("SELECT * FROM grants WHERE id=?", (g["id"],)).fetchone()
     assert row["agent"] == "hermes" and row["tool"] == "skill_manage"
     assert again.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
@@ -37,6 +37,9 @@ def test_v1_database_gains_the_grants_table(tmp_path):
     cols = {r[1] for r in db.conn.execute("PRAGMA table_info(grants)")}
     assert cols == GRANT_COLUMNS
     assert db.get_request("r1")["title"] == "t"      # nothing lost on the way
+    names = {r[0] for r in db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_audit_at" in names                   # rides the same migration
 
 
 def test_grants_index_exists_after_migration(tmp_path):
@@ -53,7 +56,7 @@ def test_grants_index_survives_ladder_rerun(tmp_path):
     """IF NOT EXISTS keeps a re-run of the whole ladder safe."""
     path = str(tmp_path / "d.sqlite3")
     Database(path)
-    again = Database(path)                     # re-open: every migration re-runs
+    again = Database(path)      # re-open at v==SCHEMA_VERSION: range(14,14) runs nothing
     names = {r[0] for r in again.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_audit_at" in names

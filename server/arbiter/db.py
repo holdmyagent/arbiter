@@ -669,7 +669,11 @@ class Database:
         # resolves correctly even after the operator renames the device.
         # Falls back to the legacy name-match (decided_by == devices.name) for
         # decisions with no attestation -- a user-renameable field, kept only
-        # for back-compat with rows/tests that predate attestation.
+        # for back-compat with rows/tests that predate attestation. Guarded to
+        # decided_via <> 'grant': a grant auto-approval's decided_by names the
+        # OPERATOR who issued the grant, not a device, so if that identity
+        # ever collides with a device's name the fallback must not paint a
+        # phone-tap glyph on a request no phone ever saw.
         base = (
             "SELECT a.id, a.request_id, a.event, a.at, a.detail,"
             " r.severity AS severity, r.title AS req_title, r.status AS req_status,"
@@ -677,7 +681,8 @@ class Database:
             " COALESCE("
             "  (SELECT dv.name FROM device_keys dk JOIN devices dv ON dv.id = dk.device_id"
             "   WHERE dk.id = r.attest_key_id),"
-            "  (SELECT d.name FROM devices d WHERE d.name = r.decided_by LIMIT 1)"
+            "  (SELECT d.name FROM devices d WHERE d.name = r.decided_by"
+            "   AND (r.decided_via IS NULL OR r.decided_via <> 'grant') LIMIT 1)"
             " ) AS decided_device"
             " FROM audit a LEFT JOIN requests r ON a.request_id = r.id"
         )

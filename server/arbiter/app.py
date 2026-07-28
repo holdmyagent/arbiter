@@ -254,10 +254,15 @@ def _maybe_issue_grant(db, *, ttl_seconds, decision, payload, granted_by, grante
 
     NEVER raises and NEVER changes the decision. By the time this runs the
     decision has already committed and its verdict is signed, and the
-    product's promise is that nothing makes approving harder -- so every
-    reason a grant cannot be issued (the operator denied; the request carries
-    no (agent, tool) keys; the write itself failed) leaves an approved request
-    and an audit row saying why, never a 500 and never a failed approval.
+    product's promise is that nothing makes approving harder -- so a grant
+    that cannot be issued never turns a 200 into a 500 and never touches the
+    approval already on record. Two skip reasons are named and audited
+    (`grant_skipped`): `"denied"` when the decision itself was a deny, and
+    `"missing_agent_tool"` when the payload carries no (agent, tool) keys to
+    grant. A third path -- `create_grant`'s write itself failing -- is caught
+    and logged via `log.exception`, deliberately NOT audited: the decision and
+    its verdict already exist by then, and there is no rid-scoped fact left to
+    record beyond the log line.
 
     Called only after set_decision returned a row, so a decision that LOST the
     guarded UPDATE race can never leave a grant behind.

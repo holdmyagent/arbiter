@@ -235,6 +235,18 @@ Grants only ever narrow the operator's effort, never the system's safety:
 - **The gate is unchanged.** It still files the ask and polls; it simply finds
   the answer already there.
 
+Issuing a grant is **not** severity-gated — approving a `critical` request
+with `grant_ttl_seconds` mints one exactly like any other — but matching
+never covers `critical` (see above), so that grant can never itself decide a
+later critical request. Clients (the iOS app) should not offer grant
+issuance on critical asks.
+
+`payload.agent`/`payload.tool` are a claim made by the requesting agent — a
+matching and display key, not proof of what will actually execute. The
+binding to the real tool call belongs to the gate (the warden's
+`canonical_action`/`action_hash`), not to the grant. TTL, exact-match scope,
+and revocability are what bound the exposure of a grant being wrong.
+
 An auto-approved request records `decided_via: "grant"` — a distinct authority
 class, never presented as a human tap — with `decided_by` naming the operator
 who issued the grant, `attestation: null` (no device signed anything), and a

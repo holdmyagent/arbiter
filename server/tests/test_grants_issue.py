@@ -152,6 +152,29 @@ def test_grant_created_event_follows_request_decided_on_the_hub(client, agent_he
         assert evt["grant"]["state"] == "active"
 
 
+def test_critical_approval_can_mint_a_grant_but_matching_still_asks_for_critical(
+        client, agent_headers, app_headers):
+    """Pins CURRENT behaviour (docs/api.md#grants): issuing a grant is not
+    severity-gated -- approving a critical request with a TTL mints one like
+    any other -- but grants.NEVER_AUTO_APPROVE means that grant can never
+    itself decide a later critical request. Only a matching NON-critical
+    create against the same (agent, tool) auto-approves."""
+    body = {"title": "critical create", "severity": "critical", "payload": dict(PAYLOAD)}
+    rid = client.post("/v1/requests", headers=agent_headers, json=body).json()["id"]
+    r = _decide(client, app_headers, rid, grant_ttl_seconds=900)
+    assert r.status_code == 200 and r.json()["status"] == "approved"
+    assert len(client.db.list_grants()) == 1
+
+    body2 = {"title": "critical create 2", "severity": "critical", "payload": dict(PAYLOAD)}
+    rid2 = client.post("/v1/requests", headers=agent_headers, json=body2).json()["id"]
+    assert client.db.get_request(rid2)["status"] == "pending"     # critical still asks
+
+    body3 = {"title": "high create", "severity": "high", "payload": dict(PAYLOAD)}
+    rid3 = client.post("/v1/requests", headers=agent_headers, json=body3).json()["id"]
+    row3 = client.db.get_request(rid3)
+    assert row3["status"] == "approved" and row3["decided_via"] == "grant"
+
+
 def test_no_grant_event_when_no_grant_was_issued(client, agent_headers, app_headers):
     with client.websocket_connect("/v1/stream", headers=app_headers) as ws:
         rid = _create(client, agent_headers)
