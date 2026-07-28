@@ -15,7 +15,7 @@ from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_clie
 from .enroll import mint_device_token, resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
-from .grants import grant_keys
+from .grants import auto_approve_eligible, grant_keys
 from .provisioning import revoke_cell_token
 from .registry import CapacityExceeded, EpochChanged
 from .models import (RequestCreate, Decision, DeviceRegister, DeviceKeyEnroll,
@@ -284,6 +284,70 @@ def _maybe_issue_grant(db, *, ttl_seconds, decision, payload, granted_by, grante
     except Exception:
         log.exception("grant issue failed for %s; the decision stands", rid)
         return None
+
+
+def _try_auto_approve(cfg, cell, req, scheduler):
+    """Decide a freshly created request under a live grant, or leave it
+    pending. Returns the decided row, or None when nothing matched.
+
+    Fail-SAFE by construction: every failure path returns None, which leaves
+    the request pending -- so the gate asks a human, which is the safe
+    direction. An exception here must never fail the create (the row is
+    already committed and the agent is blocked on the answer) and must never
+    silently approve.
+
+    Provenance is honest and deliberately narrow: decided_via='grant' is its
+    own authority class, decided_by names the operator who issued the grant,
+    and attestation is left NULL because no device signed anything -- a grant
+    auto-approval is never dressed up as a tap. The verdict IS signed: the
+    warden fetches GET /v1/requests/{rid}/verdict for every decided request
+    and treats 404 as "not yet, keep polling", so an approved row with no
+    verdict would simply never execute.
+    """
+    db = cell.db
+    try:
+        keys = auto_approve_eligible(req["severity"], req["payload"])
+        if keys is None:
+            return None
+        grant = db.find_active_grant(*keys)
+        if grant is None:
+            return None
+        # The same guarded UPDATE a human decision takes: if the sweeper (or
+        # an improbably fast tap) got there first, rowcount is 0 and this
+        # returns None -- exactly one decision ever wins.
+        updated = db.set_decision(req["id"], "approve", grant["granted_by"],
+                                  decided_via="grant")
+        if updated is None:
+            return None
+    except Exception:
+        log.exception("grant auto-approval failed for %s; the request stays pending",
+                      req.get("id"))
+        return None
+    # Past this line the decision has COMMITTED, so nothing may hand back the
+    # pending snapshot: the row is approved, and reporting otherwise would be
+    # the one lie this system cannot afford. A failure in the tail is logged
+    # and the approved row returned -- worst case the verdict is missing, the
+    # warden never executes, and the action fails closed.
+    rid = updated["id"]
+    try:
+        db.add_audit(rid, "auto_approved", {"grant_id": grant["id"]})
+        jws = sign_verdict(cell.signer, request_id=rid,
+                           action_hash=updated["action_hash"],
+                           decision=updated["status"],
+                           decided_at=updated["decided_at"],
+                           approval_ttl=cfg.policy.approval_ttl_seconds,
+                           tenant_id=cell.tenant_id)
+        db.set_verdict(rid, jws, cell.signer.kid)
+        db.add_audit(rid, "verdict_issued",
+                     {"decision": updated["status"], "kid": cell.signer.kid})
+        updated = db.get_request(rid)
+        if scheduler is not None:
+            deadline = (datetime.fromisoformat(updated["decided_at"])
+                        + timedelta(seconds=cfg.policy.approval_ttl_seconds)).isoformat()
+            scheduler.schedule(deadline, cell.tenant_id, rid)
+    except Exception:
+        log.exception("post-decision pipeline failed for auto-approved %s", rid)
+    return updated
 
 
 async def resolve_stream(ws, registry, control):
@@ -625,6 +689,17 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
         cell.hub.publish({"event": "request.created", "request": req})
+        # 0.7 Train 2: a live (agent, tool) grant answers the ask immediately.
+        # AFTER request.created publishes, always -- a client handed a
+        # request.decided for a request it never saw created would have to
+        # invent the row. The APNs push request.created fires is the accepted
+        # cost of that ordering: the phone opens to an already-decided receipt
+        # instead of a tap it has to make.
+        decided = _try_auto_approve(cfg, cell, req, scheduler)
+        if decided is not None:
+            _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", decided)
+            cell.hub.publish({"event": "request.decided", "request": decided})
+            return _redact_for(identity, decided)
         return _redact_for(identity, req)
 
     @app.get("/v1/requests")
