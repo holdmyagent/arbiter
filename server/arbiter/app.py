@@ -15,6 +15,7 @@ from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_clie
 from .enroll import mint_device_token, resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
+from .grants import grant_keys
 from .provisioning import revoke_cell_token
 from .registry import CapacityExceeded, EpochChanged
 from .models import (RequestCreate, Decision, DeviceRegister, DeviceKeyEnroll,
@@ -245,6 +246,44 @@ def _classify_attestation(db, att, *, request_id: str, decision: str,
         # classification, never propagate into decide() and turn a 200 into
         # a 500 over something attestation-related.
         return "attestation_failed", key_id
+
+
+def _maybe_issue_grant(db, *, ttl_seconds, decision, payload, granted_by, granted_via, rid):
+    """Issue the optional scoped grant that rides along with an approval.
+    Returns the grant row, or None when none was asked for or none could be.
+
+    NEVER raises and NEVER changes the decision. By the time this runs the
+    decision has already committed and its verdict is signed, and the
+    product's promise is that nothing makes approving harder -- so every
+    reason a grant cannot be issued (the operator denied; the request carries
+    no (agent, tool) keys; the write itself failed) leaves an approved request
+    and an audit row saying why, never a 500 and never a failed approval.
+
+    Called only after set_decision returned a row, so a decision that LOST the
+    guarded UPDATE race can never leave a grant behind.
+    """
+    if ttl_seconds is None:
+        return None
+    try:
+        if decision != "approve":
+            # A deny plus a grant is contradictory, not an error: the client
+            # asked for cover on an action the operator just refused.
+            db.add_audit(rid, "grant_skipped", {"reason": "denied"})
+            return None
+        keys = grant_keys(payload)
+        if keys is None:
+            db.add_audit(rid, "grant_skipped", {"reason": "missing_agent_tool"})
+            return None
+        agent, tool = keys
+        grant = db.create_grant(agent=agent, tool=tool, granted_by=granted_by,
+                                granted_via=granted_via, request_id=rid,
+                                ttl_seconds=ttl_seconds)
+        db.add_audit(rid, "grant_created", {"grant_id": grant["id"], "agent": agent,
+                                            "tool": tool, "ttl": ttl_seconds})
+        return grant
+    except Exception:
+        log.exception("grant issue failed for %s; the decision stands", rid)
+        return None
 
 
 async def resolve_stream(ws, registry, control):
@@ -670,6 +709,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         db.set_verdict(updated["id"], jws, cell.signer.kid)
         db.add_audit(updated["id"], "verdict_issued",
                      {"decision": updated["status"], "kid": cell.signer.kid})
+        # 0.7 Train 2: issue the optional grant LAST -- after the decision's own
+        # artifacts (attestation, verdict) exist, so a grant can never displace
+        # them, and guarded so it can never fail the approval.
+        grant = _maybe_issue_grant(db, ttl_seconds=body.grant_ttl_seconds,
+                                   decision=body.decision, payload=updated["payload"],
+                                   granted_by=decided_by, granted_via=decided_via, rid=rid)
         updated = db.get_request(rid)
         if scheduler is not None and updated["status"] == "approved":
             deadline = (datetime.fromisoformat(updated["decided_at"])
@@ -677,6 +722,13 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             scheduler.schedule(deadline, cell.tenant_id, rid)
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", updated)
         cell.hub.publish({"event": "request.decided", "request": updated})
+        # Hub only, never the outbox: the outbox is request-scoped (its row keys
+        # on a request id and expiry, and its dispatcher only knows request.*
+        # events). A phone that missed this reconciles via GET /v1/grants.
+        # Emitted AFTER request.decided so a client never sees a grant citing a
+        # request it still believes is pending.
+        if grant is not None:
+            cell.hub.publish({"event": "grant.created", "grant": grant})
         return updated
 
     @app.post("/v1/requests/{rid}/consume")
