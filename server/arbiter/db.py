@@ -4,13 +4,15 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from .grants import GRANT_RECENT_SECONDS, grant_state
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 def _migrate_0_to_1(conn):
     """Baseline v1 schema; also normalizes pre-versioning DBs created by the
@@ -182,9 +184,34 @@ def _migrate_12_to_13(conn):
     if "token_name" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN token_name TEXT")
 
+def _migrate_13_to_14(conn):
+    # 0.7 Train 2: scoped grants — (agent, tool) auto-approval with a TTL.
+    # A table, not columns on `requests`: a grant OUTLIVES the request that
+    # issued it and is matched by later requests, so it is its own row.
+    # APPEND-ONLY for the same reason the audit log is — a grant is an
+    # authority the operator handed out, and the record of having handed it
+    # out must survive the authority itself, so revoke stamps `revoked_at`
+    # and nothing is ever DELETEd. `request_id` is nullable: a grant issued by
+    # some future path with no originating request still fits.
+    conn.execute("""CREATE TABLE IF NOT EXISTS grants(
+      id TEXT PRIMARY KEY, agent TEXT NOT NULL, tool TEXT NOT NULL,
+      granted_by TEXT NOT NULL, granted_via TEXT NOT NULL, request_id TEXT,
+      created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT)""")
+    # The match lookup runs on EVERY create — the hot path of a fail-closed
+    # gate — so it gets an index. Partial (live rows only) and NOT unique:
+    # several grants may legitimately cover one pair, and find_active_grant
+    # resolves that by taking the one expiring last.
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_grants_match
+      ON grants(agent, tool) WHERE revoked_at IS NULL""")
+    # Controller decision (Train 1a whole-branch review): the audit-retention
+    # sweep issues `DELETE FROM audit WHERE at < ?` under the cell write lock
+    # with no index on audit.at. Rides this migration for free rather than
+    # its own, and speeds iter_audit as a side effect.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at)")
+
 MIGRATIONS = [_migrate_0_to_1, _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5,
               _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9, _migrate_9_to_10,
-              _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13]
+              _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13, _migrate_13_to_14]
 
 class Database:
     def __init__(self, path: str):
@@ -802,6 +829,105 @@ class Database:
             self.conn.execute("UPDATE tokens SET last_used_at=? WHERE id=?",
                               (_iso(_utcnow()), token_id))
             self.conn.commit()
+
+    # ── grants (scoped auto-approval, append-only) ──────────────────────────
+
+    def _row_to_grant(self, r: sqlite3.Row, now: str) -> dict:
+        d = dict(r)
+        d["state"] = grant_state(d, now)   # derived, so a client never re-derives it
+        return d
+
+    def create_grant(self, *, agent: str, tool: str, granted_by: str, granted_via: str,
+                     request_id: str | None, ttl_seconds: int) -> dict:
+        """Issue a grant. The TTL ceiling is enforced at the wire (models.py),
+        not here: this method records what it is told, so a future issuing path
+        cannot silently acquire a different ceiling by calling it directly."""
+        gid = str(uuid.uuid4())
+        now = _utcnow()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO grants(id,agent,tool,granted_by,granted_via,request_id,"
+                "created_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,?,NULL)",
+                (gid, agent, tool, granted_by, granted_via, request_id,
+                 _iso(now), _iso(now + timedelta(seconds=ttl_seconds))))
+            self.conn.commit()
+            return self.get_grant(gid)
+
+    def get_grant(self, grant_id: str) -> dict | None:
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM grants WHERE id=?", (grant_id,)).fetchone()
+            return self._row_to_grant(r, _iso(_utcnow())) if r else None
+
+    def find_active_grant(self, agent: str, tool: str) -> dict | None:
+        """The live grant covering (AGENT, TOOL) right now, or None.
+
+        Exact string equality on both keys — no LIKE, no wildcard, no case
+        folding, no cross-agent match. Expiry is evaluated HERE, at match time,
+        so a grant goes inert the instant its TTL passes with no sweeper
+        involved and a revoke bites on the very next create. When several
+        grants cover the same pair (the operator re-granted before the first
+        ran out) the one expiring LAST wins: re-granting must never shorten
+        cover. created_at breaks a tie deterministically.
+        """
+        now = _iso(_utcnow())
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM grants WHERE agent=? AND tool=?"
+                " AND revoked_at IS NULL AND expires_at > ?"
+                " ORDER BY expires_at DESC, created_at DESC LIMIT 1",
+                (agent, tool, now)).fetchone()
+            return self._row_to_grant(r, now) if r else None
+
+    def list_grants(self, *, recent_seconds: int = GRANT_RECENT_SECONDS) -> list[dict]:
+        """Active grants first, then those that went inert within
+        RECENT_SECONDS; newest first within each group. Older inert rows stay
+        on disk (append-only history) but are not listed — the operator's
+        grants screen is a control surface, not an archive."""
+        now_dt = _utcnow()
+        now = _iso(now_dt)
+        cutoff = _iso(now_dt - timedelta(seconds=recent_seconds))
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM grants"
+                " WHERE (revoked_at IS NULL AND expires_at > ?)"
+                "    OR (revoked_at IS NOT NULL AND revoked_at >= ?)"
+                "    OR (revoked_at IS NULL AND expires_at >= ?)"
+                " ORDER BY (CASE WHEN revoked_at IS NULL AND expires_at > ? THEN 0 ELSE 1 END),"
+                " created_at DESC",
+                (now, cutoff, cutoff, now)).fetchall()
+            return [self._row_to_grant(r, now) for r in rows]
+
+    def revoke_grant(self, grant_id: str) -> tuple[dict, bool] | None:
+        """Stamp `revoked_at`. Returns (row, changed); None for an unknown id.
+
+        `changed` is False when the grant was ALREADY revoked, so the caller
+        stays idempotent — no second audit row, no second event. An EXPIRED but
+        never-revoked grant IS stamped: it is already inert, but the operator's
+        act of revoking it is a fact worth recording. Same guarded shape as
+        revoke_token."""
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM grants WHERE id=?", (grant_id,)).fetchone()
+            if r is None:
+                return None
+            changed = r["revoked_at"] is None
+            if changed:
+                self.conn.execute(
+                    "UPDATE grants SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                    (_iso(_utcnow()), grant_id))
+                self.conn.commit()
+                r = self.conn.execute("SELECT * FROM grants WHERE id=?", (grant_id,)).fetchone()
+            return self._row_to_grant(r, _iso(_utcnow())), changed
+
+    def find_grants_by_prefix(self, prefix: str) -> list[dict]:
+        """Every grant whose id starts with PREFIX — the CLI's short-id lookup.
+        Returns ALL matches so the caller can refuse an ambiguous prefix rather
+        than guessing which grant the operator meant. Filtered in Python, not
+        with LIKE: a prefix containing '%' or '_' must be a literal, and the
+        table holds days of short-lived rows, so the scan is free."""
+        now = _iso(_utcnow())
+        with self._lock:
+            rows = self.conn.execute("SELECT * FROM grants ORDER BY created_at DESC").fetchall()
+            return [self._row_to_grant(r, now) for r in rows if r["id"].startswith(prefix)]
 
     # ── gate policy store (server-mediated gate policy) ─────────────────────
 
