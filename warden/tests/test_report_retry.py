@@ -325,23 +325,33 @@ def test_survives_process_restart(tmp_path):
 
 
 def test_report_bookkeeping_error_never_fails_the_proposal(orch, fake_command, monkeypatch):
-    """A DB error while persisting/attempting the report (locked db, disk full)
-    must not unwind into tick()'s except-clause, which would set_status(failed)
-    on a proposal that already ran - a stricter regression than a mere
-    "report failure doesn't change status", since this path raises from
-    inside _report_exec_result itself, called directly from _execute."""
+    """A DB error while attempting the report (locked db, disk full) must not
+    unwind into tick()'s except-clause, which would set_status(failed) on a
+    proposal that already ran — a stricter regression than "a failed report
+    doesn't change status", since this path raises from inside
+    _report_exec_result itself, called directly from _execute. Since 0.7 S2 the
+    payload is armed by set_status, so the failure seam is the attempt's own
+    bookkeeping (clear_report_pending), not a separate mark_report_pending.
+
+    A bookkeeping failure AFTER a successful report leaves the row still
+    sweepable (report_pending never cleared), so tick()'s own reports_due pass
+    may legitimately re-deliver the same report within this same tick — the
+    arbiter's write-once consume makes a redelivery a terminal 409, harmless.
+    Asserting an exact report count here would pin tick()'s internal two-loop
+    shape rather than the actual durability contract, so this only asserts
+    "at least once" (never zero, never an unhandled raise)."""
     def _boom(*a, **kw):
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(orch.db, "mark_report_pending", _boom)
+    monkeypatch.setattr(orch.db, "clear_report_pending", _boom)
 
     out = orch.propose("hermes", "greet", {"word": "hello"}, None)
     approve(orch, out)
     orch.tick()  # must not raise
     row = orch.db.get(out["id"])
     assert row["status"] == "executed"
-    assert row["report_pending"] == 0
-    assert orch.arbiter.reported == []
+    assert row["report_pending"] == 1     # still owed: the clear never landed
+    assert len(orch.arbiter.reported) >= 1
 
 
 def test_corrupt_report_payload_is_self_limiting(orch, fake_command):
@@ -353,8 +363,8 @@ def test_corrupt_report_payload_is_self_limiting(orch, fake_command):
     assert len(orch.arbiter.reported) == 1
 
     # Simulate a corrupt report_payload on a still-pending row (belt-and-braces:
-    # this shouldn't happen via mark_report_pending, which always json.dumps a
-    # real dict, but the sweep must not spin forever if it ever does).
+    # this shouldn't happen via set_status, which always json.dumps a real
+    # dict, but the sweep must not spin forever if it ever does).
     orch.db._conn.execute(
         "UPDATE proposals SET report_pending=1, report_payload=? WHERE id=?",
         ("not valid json", out["id"]))
@@ -364,3 +374,27 @@ def test_corrupt_report_payload_is_self_limiting(orch, fake_command):
     row = orch.db.get(out["id"])
     assert row["report_pending"] == 0
     assert row["report_attempts"] == 0  # never counted as a retry attempt
+
+
+def test_executed_and_owed_report_survive_a_kill_mid_report(orch, fake_command, monkeypatch):
+    """The 0.6 residual, closed. KeyboardInterrupt stands in for the process
+    being killed mid-report: it is a BaseException, so it escapes every
+    `except Exception` guard in the stack exactly as SIGKILL/SIGINT would end
+    the process. The row it leaves behind must still owe the report."""
+    sent = {}
+
+    def _die(rid, **payload):
+        sent.update(payload)
+        raise KeyboardInterrupt("killed mid-report")
+
+    monkeypatch.setattr(orch.arbiter, "report_execution", _die)
+
+    out = orch.propose("hermes", "greet", {"word": "hello"}, None)
+    approve(orch, out)
+    with pytest.raises(KeyboardInterrupt):
+        orch.tick()
+
+    row = orch.db.get(out["id"])
+    assert row["status"] == "executed"          # both fields landed together
+    assert row["report_pending"] == 1
+    assert json.loads(row["report_payload"]) == sent

@@ -327,8 +327,16 @@ class Orchestrator:
             self.db.set_status(pid, "failed", receipt=receipt, result={
                 "error": f"adapter error: {exc}"})
             return
-        self.db.set_status(pid, "executed", result=result, receipt=receipt)
-        self._report_exec_result(pid, receipt["request_id"], spec, resolved, result)
+        # 0.7 S2: compute the owed report FIRST so the status flip and the
+        # report bookkeeping are one statement — a kill between them is no
+        # longer possible. `payload` is None for the secret/unknown adapters
+        # (nothing safe to report), and then set_status leaves report_pending
+        # alone exactly as before.
+        payload = self._compute_report(spec, resolved, result)
+        self.db.set_status(pid, "executed", result=result, receipt=receipt,
+                           report_payload=payload)
+        if payload is not None:
+            self._report_exec_result(pid, receipt["request_id"], payload)
 
     def _compute_report(self, spec, resolved, result) -> dict | None:
         if spec.adapter == "command":
@@ -348,24 +356,17 @@ class Orchestrator:
         ran = ran[:_RAN_MAX_CHARS]                      # head cap: stay under the model's max_length
         return {"exit_code": exit_code, "ran": ran, "output": output, "kind": kind}
 
-    def _report_exec_result(self, pid: str, rid: str, spec, resolved, result) -> None:
-        payload = self._compute_report(spec, resolved, result)
-        if payload is None:
-            return                       # secret/unknown: nothing safe to report
-        # iOS 0.6 A3: persist the owed report BEFORE attempting it, so a warden
-        # death between set_status(executed) and a landed report is no longer a
-        # permanently lost outcome - tick() sweeps report_pending rows.
+    def _report_exec_result(self, pid: str, rid: str, payload: dict) -> None:
+        """First attempt at an already-persisted report. The owed report was
+        armed by set_status in the same statement that flipped the status, so
+        all that remains here is the attempt — and a DB hiccup inside it
+        (locked/disk full) must never unwind into tick()'s except-clause, which
+        would set_status(failed) on a proposal that already ran. Worst case the
+        report is left owed and the sweep retries it."""
         try:
-            self.db.mark_report_pending(pid, payload)
             self._attempt_report(pid, rid, payload)
-        except Exception:  # noqa: BLE001 - this proposal already executed; a DB
-            # hiccup here (locked/disk full) must never unwind into tick()'s
-            # set_status(failed) - that would violate "a failed report never
-            # changes proposal status". Worst case: the report is missed until
-            # an operator notices the log; report_pending never got set, so
-            # the sweep can't pick it up either, but the proposal stays
-            # 'executed' either way.
-            log.exception("exec-result report bookkeeping failed for %s", rid)
+        except Exception:  # noqa: BLE001 - see the docstring; never re-raise
+            log.exception("exec-result report attempt failed for %s", rid)
 
     def _current_attempts(self, pid: str) -> int:
         row = self.db.get(pid)

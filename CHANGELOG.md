@@ -87,6 +87,12 @@
   `apns_token` is now **mint-only**: it still returns a freshly minted named token, but it
   neither links the device row (`devices.token_name`) nor revokes any predecessor, and logs
   that it did so at INFO. Rotation semantics are unchanged for rows with a real APNs token.
+- **The warden's last lost-outcome window is closed.** `status='executed'` and the owed
+  execution report (`report_pending`, `report_payload`) were two UPDATEs in two commits; a
+  warden killed between them left a proposal that had run, was marked executed, and owed
+  nothing — so the retry sweep could never find it. `WardenDB.set_status` now takes an
+  optional `report_payload` and writes all three in **one statement**. Callers that pass no
+  payload (failed / denied / expired / executing) leave the report bookkeeping untouched.
 
 ### Security
 
