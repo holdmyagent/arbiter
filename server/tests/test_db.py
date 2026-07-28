@@ -74,6 +74,34 @@ def test_list_audit_decided_device_survives_device_rename_via_attest_key_id(db, 
     rows2 = {a["event"]: a for a in db.list_audit(r["id"])}
     assert rows2["approved"]["decided_device"] == "New Name"
 
+def test_list_audit_decided_device_none_for_grant_row_even_if_name_matches(db, make):
+    """A decided_via='grant' row's decided_by names the OPERATOR who issued the
+    grant (an identity, e.g. "kevin-phone" or a device's own name), never a
+    device that tapped -- but the legacy name-match fallback join only looks
+    at devices.name, with no way to tell "this identity happens to equal a
+    device name" apart from "a device actually decided this". If an operator
+    ever registers a device under the same string used elsewhere as an
+    identity, that fallback must not resolve a decided_device for a grant
+    row: doing so would paint a phone-tap glyph on a request no phone ever
+    saw."""
+    db.register_device("tok1", "hermes-phone")
+    r = db.create_request(make())
+    db.set_decision(r["id"], "approve", "hermes-phone", decided_via="grant")
+    rows = {a["event"]: a for a in db.list_audit(r["id"])}
+    assert rows["approved"]["decided_device"] is None
+
+
+def test_list_audit_decided_device_still_resolves_for_app_token_decision(db, make):
+    """Regression guard for the grant-row fix above: an ordinary app-token
+    decision (decided_via='app-token', the common case) must still resolve
+    its device through the very same fallback."""
+    db.register_device("tok1", "iPhone")
+    r = db.create_request(make())
+    db.set_decision(r["id"], "approve", "iPhone", decided_via="app-token")
+    rows = {a["event"]: a for a in db.list_audit(r["id"])}
+    assert rows["approved"]["decided_device"] == "iPhone"
+
+
 def test_list_audit_non_request_event_has_none_severity(db):
     db.add_audit("-", "token_rotated", {"which": "agent"})
     rows = db.list_audit()

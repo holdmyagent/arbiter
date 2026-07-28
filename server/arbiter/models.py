@@ -1,6 +1,8 @@
 from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
+from .grants import GRANT_TTL_MAX_SECONDS
+
 Severity = Literal["low", "medium", "high", "critical"]
 Status = Literal["pending", "approved", "denied", "expired"]
 
@@ -58,6 +60,15 @@ class Decision(BaseModel):
     # (ISO8601)}; any other shape is classified 'attestation_failed' by
     # app._classify_attestation, never rejected at the wire.
     attestation: Any = None
+    # 0.7 Train 2: optionally issue a scoped (agent, tool) grant alongside an
+    # APPROVAL. Bounded at the WIRE rather than in the handler so an over-cap
+    # TTL is refused by FastAPI's own 422 during body parsing -- i.e. strictly
+    # before any decision side effect can land, which is the guarantee the
+    # design asks for. The floor is 1s: a zero or negative TTL would mint a
+    # grant that is already expired. Everything else about the request being
+    # grantable is checked AFTER the decision commits, because none of it may
+    # ever fail an approval.
+    grant_ttl_seconds: int | None = Field(default=None, ge=1, le=GRANT_TTL_MAX_SECONDS)
 
 class ExecResult(BaseModel):
     mode: Literal["exec_result"]                              # REQUIRED discriminator

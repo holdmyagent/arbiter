@@ -645,5 +645,76 @@ def audit_prune(days, tenant_id, config_path):
         db = Database(cfg.db_path_expanded())
     click.echo(f"pruned {db.prune_audit(days)} audit rows older than {days} days")
 
+# ── scoped grants (0.7): (agent, tool) auto-approval, revocable from here ────
+
+def _grants_db(cfg, tenant_id):
+    """The Database holding the grants table: the tenant's cell once a control
+    plane exists (or --tenant was given), else the legacy single-tenant file.
+    Same dual-path rule the `token` commands use, so `hma grant` and
+    `hma token` always agree about which store they are talking to."""
+    from .db import Database
+    from .provisioning import control_path_for
+    if tenant_id or control_path_for(cfg).exists():
+        tid = tenant_id or "default"
+        control = _control(cfg)
+        if control.epoch_of(tid) is None:
+            raise click.ClickException(f"no such tenant '{tid}'")
+        return _cell_db_for(control, tid)
+    return Database(cfg.db_path_expanded())
+
+
+@main.group()
+def grant():
+    """Inspect and revoke scoped (agent, tool) auto-approval grants."""
+
+
+@grant.command("list")
+@click.option("--tenant", "tenant_id", default=None, help="Tenant cell (default 'default').")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def grant_list(tenant_id, config_path):
+    """Active grants, plus any that expired or were revoked in the last 24h."""
+    cfg = Config.load(config_path)
+    rows = _grants_db(cfg, tenant_id).list_grants()
+    if not rows:
+        click.echo("no grants")
+        return
+    for g in rows:
+        when = g["revoked_at"] if g["state"] == "revoked" else g["expires_at"]
+        click.echo(f"{g['id'][:8]}  {g['agent']}  {g['tool']}  by={g['granted_by']}  "
+                   f"{g['state']}={when}")
+
+
+@grant.command("revoke")
+@click.argument("grant_id")
+@click.option("--tenant", "tenant_id", default=None, help="Tenant cell (default 'default').")
+@click.option("--config", "config_path", default=None, help="Path to config.toml")
+def grant_revoke(grant_id, tenant_id, config_path):
+    """Revoke GRANT_ID — the full id, or any unambiguous prefix of one.
+
+    Takes effect at the next matching request; nothing already approved is
+    disturbed. Revoking an already-revoked grant is a no-op, not an error.
+    An ambiguous prefix revokes nothing and lists the candidates instead:
+    guessing which authority the operator meant to withdraw is not this
+    command's job.
+    """
+    cfg = Config.load(config_path)
+    db = _grants_db(cfg, tenant_id)
+    matches = db.find_grants_by_prefix(grant_id)
+    if not matches:
+        raise click.ClickException(f"no grant matching '{grant_id}'")
+    if len(matches) > 1:
+        listed = ", ".join(g["id"] for g in matches)
+        raise click.ClickException(f"'{grant_id}' matches {len(matches)} grants: {listed}")
+    full = matches[0]["id"]
+    row, changed = db.revoke_grant(full)
+    if not changed:
+        click.echo(f"{full} was already revoked ({row['revoked_at']})")
+        return
+    # The CLI writes to the database directly (same as `hma token revoke`), so
+    # it cannot publish grant.revoked on a running server's hub. Phones pick
+    # the change up on their next refresh; the revocation itself is immediate.
+    db.add_audit("-", "grant_revoked", {"grant_id": full})
+    click.echo(f"revoked {full}")
+
 if __name__ == "__main__":
     main()

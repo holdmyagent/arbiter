@@ -15,6 +15,7 @@ from .auth import Identity, SlidingWindowLimiter, resolve_identity, trusted_clie
 from .enroll import mint_device_token, resolve_pairing
 from .errors import GENERIC_403_DETAIL, generic_403
 from . import gate_policy
+from .grants import auto_approve_eligible, grant_keys
 from .provisioning import revoke_cell_token
 from .registry import CapacityExceeded, EpochChanged
 from .models import (RequestCreate, Decision, DeviceRegister, DeviceKeyEnroll,
@@ -245,6 +246,113 @@ def _classify_attestation(db, att, *, request_id: str, decision: str,
         # classification, never propagate into decide() and turn a 200 into
         # a 500 over something attestation-related.
         return "attestation_failed", key_id
+
+
+def _maybe_issue_grant(db, *, ttl_seconds, decision, payload, granted_by, granted_via, rid):
+    """Issue the optional scoped grant that rides along with an approval.
+    Returns the grant row, or None when none was asked for or none could be.
+
+    NEVER raises and NEVER changes the decision. By the time this runs the
+    decision has already committed and its verdict is signed, and the
+    product's promise is that nothing makes approving harder -- so a grant
+    that cannot be issued never turns a 200 into a 500 and never touches the
+    approval already on record. Two skip reasons are named and audited
+    (`grant_skipped`): `"denied"` when the decision itself was a deny, and
+    `"missing_agent_tool"` when the payload carries no (agent, tool) keys to
+    grant. A third path -- `create_grant`'s write itself failing -- is caught
+    and logged via `log.exception`, deliberately NOT audited: the decision and
+    its verdict already exist by then, and there is no rid-scoped fact left to
+    record beyond the log line.
+
+    Called only after set_decision returned a row, so a decision that LOST the
+    guarded UPDATE race can never leave a grant behind.
+    """
+    if ttl_seconds is None:
+        return None
+    try:
+        if decision != "approve":
+            # A deny plus a grant is contradictory, not an error: the client
+            # asked for cover on an action the operator just refused.
+            db.add_audit(rid, "grant_skipped", {"reason": "denied"})
+            return None
+        keys = grant_keys(payload)
+        if keys is None:
+            db.add_audit(rid, "grant_skipped", {"reason": "missing_agent_tool"})
+            return None
+        agent, tool = keys
+        grant = db.create_grant(agent=agent, tool=tool, granted_by=granted_by,
+                                granted_via=granted_via, request_id=rid,
+                                ttl_seconds=ttl_seconds)
+        db.add_audit(rid, "grant_created", {"grant_id": grant["id"], "agent": agent,
+                                            "tool": tool, "ttl": ttl_seconds})
+        return grant
+    except Exception:
+        log.exception("grant issue failed for %s; the decision stands", rid)
+        return None
+
+
+def _try_auto_approve(cfg, cell, req, scheduler):
+    """Decide a freshly created request under a live grant, or leave it
+    pending. Returns the decided row, or None when nothing matched.
+
+    Fail-SAFE by construction: every failure path returns None, which leaves
+    the request pending -- so the gate asks a human, which is the safe
+    direction. An exception here must never fail the create (the row is
+    already committed and the agent is blocked on the answer) and must never
+    silently approve.
+
+    Provenance is honest and deliberately narrow: decided_via='grant' is its
+    own authority class, decided_by names the operator who issued the grant,
+    and attestation is left NULL because no device signed anything -- a grant
+    auto-approval is never dressed up as a tap. The verdict IS signed: the
+    warden fetches GET /v1/requests/{rid}/verdict for every decided request
+    and treats 404 as "not yet, keep polling", so an approved row with no
+    verdict would simply never execute.
+    """
+    db = cell.db
+    try:
+        keys = auto_approve_eligible(req["severity"], req["payload"])
+        if keys is None:
+            return None
+        grant = db.find_active_grant(*keys)
+        if grant is None:
+            return None
+        # The same guarded UPDATE a human decision takes: if the sweeper (or
+        # an improbably fast tap) got there first, rowcount is 0 and this
+        # returns None -- exactly one decision ever wins.
+        updated = db.set_decision(req["id"], "approve", grant["granted_by"],
+                                  decided_via="grant")
+        if updated is None:
+            return None
+    except Exception:
+        log.exception("grant auto-approval failed for %s; the request stays pending",
+                      req.get("id"))
+        return None
+    # Past this line the decision has COMMITTED, so nothing may hand back the
+    # pending snapshot: the row is approved, and reporting otherwise would be
+    # the one lie this system cannot afford. A failure in the tail is logged
+    # and the approved row returned -- worst case the verdict is missing, the
+    # warden never executes, and the action fails closed.
+    rid = updated["id"]
+    try:
+        db.add_audit(rid, "auto_approved", {"grant_id": grant["id"]})
+        jws = sign_verdict(cell.signer, request_id=rid,
+                           action_hash=updated["action_hash"],
+                           decision=updated["status"],
+                           decided_at=updated["decided_at"],
+                           approval_ttl=cfg.policy.approval_ttl_seconds,
+                           tenant_id=cell.tenant_id)
+        db.set_verdict(rid, jws, cell.signer.kid)
+        db.add_audit(rid, "verdict_issued",
+                     {"decision": updated["status"], "kid": cell.signer.kid})
+        updated = db.get_request(rid)
+        if scheduler is not None:
+            deadline = (datetime.fromisoformat(updated["decided_at"])
+                        + timedelta(seconds=cfg.policy.approval_ttl_seconds)).isoformat()
+            scheduler.schedule(deadline, cell.tenant_id, rid)
+    except Exception:
+        log.exception("post-decision pipeline failed for auto-approved %s", rid)
+    return updated
 
 
 async def resolve_stream(ws, registry, control):
@@ -586,6 +694,17 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             scheduler.schedule(req["expires_at"], cell.tenant_id, req["id"])
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.created", req)
         cell.hub.publish({"event": "request.created", "request": req})
+        # 0.7 Train 2: a live (agent, tool) grant answers the ask immediately.
+        # AFTER request.created publishes, always -- a client handed a
+        # request.decided for a request it never saw created would have to
+        # invent the row. The APNs push request.created fires is the accepted
+        # cost of that ordering: the phone opens to an already-decided receipt
+        # instead of a tap it has to make.
+        decided = _try_auto_approve(cfg, cell, req, scheduler)
+        if decided is not None:
+            _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", decided)
+            cell.hub.publish({"event": "request.decided", "request": decided})
+            return _redact_for(identity, decided)
         return _redact_for(identity, req)
 
     @app.get("/v1/requests")
@@ -670,6 +789,12 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
         db.set_verdict(updated["id"], jws, cell.signer.kid)
         db.add_audit(updated["id"], "verdict_issued",
                      {"decision": updated["status"], "kid": cell.signer.kid})
+        # 0.7 Train 2: issue the optional grant LAST -- after the decision's own
+        # artifacts (attestation, verdict) exist, so a grant can never displace
+        # them, and guarded so it can never fail the approval.
+        grant = _maybe_issue_grant(db, ttl_seconds=body.grant_ttl_seconds,
+                                   decision=body.decision, payload=updated["payload"],
+                                   granted_by=decided_by, granted_via=decided_via, rid=rid)
         updated = db.get_request(rid)
         if scheduler is not None and updated["status"] == "approved":
             deadline = (datetime.fromisoformat(updated["decided_at"])
@@ -677,6 +802,13 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
             scheduler.schedule(deadline, cell.tenant_id, rid)
         _spawn_publish(app, cell.tenant_id, cell.epoch, "request.decided", updated)
         cell.hub.publish({"event": "request.decided", "request": updated})
+        # Hub only, never the outbox: the outbox is request-scoped (its row keys
+        # on a request id and expiry, and its dispatcher only knows request.*
+        # events). A phone that missed this reconciles via GET /v1/grants.
+        # Emitted AFTER request.decided so a client never sees a grant citing a
+        # request it still believes is pending.
+        if grant is not None:
+            cell.hub.publish({"event": "grant.created", "grant": grant})
         return updated
 
     @app.post("/v1/requests/{rid}/consume")
@@ -744,6 +876,36 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 409, f"not consumable (status={row['status']}, consumed_at={row['consumed_at']})")
         cell.db.add_audit(rid, "consumed", {"by": identity.name})
         return {"consumed_at": row["consumed_at"]}
+
+    # ── grants (scoped auto-approval) ────────────────────────────────────────
+
+    @app.get("/v1/grants")
+    def grants_list(ctx: tuple = Depends(require_cell("app"))):
+        """Active grants, plus any that expired or were revoked in the last
+        24 h. App role only, like every other operator surface. A grant row
+        carries names and timestamps and no request content at all, so there
+        is nothing here for _redact_for to do."""
+        _identity, cell = ctx
+        return {"grants": cell.db.list_grants()}
+
+    @app.post("/v1/grants/{grant_id}/revoke")
+    async def grants_revoke(grant_id: str, ctx: tuple = Depends(require_cell("app"))):
+        """Revoke a grant. Idempotent: revoking an already-revoked grant is a
+        200 with the current row, no second audit row and no second event.
+        Takes effect at the next create's match-time check -- nothing already
+        approved or in flight is disturbed, which is the honest semantics
+        (the operator withdraws future cover, not a past decision)."""
+        _identity, cell = ctx
+        result = cell.db.revoke_grant(grant_id)
+        if result is None:
+            raise HTTPException(404, "not found")
+        grant, changed = result
+        if changed:
+            # Not request-scoped: the '-' convention every non-request audit
+            # row uses (token_created, policy_updated, rate_limited).
+            cell.db.add_audit("-", "grant_revoked", {"grant_id": grant_id})
+            cell.hub.publish({"event": "grant.revoked", "grant": grant})
+        return grant
 
     @app.post("/v1/devices")
     async def register(body: DeviceRegister, ctx: tuple = Depends(require_cell("app"))):

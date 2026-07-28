@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Scoped grants — the operator answers once, not seven times.** Approving a request may now
+  also issue a grant (`{"decision": "approve", "grant_ttl_seconds": 900}`): for that long, a
+  later request carrying the same `payload.agent` and `payload.tool` is decided by the server
+  on the operator's behalf. Grants only ever narrow the operator's effort, never the system's
+  safety — exact string match on both keys (no wildcards, no case folding, no cross-agent
+  match), an 8 h server-side TTL ceiling, `critical` severity never auto-approved, expiry
+  evaluated at match time, and revocable from the phone (`POST /v1/grants/{id}/revoke`) or the
+  CLI (`hma grant revoke`). The gate is untouched: it still files the ask and polls, and
+  simply finds the answer already there. Auto-approvals are a **distinct authority class** —
+  `decided_via: "grant"`, a third value alongside `legacy-token` and `app-token`, with
+  `decided_by` naming the operator who granted it and `attestation` left null because no
+  device signed anything. They are never presented as a tap. Migration 14 adds an
+  **append-only** `grants` table: revoking stamps `revoked_at` and no row is ever deleted, so
+  the record of an authority having been handed out survives the authority itself.
 - **Audit receipt: what actually executed.** The warden now reports execution outcome back
   to the arbiter, and the arbiter persists it (migration 12: `exec_exit_code`, `exec_ran`,
   `exec_output`, `exec_kind`). Reporting is an explicit mode on the existing consume

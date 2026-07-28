@@ -129,7 +129,18 @@ agent token sees legacy-created requests plus its own (deprecated behavior).
 
 ### `POST /v1/requests/{id}/decision` — role: `app`
 
-Body: `{"decision": "approve"}` or `{"decision": "deny"}`.
+Body: `{"decision": "approve"}` or `{"decision": "deny"}`, optionally with
+`{"attestation": {…}}` and `{"grant_ttl_seconds": 900}`.
+
+`grant_ttl_seconds` (optional, `1`–`28800`) issues a **scoped grant** alongside
+an approval: for that many seconds, a later request carrying the same
+`payload.agent` and `payload.tool` is approved by the server on the operator's
+behalf (see [Grants](#grants)). Out-of-range values are rejected `422` **before
+the decision is applied** — the request stays pending and is still decidable.
+The grant part is otherwise best-effort and can never fail an approval: a
+`deny` with a TTL, or an approval of a request whose payload carries no
+`agent`/`tool` strings, decides normally and records an audit note
+(`grant_skipped`) instead.
 
 The write is atomic (`… WHERE id=? AND status='pending'` + rowcount check):
 exactly one decision ever wins, concurrent approve/deny cannot both land, and
@@ -192,7 +203,8 @@ Streams the full audit table as `text/plain` JSON Lines — one event object
 per line: `{"id", "request_id", "event", "at", "detail"}`. Events include
 `created`, `approved`, `denied`, `expired`, `consumed`, `verdict_issued`,
 `policy_denied`, `rate_limited`, `notify_failed`, `token_created`,
-`token_revoked`, `token_rotated`, `notify_policy_changed`. Same data as
+`token_revoked`, `token_rotated`, `notify_policy_changed`, `grant_created`,
+`grant_skipped`, `grant_revoked`, `auto_approved`. Same data as
 `hma audit export`. Auth failures on this route are throttled by the same
 per-IP limiter as every other route (429 on repeated bad bearer tokens or
 missing session).
@@ -202,6 +214,78 @@ session cookie, every auth failure — including a completely absent
 `Authorization` header — returns
 `403 {"detail": "app token or admin session required"}`. This is the one
 `/v1` route that never returns 401; key any re-auth logic here off 403.
+
+## Grants
+
+A grant is a narrow, revocable, time-boxed standing answer: *"for the next N
+minutes, approve `(agent, tool)` for me."* It is created by the operator as
+part of an approval (see `grant_ttl_seconds` above), stored append-only, and
+consulted when a request is created.
+
+Grants only ever narrow the operator's effort, never the system's safety:
+
+- **Exact match only.** `payload.agent` and `payload.tool` must both be present,
+  non-empty strings and match a grant byte-for-byte. No wildcards, no case
+  folding, no cross-agent match, no prefix match.
+- **`critical` never auto-approves,** whatever grants exist. The severity
+  checked is the *effective* severity after policy floors.
+- **Expiry is evaluated at match time,** so a grant goes inert the second its
+  TTL passes and a revocation bites on the very next request.
+- **Capped at 28800 s (8 h)** server-side.
+- **The gate is unchanged.** It still files the ask and polls; it simply finds
+  the answer already there.
+
+Issuing a grant is **not** severity-gated — approving a `critical` request
+with `grant_ttl_seconds` mints one exactly like any other — but matching
+never covers `critical` (see above), so that grant can never itself decide a
+later critical request. Clients (the iOS app) should not offer grant
+issuance on critical asks.
+
+`payload.agent`/`payload.tool` are a claim made by the requesting agent — a
+matching and display key, not proof of what will actually execute. The
+binding to the real tool call belongs to the gate (the warden's
+`canonical_action`/`action_hash`), not to the grant. TTL, exact-match scope,
+and revocability are what bound the exposure of a grant being wrong.
+
+An auto-approved request records `decided_via: "grant"` — a distinct authority
+class, never presented as a human tap — with `decided_by` naming the operator
+who issued the grant, `attestation: null` (no device signed anything), and a
+signed verdict exactly like any other approval, so the warden executes it
+normally. Its audit trail carries `auto_approved` with the grant's id.
+
+### `GET /v1/grants` — role: `app`
+
+`200 {"grants": [ … ]}` — active grants first, then any that expired or were
+revoked in the last 24 hours; newest first within each group. Each grant:
+
+```json
+{
+  "id": "3f1c…", "agent": "hermes", "tool": "skill_manage",
+  "granted_by": "kevin-s-iphone-17", "granted_via": "app-token",
+  "request_id": "<the approval that issued it>",
+  "created_at": "2026-07-28T20:31:00.123456+00:00",
+  "expires_at": "2026-07-28T20:46:00.123456+00:00",
+  "revoked_at": null, "state": "active"
+}
+```
+
+`state` is derived at read time and is one of `active`, `expired`, `revoked`
+(revocation wins over expiry). Older inert grants stay in the database —
+history is append-only — but are not listed.
+
+### `POST /v1/grants/{id}/revoke` — role: `app`
+
+Withdraws future cover. **Idempotent:** revoking an already-revoked grant
+returns `200` with the unchanged row and writes no second audit row. An
+expired-but-unrevoked grant is stamped (it is already inert, but the act is
+recorded).
+
+- `200` the grant object
+- `404 {"detail": "not found"}` — no such grant
+
+Revocation takes effect at the next request's match-time check. **Nothing
+already approved or in flight is disturbed** — the operator is withdrawing
+future cover, not reversing a past decision.
 
 ## Devices and notifications
 
@@ -226,10 +310,16 @@ device's own opt-in both allow that severity.
 
 ### `WebSocket /v1/stream` — app-role credential (Bearer header) or dashboard session cookie
 
-Pushes `{"event": "<name>", "request"|"device"|"data": <payload>}` messages:
-`request.created`, `request.decided`, `request.expired`, `device.updated`,
+Pushes `{"event": "<name>", "request"|"device"|"grant"|"data": <payload>}`
+messages: `request.created`, `request.decided`, `request.executed`,
+`request.expired`, `device.updated`, `grant.created`, `grant.revoked`,
 `ping` (heartbeat). No replay or resume — reconcile via `GET /v1/requests`
-after a reconnect. Bad credentials close with code 4401.
+and `GET /v1/grants` after a reconnect. Bad credentials close with code 4401.
+
+`grant.created` follows the `request.decided` of the approval that issued it.
+Grant events are **live-only**: unlike request events they are not written to
+the durable outbox (the outbox is request-scoped), so a client that was
+disconnected reconciles with `GET /v1/grants` rather than replaying.
 
 **Note:** the stream is **app-role only**, matching the capability matrix and
 every other app-only route. Any app-role credential opens it: the legacy static
@@ -245,10 +335,10 @@ credential gets (no oracle distinguishing wrong-role from bad-token).
 | 200 | Success (create also returns 200 — including idempotent replay and duplicate-collapse). |
 | 401 | Missing or malformed `Authorization` header — except `GET /v1/audit/export`, which returns 403 for every auth failure (see its section). |
 | 403 | Invalid/revoked/expired token, wrong role, or policy deny (`policy: <reason>`, incl. token scope violations). |
-| 404 | Not found — including another identity's request (scoped reads) and "no verdict yet". |
+| 404 | Not found — including another identity's request (scoped reads), "no verdict yet", and an unknown grant id. |
 | 409 | Decision/consume conflict: not pending, already decided, already consumed, lost a race. |
 | 410 | Stale approval at consume time (past `approval_ttl_seconds`). |
-| 422 | Validation, canonical-hash mismatch, callback_url not allowlisted. |
+| 422 | Validation, canonical-hash mismatch, callback_url not allowlisted, or `grant_ttl_seconds` outside `1`–`28800` (refused before the decision is applied). |
 | 429 | Auth-failure throttling (per IP) or create rate limit (per identity). |
 | 503 | `/health` with a failing DB ping. |
 

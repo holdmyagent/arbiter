@@ -82,6 +82,33 @@ one line, with no "pairing code:" prefix and no expiry banner — the form to
 pipe into a QR generator or a provisioning script. The credential is single-use
 and shown once either way.
 
+### `hma grant list [--tenant T] [--config PATH]` (0.7)
+
+Table of scoped `(agent, tool)` grants — short id, agent, tool, who granted
+it, and its state with the relevant timestamp:
+
+```
+3f1c8a2b  hermes  skill_manage  by=kevin-s-iphone-17  active=2026-07-28T20:46:00+00:00
+9b4e01f7  hermes  shell         by=kevin-s-iphone-17  revoked=2026-07-28T20:39:12+00:00
+```
+
+Shows active grants plus any that expired or were revoked in the last 24 hours
+— the same window as `GET /v1/grants`, so the CLI and the phone never disagree.
+Older grants stay in the database (history is append-only) but are not listed.
+
+### `hma grant revoke ID [--tenant T] [--config PATH]` (0.7)
+
+Revoke a grant by its full id or any unambiguous prefix. An ambiguous prefix
+revokes nothing and prints the candidates. Revoking an already-revoked grant
+prints a note and exits 0 — it is a no-op, not an error.
+
+Revocation takes effect at the next matching request; nothing already approved
+is disturbed. Like the `token` commands, this reads and writes the arbiter's
+database directly (the tenant's cell once a control plane exists, else the
+legacy single-tenant file), so it runs on the arbiter host — and so it cannot
+push a `grant.revoked` event to a running server's `/v1/stream`. A phone picks
+the change up on its next refresh; the revocation itself is immediate.
+
 ### `hma audit export [--format jsonl] [--out PATH] [--url URL]`
 
 Dump the append-only audit table as JSON Lines (the CLI twin of
