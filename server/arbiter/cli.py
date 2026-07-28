@@ -498,8 +498,10 @@ def tenant_delete(tenant_id, config_path):
 @click.argument("tenant_id")
 @click.option("--minutes", type=int, default=15, help="Credential lifetime (default 15).")
 @click.option("--host", "host_url", default=None, help="Server base URL for the QR payload.")
+@click.option("--quiet", is_flag=True,
+              help="Print ONLY the deep-link payload (one line, for scripting).")
 @click.option("--config", "config_path", default=None, help="Path to config.toml")
-def tenant_pair_code(tenant_id, minutes, host_url, config_path):
+def tenant_pair_code(tenant_id, minutes, host_url, quiet, config_path):
     """Mint a single-use pairing credential for TENANT_ID and print its deep-link."""
     from .pair import build_pairing_payload, local_ip
     cfg = Config.load(config_path)
@@ -509,8 +511,12 @@ def tenant_pair_code(tenant_id, minutes, host_url, config_path):
     except (KeyError, ValueError) as exc:
         raise click.ClickException(f"cannot mint pairing code for '{tenant_id}': {exc}")
     base = host_url or f"http://{local_ip()}:{cfg.server.port}"
+    payload = build_pairing_payload(base, code)
+    if quiet:
+        click.echo(payload)          # exactly one line: the whole point of --quiet
+        return
     click.echo(f"pairing code: {code}")
-    click.echo(f"deep-link:    {build_pairing_payload(base, code)}")
+    click.echo(f"deep-link:    {payload}")
     click.echo(f"Single-use, expires in {minutes} min. Shown once.")
 
 

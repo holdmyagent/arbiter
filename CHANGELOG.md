@@ -53,6 +53,9 @@
   their unique name), to three attempts at `<name>-<8 random hex>` before giving up. Giving
   up is still logged and still completes the enrolment without a token. All candidates stay
   inside the documented 64-character token-name cap.
+- **`hma tenant pair-code --quiet`** prints only the pairing deep-link payload — one line, no
+  banner — so provisioning scripts can consume it without parsing human-facing output. The
+  default output is unchanged.
 
 ### Fixed
 

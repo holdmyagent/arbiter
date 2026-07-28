@@ -72,6 +72,14 @@ revocation state. Never prints hashes or token values.
 Immediately revokes the named token (sets `revoked_at`; auth refuses it from
 then on).
 
+### `hma tenant pair-code TENANT_ID [--minutes N] [--host URL] [--quiet]`
+
+Mints a single-use, short-expiry pairing credential for a tenant and prints
+its `holdmyagent://pair?…` deep-link. `--quiet` prints **only** that payload,
+one line, with no "pairing code:" prefix and no expiry banner — the form to
+pipe into a QR generator or a provisioning script. The credential is single-use
+and shown once either way.
+
 ### `hma audit export [--format jsonl] [--out PATH] [--url URL]`
 
 Dump the append-only audit table as JSON Lines (the CLI twin of
