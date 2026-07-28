@@ -719,6 +719,18 @@ def create_app(cfg, registry, control, *, sender=None, scheduler=None,
                 app.state.loop.call_soon_threadsafe(_publish_executed)
             except Exception as exc:
                 log.warning("request.executed publish failed for %s: %s", rid, exc)
+                # 0.7 S4: parity with the notifier path (Dispatcher._guard in
+                # notify/__init__.py) — a dropped notification leaves a row in
+                # the audit log, not just a line in the server's stderr. Nested
+                # try for the same reason as the outer one: the exec_* write
+                # already committed, so an audit failure must never turn a
+                # landed report into a 500 (the warden retries 5xx and would
+                # then hit the write-once 409 for a report that succeeded).
+                try:
+                    cell.db.add_audit(rid, "notify_failed",
+                                      {"notifier": "stream", "error": str(exc)[:200]})
+                except Exception as audit_exc:
+                    log.warning("audit write for notify_failed failed: %s", audit_exc)
             return {"consumed_at": row["consumed_at"]}
         # classic path below - UNCHANGED
         code, row = cell.db.consume_request(

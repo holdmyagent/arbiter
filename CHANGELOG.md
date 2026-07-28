@@ -98,6 +98,11 @@
   nothing — so the retry sweep could never find it. `WardenDB.set_status` now takes an
   optional `report_payload` and writes all three in **one statement**. Callers that pass no
   payload (failed / denied / expired / executing) leave the report bookkeeping untouched.
+- **A dropped `request.executed` publish now leaves an audit row.** The exec-report
+  publish hop's failure path only logged, while every other notification failure records
+  `notify_failed`. It now records one too (`{"notifier": "stream", "error": …}`, error
+  truncated to 200 characters), inside a nested guard so an audit-write failure can never
+  turn an already-committed execution report into a 500.
 
 ### Security
 
