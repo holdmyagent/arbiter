@@ -69,7 +69,10 @@ def test_decision_records_decided_via(client):
     """decided_via (Level 2) is computed strictly from identity: a legacy
     static [auth] token records 'legacy-token', a named app-role DB token
     records 'app-token'. Never 'device' -- the server cannot distinguish a
-    phone tap from a script holding the same bearer token."""
+    phone tap from a script holding the same bearer token. A third value,
+    'grant', exists as of 0.7 but is written ONLY by the create endpoint's
+    auto-approval path (see test_grants_auto_approve.py), never here: this
+    endpoint records the authority of the credential that called it."""
     rid = _create(client).json()["id"]
     d = client.post(f"/v1/requests/{rid}/decision",
                     headers={"Authorization": "Bearer test-app"}, json={"decision": "approve"})

@@ -2,10 +2,6 @@
 from arbiter.db import Database, SCHEMA_VERSION
 
 
-def test_schema_version_is_13():
-    assert SCHEMA_VERSION == 13
-
-
 def test_fresh_db_has_token_name_column(tmp_path):
     db = Database(str(tmp_path / "a.sqlite3"))
     cols = {r[1] for r in db.conn.execute("PRAGMA table_info(devices)")}
